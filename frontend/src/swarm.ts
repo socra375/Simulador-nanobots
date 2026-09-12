@@ -30,6 +30,8 @@ export interface SwarmParams {
 export class Swarm {
   private module: BoidsModule | null = null;
   private count = 0;
+  private cachedPtr = -1;
+  private cachedView: Float32Array | null = null;
 
   async load(): Promise<void> {
     this.module = (await createBoidsModule()) as BoidsModule;
@@ -45,6 +47,7 @@ export class Swarm {
   // (Re)inicializa el enjambre con `count` nanobots.
   init(count: number): void {
     this.count = count;
+    this.cachedView = null;
     this.mod.ccall("init", null, ["number"], [count]);
   }
 
@@ -65,16 +68,18 @@ export class Swarm {
     this.mod.ccall("step", null, ["number"], [dt]);
   }
 
-  // Devuelve una vista Float32Array (sin copia) sobre las posiciones actuales
-  // de todos los nanobots, calculada leyendo el puntero desde C++ cada vez
-  // (el puntero puede cambiar si `init` reasigna el buffer al cambiar count).
+  // Devuelve una vista Float32Array (sin copia) sobre las posiciones actuales.
+  // Se cachea entre llamadas: solo se reconstruye si cambió el puntero (p.ej.
+  // `init` reasignó el buffer) o si ALLOW_MEMORY_GROWTH movió el heap de Wasm
+  // a un ArrayBuffer nuevo, invalidando la vista anterior.
   getPositions(): Float32Array {
     const ptr = this.mod.ccall("getPositionsPtr", "number", [], []) as number;
-    return new Float32Array(
-      this.mod.HEAPF32.buffer,
-      ptr,
-      this.count * 3,
-    );
+    const buffer = this.mod.HEAPF32.buffer;
+    if (!this.cachedView || ptr !== this.cachedPtr || this.cachedView.buffer !== buffer) {
+      this.cachedPtr = ptr;
+      this.cachedView = new Float32Array(buffer, ptr, this.count * 3);
+    }
+    return this.cachedView;
   }
 
   getCount(): number {
