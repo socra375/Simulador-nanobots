@@ -1,5 +1,9 @@
 # Simulador de Nanobots 3D — Fase 1
 
+🔗 **Demo en vivo:** https://socra375.github.io/Simulador-nanobots/
+(solo frontend — sin backend Python; guardar/cargar configuración usa
+`localStorage` del navegador en vez de un archivo en servidor).
+
 Demo de un enjambre de nanobots en 3D que sigue el cursor del mouse con
 movimiento tipo "boid" (cohesión, separación, alineación e inercia),
 construida combinando tres lenguajes, cada uno en el rol donde mejor rinde:
@@ -87,6 +91,18 @@ permite ajustar la cantidad de nanobots (20–200), la velocidad máxima y los
 pesos de cohesión/separación/alineación, además de botones para guardar y
 cargar la configuración (persistida por el backend en
 `backend/config/swarm_config.json`).
+
+## Despliegue en GitHub Pages (solo frontend)
+
+`.github/workflows/deploy-pages.yml` compila `/frontend` con
+`GITHUB_PAGES=true` (para que Vite use `base: "/Simulador-nanobots/"`) y lo
+publica en GitHub Pages en cada push a `main`. No incluye el backend Python
+— no hay endpoint `/api/config` en producción, así que
+`frontend/src/config-client.ts` cae automáticamente a `localStorage` cuando
+el `fetch` falla. La física boid corre igual (100% client-side vía Wasm).
+
+Requiere habilitar Pages una sola vez: **Settings → Pages → Source: GitHub
+Actions** en el repo (no hay forma de activarlo por API).
 
 ## Notas de rendimiento
 
