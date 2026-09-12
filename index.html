@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Simulador de Nanobots 3D</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: #050810;
+        overflow: hidden;
+        font-family: "Courier New", monospace;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+      #hud {
+        position: fixed;
+        top: 12px;
+        left: 16px;
+        color: #4be3ff;
+        text-shadow: 0 0 6px rgba(75, 227, 255, 0.8);
+        font-size: 13px;
+        letter-spacing: 0.05em;
+        pointer-events: none;
+        user-select: none;
+      }
+    </style>
+    <script type="module" crossorigin src="/Simulador-nanobots/assets/index-BMwUxR5-.js"></script>
+  </head>
+  <body>
+    <!-- Entry point único: este index.html carga el bundle de TypeScript
+         (main.ts), que a su vez inicializa Three.js y el módulo Wasm
+         compilado desde /cpp (ver frontend/public/wasm/boids.js). -->
+    <div id="app"></div>
+    <div id="hud">SIMULADOR DE NANOBOTS · ENJAMBRE C++/WASM</div>
+  </body>
+</html>
