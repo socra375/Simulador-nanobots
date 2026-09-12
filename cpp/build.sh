@@ -16,7 +16,7 @@ OUT_DIR="$SCRIPT_DIR/../frontend/public/wasm"
 mkdir -p "$OUT_DIR"
 
 emcc "$SCRIPT_DIR/boids.cpp" \
-  -O3 \
+  -O3 -msimd128 -flto \
   -s MODULARIZE=1 \
   -s EXPORT_ES6=1 \
   -s EXPORT_NAME=createBoidsModule \

@@ -36,7 +36,12 @@ float g_maxSpeed = 4.0f;
 
 constexpr float kSeparationRadius = 1.2f;
 constexpr float kNeighborRadius = 4.0f;
+constexpr float kNeighborRadiusSq = kNeighborRadius * kNeighborRadius;
 constexpr float kBounds = 12.0f;  // volumen cúbico donde se mantiene el enjambre
+
+// Buffer de aceleración reutilizado entre llamadas a step(): evita un
+// malloc/free por frame en el hot path (solo se redimensiona en init()).
+std::vector<Vec3> g_acceleration;
 
 float randRange(float lo, float hi) {
     return lo + (hi - lo) * (static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX));
@@ -54,6 +59,7 @@ void init(int count) {
     g_count = count;
     g_positions.assign(static_cast<size_t>(count) * 3, 0.f);
     g_velocities.assign(static_cast<size_t>(count) * 3, 0.f);
+    g_acceleration.assign(static_cast<size_t>(count), Vec3{});
 
     for (int i = 0; i < count; ++i) {
         g_positions[i * 3 + 0] = randRange(-kBounds, kBounds);
@@ -98,7 +104,7 @@ EMSCRIPTEN_KEEPALIVE
 void step(float dt) {
     if (g_count <= 0) return;
 
-    std::vector<Vec3> acceleration(g_count);
+    Vec3* acceleration = g_acceleration.data();
 
     for (int i = 0; i < g_count; ++i) {
         Vec3 pos_i{g_positions[i * 3 + 0], g_positions[i * 3 + 1], g_positions[i * 3 + 2]};
@@ -116,8 +122,11 @@ void step(float dt) {
             float dx = pos_j.x - pos_i.x;
             float dy = pos_j.y - pos_i.y;
             float dz = pos_j.z - pos_i.z;
-            float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-            if (dist > kNeighborRadius || dist < 1e-5f) continue;
+            float distSq = dx * dx + dy * dy + dz * dz;
+            // Descarta vecinos lejanos con la distancia al cuadrado (evita
+            // sqrt en la mayoría de los pares, que caen fuera del radio).
+            if (distSq > kNeighborRadiusSq || distSq < 1e-10f) continue;
+            float dist = std::sqrt(distSq);
 
             neighborCount++;
             cohesion.x += pos_j.x;
