@@ -94,15 +94,31 @@ cargar la configuración (persistida por el backend en
 
 ## Despliegue en GitHub Pages (solo frontend)
 
-`.github/workflows/deploy-pages.yml` compila `/frontend` con
-`GITHUB_PAGES=true` (para que Vite use `base: "/Simulador-nanobots/"`) y lo
-publica en GitHub Pages en cada push a `main`. No incluye el backend Python
-— no hay endpoint `/api/config` en producción, así que
+El sitio se sirve desde la rama **`gh-pages`**, que contiene el build ya
+compilado de `/frontend` (con `base: "/Simulador-nanobots/"`). No incluye el
+backend Python — no hay endpoint `/api/config` en producción, así que
 `frontend/src/config-client.ts` cae automáticamente a `localStorage` cuando
 el `fetch` falla. La física boid corre igual (100% client-side vía Wasm).
 
-Requiere habilitar Pages una sola vez: **Settings → Pages → Source: GitHub
-Actions** en el repo (no hay forma de activarlo por API).
+Configuración del repo: **Settings → Pages → Source: "Deploy from a
+branch"** → rama `gh-pages`, carpeta `/ (root)`.
+
+Para publicar una actualización:
+
+```bash
+cd frontend
+npm ci
+GITHUB_PAGES=true npm run build   # usa base "/Simulador-nanobots/"
+# copiar el contenido de frontend/dist/ (+ un archivo .nojekyll vacío)
+# a la raíz de la rama gh-pages y pushearlo
+```
+
+(Se descartó automatizar esto con un workflow de GitHub Actions +
+`actions/deploy-pages`: el ambiente `github-pages` que crea automáticamente
+quedó con una regla de protección de rama corrupta que seguía rechazando
+deploys desde `main` incluso configurada como "No restriction" en la UI —
+un bug conocido de GitHub Environments. El deploy manual a `gh-pages` evita
+ese problema por completo.)
 
 ## Notas de rendimiento
 
