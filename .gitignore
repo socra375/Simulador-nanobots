@@ -1,0 +1,21 @@
+# Frontend (Node/Vite)
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+
+# El módulo compilado (frontend/public/wasm/boids.js + boids.wasm) SÍ se
+# versiona a propósito: así la demo funciona out-of-the-box sin necesitar
+# el Emscripten SDK instalado. Se regenera con cpp/build.sh si se modifica
+# boids.cpp.
+
+# C++ / Emscripten build artifacts intermedios
+cpp/*.o
+
+# Backend (Python)
+backend/__pycache__/
+backend/**/__pycache__/
+backend/config/swarm_config.json
+*.pyc
+
+# Editor/OS
+.DS_Store
