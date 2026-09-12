@@ -6,6 +6,8 @@
 // `Float32Array` que apunta directamente al buffer de memoria del propio
 // Wasm: cuando C++ escribe nuevas posiciones dentro de `step()`, esa misma
 // vista ya refleja los valores actualizados sin ningún `postMessage` ni JSON.
+// El mismo patrón se usa para el buffer de targets por-agente: TS escribe
+// ahí directo (idle o figura a formar) sin pasar por ccall en cada frame.
 //
 // @ts-expect-error -- boids.js es un artefacto de build (no tiene tipos .d.ts)
 import createBoidsModule from "../public/wasm/boids.js";
@@ -25,6 +27,7 @@ export interface SwarmParams {
   separation: number;
   alignment: number;
   maxSpeed: number;
+  seekWeight: number;
 }
 
 export class Swarm {
@@ -32,6 +35,8 @@ export class Swarm {
   private count = 0;
   private cachedPtr = -1;
   private cachedView: Float32Array | null = null;
+  private cachedTargetPtr = -1;
+  private cachedTargetView: Float32Array | null = null;
 
   async load(): Promise<void> {
     this.module = (await createBoidsModule()) as BoidsModule;
@@ -48,19 +53,16 @@ export class Swarm {
   init(count: number): void {
     this.count = count;
     this.cachedView = null;
+    this.cachedTargetView = null;
     this.mod.ccall("init", null, ["number"], [count]);
-  }
-
-  setTarget(x: number, y: number, z: number): void {
-    this.mod.ccall("setTarget", null, ["number", "number", "number"], [x, y, z]);
   }
 
   setParams(params: SwarmParams): void {
     this.mod.ccall(
       "setParams",
       null,
-      ["number", "number", "number", "number"],
-      [params.cohesion, params.separation, params.alignment, params.maxSpeed],
+      ["number", "number", "number", "number", "number"],
+      [params.cohesion, params.separation, params.alignment, params.maxSpeed, params.seekWeight],
     );
   }
 
@@ -80,6 +82,29 @@ export class Swarm {
       this.cachedView = new Float32Array(buffer, ptr, this.count * 3);
     }
     return this.cachedView;
+  }
+
+  // Vista sin copia sobre el buffer de targets por-agente (mismo patrón de
+  // cacheo/invalidación que getPositions).
+  getTargetPositions(): Float32Array {
+    const ptr = this.mod.ccall("getTargetPositionsPtr", "number", [], []) as number;
+    const buffer = this.mod.HEAPF32.buffer;
+    if (
+      !this.cachedTargetView ||
+      ptr !== this.cachedTargetPtr ||
+      this.cachedTargetView.buffer !== buffer
+    ) {
+      this.cachedTargetPtr = ptr;
+      this.cachedTargetView = new Float32Array(buffer, ptr, this.count * 3);
+    }
+    return this.cachedTargetView;
+  }
+
+  // Copia `points` (largo count*3) directo sobre el buffer de targets: así
+  // se le indica al enjambre hacia dónde converger (cluster de reposo
+  // alrededor del núcleo, o la nube de puntos de una figura pedida).
+  setAgentTargets(points: Float32Array): void {
+    this.getTargetPositions().set(points.subarray(0, this.count * 3));
   }
 
   getCount(): number {

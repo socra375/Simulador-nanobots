@@ -21,7 +21,7 @@ emcc "$SCRIPT_DIR/boids.cpp" \
   -s EXPORT_ES6=1 \
   -s EXPORT_NAME=createBoidsModule \
   -s ALLOW_MEMORY_GROWTH=1 \
-  -s EXPORTED_FUNCTIONS='["_init","_getPositionsPtr","_getCount","_setTarget","_setParams","_step","_malloc","_free"]' \
+  -s EXPORTED_FUNCTIONS='["_init","_getPositionsPtr","_getTargetPositionsPtr","_getCount","_setParams","_step","_malloc","_free"]' \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
   -s ENVIRONMENT=web \
   -o "$OUT_DIR/boids.js"

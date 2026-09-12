@@ -1,6 +1,7 @@
 import GUI from "lil-gui";
 import type { SwarmParams } from "./swarm";
 import type { SwarmConfig } from "./config-client";
+import { resolveShapeName, listSupportedNames } from "./shapes";
 
 export interface UiState extends SwarmParams {
   count: number;
@@ -11,6 +12,8 @@ export interface UiCallbacks {
   onParamsChange: (params: SwarmParams) => void;
   onSave: (config: SwarmConfig) => void;
   onLoad: () => void;
+  onFormShape: (canonicalShapeName: string) => void;
+  onReturnToCore: () => void;
 }
 
 // Panel de control (lil-gui): cantidad de nanobots (20-200), velocidad máxima
@@ -59,5 +62,71 @@ export function createControlPanel(state: UiState, callbacks: UiCallbacks): GUI 
   gui.add(actions, "guardar").name("Guardar configuración");
   gui.add(actions, "cargar").name("Cargar configuración");
 
+  addCommandsFolder(gui, callbacks);
+
   return gui;
+}
+
+// Carpeta "Comandos": el usuario escribe el nombre de un objeto, adjunta
+// una foto de confirmación (no se analiza — no hay backend/IA de visión en
+// producción, es solo un requisito de UX) y el enjambre forma esa figura.
+function addCommandsFolder(gui: GUI, callbacks: UiCallbacks): void {
+  const folder = gui.addFolder("Comandos");
+  const commands = { objectName: "" };
+  let hasPhoto = false;
+
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = "image/*";
+  fileInput.style.display = "none";
+  document.body.appendChild(fileInput);
+
+  const preview = document.createElement("img");
+  preview.style.cssText =
+    "width:100%;max-height:80px;object-fit:contain;display:none;margin:4px 0;border-radius:4px;";
+
+  const status = document.createElement("div");
+  status.style.cssText = "font-size:11px;color:#4be3ff;padding:2px 6px;min-height:14px;";
+
+  let photoObjectUrl: string | null = null;
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    if (photoObjectUrl) URL.revokeObjectURL(photoObjectUrl);
+    photoObjectUrl = URL.createObjectURL(file);
+    preview.src = photoObjectUrl;
+    preview.style.display = "block";
+    hasPhoto = true;
+    status.textContent = `Foto adjunta: ${file.name}`;
+  });
+
+  folder.add(commands, "objectName").name("Objeto");
+
+  const actions = {
+    adjuntarFoto: () => fileInput.click(),
+    formarObjeto: () => {
+      if (!hasPhoto) {
+        status.textContent = "Subí una foto del objeto antes de formarlo.";
+        return;
+      }
+      const canonical = resolveShapeName(commands.objectName);
+      if (!canonical) {
+        status.textContent = `Objeto no reconocido. Probá: ${listSupportedNames().join(", ")}`;
+        return;
+      }
+      status.textContent = `Formando: ${canonical}`;
+      callbacks.onFormShape(canonical);
+    },
+    volverAlNucleo: () => {
+      status.textContent = "Volviendo al núcleo...";
+      callbacks.onReturnToCore();
+    },
+  };
+
+  folder.add(actions, "adjuntarFoto").name("Adjuntar foto");
+  folder.add(actions, "formarObjeto").name("Formar objeto");
+  folder.add(actions, "volverAlNucleo").name("Volver al núcleo");
+
+  folder.domElement.appendChild(preview);
+  folder.domElement.appendChild(status);
 }
