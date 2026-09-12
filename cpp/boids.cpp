@@ -22,10 +22,9 @@ struct Vec3 {
 };
 
 int g_count = 0;
-std::vector<float> g_positions;   // [x0,y0,z0, x1,y1,z1, ...]
-std::vector<float> g_velocities;  // misma forma que g_positions
-
-Vec3 g_target{0.f, 0.f, 0.f};
+std::vector<float> g_positions;       // [x0,y0,z0, x1,y1,z1, ...]
+std::vector<float> g_velocities;      // misma forma que g_positions
+std::vector<float> g_targetPositions; // target propio de cada agente (misma forma)
 
 // Parámetros de comportamiento, ajustables en tiempo real desde la UI.
 float g_cohesionWeight = 0.8f;
@@ -59,12 +58,19 @@ void init(int count) {
     g_count = count;
     g_positions.assign(static_cast<size_t>(count) * 3, 0.f);
     g_velocities.assign(static_cast<size_t>(count) * 3, 0.f);
+    g_targetPositions.assign(static_cast<size_t>(count) * 3, 0.f);
     g_acceleration.assign(static_cast<size_t>(count), Vec3{});
 
     for (int i = 0; i < count; ++i) {
         g_positions[i * 3 + 0] = randRange(-kBounds, kBounds);
         g_positions[i * 3 + 1] = randRange(-kBounds, kBounds);
         g_positions[i * 3 + 2] = randRange(-kBounds, kBounds);
+
+        // El target arranca igual a la posición inicial: sin tirón de seek
+        // en el primer frame, hasta que TS escriba targets reales.
+        g_targetPositions[i * 3 + 0] = g_positions[i * 3 + 0];
+        g_targetPositions[i * 3 + 1] = g_positions[i * 3 + 1];
+        g_targetPositions[i * 3 + 2] = g_positions[i * 3 + 2];
 
         g_velocities[i * 3 + 0] = randRange(-1.f, 1.f);
         g_velocities[i * 3 + 1] = randRange(-1.f, 1.f);
@@ -83,23 +89,28 @@ int getCount() {
     return g_count;
 }
 
+// Puntero al buffer de targets por-agente, para que TS escriba ahí
+// directamente (idle: cluster alrededor del núcleo; forming: nube de
+// puntos de la figura pedida) sin pasar por ccall en cada transición.
 EMSCRIPTEN_KEEPALIVE
-void setTarget(float x, float y, float z) {
-    g_target = {x, y, z};
+float* getTargetPositionsPtr() {
+    return g_targetPositions.data();
 }
 
 EMSCRIPTEN_KEEPALIVE
-void setParams(float cohesion, float separation, float alignment, float maxSpeed) {
+void setParams(float cohesion, float separation, float alignment, float maxSpeed, float seekWeight) {
     g_cohesionWeight = cohesion;
     g_separationWeight = separation;
     g_alignmentWeight = alignment;
     g_maxSpeed = maxSpeed;
+    g_seekWeight = seekWeight;
 }
 
 // Avanza la simulación `dt` segundos: calcula fuerzas de cohesión, separación,
 // alineación (comportamiento boid clásico) más una fuerza de búsqueda ("seek")
-// hacia el cursor, las combina con inercia, y suaviza/limita la velocidad
-// resultante antes de integrar la posición.
+// hacia el target propio de cada agente (`g_targetPositions`), las combina
+// con inercia, y suaviza/limita la velocidad resultante antes de integrar
+// la posición.
 EMSCRIPTEN_KEEPALIVE
 void step(float dt) {
     if (g_count <= 0) return;
@@ -166,8 +177,12 @@ void step(float dt) {
                        alignment.z * g_alignmentWeight;
         }
 
-        // Seek: atracción hacia el objetivo (posición del cursor en el mundo 3D).
-        Vec3 toTarget{g_target.x - pos_i.x, g_target.y - pos_i.y, g_target.z - pos_i.z};
+        // Seek: atracción hacia el target propio de este agente (cluster de
+        // reposo alrededor del núcleo, o punto de la figura que se está formando).
+        Vec3 toTarget{
+            g_targetPositions[i * 3 + 0] - pos_i.x,
+            g_targetPositions[i * 3 + 1] - pos_i.y,
+            g_targetPositions[i * 3 + 2] - pos_i.z};
         force.x += toTarget.x * g_seekWeight;
         force.y += toTarget.y * g_seekWeight;
         force.z += toTarget.z * g_seekWeight;
