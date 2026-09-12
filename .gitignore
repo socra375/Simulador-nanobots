@@ -10,12 +10,19 @@ frontend/tsconfig.tsbuildinfo
 
 # C++ / Emscripten build artifacts intermedios
 cpp/*.o
+cpp/test_boids_bin
 
 # Backend (Python)
 backend/__pycache__/
 backend/**/__pycache__/
 backend/config/swarm_config.json
+backend/.pytest_cache/
 *.pyc
+
+# Tests (frontend)
+frontend/coverage/
+frontend/playwright-report/
+frontend/test-results/
 
 # Editor/OS
 .DS_Store
