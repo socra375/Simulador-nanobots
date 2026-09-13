@@ -135,9 +135,18 @@ export function createMicrobotSwarmMesh(maxCount: number): MicrobotSwarmMesh {
       beamIndex++;
     }
 
+    // Ver el mismo comentario en nanobot-mesh.ts: sin `addUpdateRange`,
+    // three.js sube el buffer COMPLETO de instanceMatrix (dimensionado a
+    // `maxCount`=60.000) por mesh en cada frame sin importar cuántas
+    // instancias están realmente en uso — acotar el rango al conteo real
+    // evita ese costo fijo durante el lanzamiento/repliegue.
     nodeMesh.count = nodeIndex;
     beamMesh.count = beamIndex;
+    nodeMesh.instanceMatrix.clearUpdateRanges();
+    nodeMesh.instanceMatrix.addUpdateRange(0, nodeIndex * 16);
     nodeMesh.instanceMatrix.needsUpdate = true;
+    beamMesh.instanceMatrix.clearUpdateRanges();
+    beamMesh.instanceMatrix.addUpdateRange(0, beamIndex * 16);
     beamMesh.instanceMatrix.needsUpdate = true;
   }
 

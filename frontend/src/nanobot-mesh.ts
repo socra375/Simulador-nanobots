@@ -195,6 +195,15 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   // otro agente distinto tras un cambio de cantidad.
   const snapped = new Uint8Array(maxCount);
 
+  // Buffers reusados cuadro a cuadro por updateFromPositions (se llama
+  // TODOS los frames, incluso en reposo) — evita asignar arrays nuevos por
+  // frame (antes: `new Array(...)`/`.map(...)` en cada llamada), mismo
+  // patrón que los scratch de Vector3/Matrix4 de microbot-mesh.ts.
+  const localCounters = new Array<number>(instancedMeshes.length).fill(0);
+  const waveLocalCounters = new Array<number>(colorWaveMeshes.length).fill(0);
+  const meshArrays = instancedMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
+  const waveArrays = colorWaveMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
+
   function setCount(count: number) {
     // Reparto aproximado solo para el estado inicial (antes de la primera
     // updateFromPositions con roles reales) — evita instancias fantasma.
@@ -242,10 +251,8 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     // blob sólido en vez de un contorno nítido. Se achican con la densidad
     // (proporcional a count^(-1/3)) así más cantidad aporta más detalle.
     const scale = Math.min(1, Math.cbrt(SCALE_BASELINE_COUNT / count));
-    const localCounters = new Array<number>(instancedMeshes.length).fill(0);
-    const waveLocalCounters = new Array<number>(colorWaveMeshes.length).fill(0);
-    const meshArrays = instancedMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
-    const waveArrays = colorWaveMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
+    localCounters.fill(0);
+    waveLocalCounters.fill(0);
 
     for (let i = 0; i < count; i++) {
       const role = roles[i];
@@ -332,13 +339,24 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
       }
     }
 
+    // Sin `addUpdateRange`, three.js sube el buffer COMPLETO de
+    // instanceMatrix (dimensionado a `maxCount`=60.000) por cada mesh en
+    // CADA frame, sin importar cuántas instancias están realmente en uso
+    // (`mesh.count`) — con hasta 7 meshes de nanobots eso son ~25MB
+    // subidos a la GPU por frame, todo el tiempo (incluso en reposo, ya
+    // que la física idle llama a updateFromPositions cada frame). Acotar
+    // el rango subido al conteo real en uso evita ese costo fijo.
     instancedMeshes.forEach((mesh, role) => {
       if (role === NANOBOT_ROLE.COLOR) return; // lo maneja colorWaveMeshes abajo
       mesh.count = localCounters[role];
+      mesh.instanceMatrix.clearUpdateRanges();
+      mesh.instanceMatrix.addUpdateRange(0, mesh.count * 16);
       mesh.instanceMatrix.needsUpdate = true;
     });
     colorWaveMeshes.forEach((mesh, w) => {
       mesh.count = waveLocalCounters[w];
+      mesh.instanceMatrix.clearUpdateRanges();
+      mesh.instanceMatrix.addUpdateRange(0, mesh.count * 16);
       mesh.instanceMatrix.needsUpdate = true;
     });
   }
