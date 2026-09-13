@@ -8,6 +8,7 @@ import {
   FORMATION_CENTER,
   IDLE_RADIUS,
   NANOBOT_ROLE,
+  CABEZA_PARTS,
 } from "./shapes";
 
 describe("resolveShapeName", () => {
@@ -163,6 +164,28 @@ describe("formShapeWithRoles", () => {
     expect(waveCounts[0]).toBeGreaterThan(waveCounts[1]);
     expect(waveCounts[1]).toBeGreaterThan(waveCounts[2]);
     expect(waveCounts[0] / colorTotal).toBeCloseTo(0.6, 1);
+  });
+
+  it("'cabeza' colorea por parte anatómica (piel/cabello/ojos/labios) con tonos fijos, ignorando la foto adjuntada", () => {
+    const photoClusters = [
+      { color: 0x123456, weight: 0.5 },
+      { color: 0xabcdef, weight: 0.5 },
+    ];
+    const formation = formShapeWithRoles("cabeza", 2000, undefined, photoClusters)!;
+    expect(formation.colorWaveCount).toBe(CABEZA_PARTS.length);
+    expect(formation.colorClusters).toEqual(
+      CABEZA_PARTS.map((p) => ({ color: p.color, weight: p.weight })),
+    );
+    // Ninguno de los colores de la foto "se cuela" en el resultado.
+    for (const c of formation.colorClusters) {
+      expect(photoClusters.some((p) => p.color === c.color)).toBe(false);
+    }
+  });
+
+  it("otras formas (no 'cabeza') siguen coloreando desde los clusters de la foto, sin cambios", () => {
+    const photoClusters = [{ color: 0x123456, weight: 1 }];
+    const formation = formShapeWithRoles("persona", 500, undefined, photoClusters)!;
+    expect(formation.colorClusters).toEqual(photoClusters);
   });
 
   it("con counts muy chicos (< 4) sigue devolviendo roles válidos sin crashear", () => {

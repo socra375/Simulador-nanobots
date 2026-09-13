@@ -371,7 +371,12 @@ async function main() {
     nanobotLayerOf = layerOf;
     nanobotDelayFraction = delayFraction;
 
-    swarmMesh.setColorClusters(colorClusters);
+    // formation.colorClusters es un eco de `colorClusters` para casi todas
+    // las formas (derivados de la foto adjuntada), pero para "cabeza"
+    // (Fase 21) son los 4 tonos fijos por parte anatómica (piel/cabello/
+    // ojos/labios) en vez de la foto — shapes.ts decide cuál corresponde,
+    // acá solo se lee el resultado.
+    swarmMesh.setColorClusters(formation.colorClusters);
   }
 
   // Transición de modo: recalcula los targets del enjambre (reposo o

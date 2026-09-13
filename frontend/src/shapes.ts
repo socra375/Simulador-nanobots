@@ -254,6 +254,59 @@ function sampleSphereSurface(radius: number, count: number): Float32Array {
   return pts;
 }
 
+// Igual que sampleSphereSurface, pero restringe la misma distribución de
+// ángulo dorado a una banda de latitud (yFrac entre yFracMin y yFracMax,
+// en vez de [-1,1] completo) — sin muestreo por rechazo, mismo costo
+// O(count) que la original. Sirve para separar "cabello" (banda superior
+// de la cabeza) de "piel" (esfera completa) sin tener que excluir puntos:
+// el cabello, a un radio levemente mayor, tapa visualmente a la piel de
+// esa banda (mismo principio de solapamiento que ya usa el resto del
+// archivo, p.ej. hombros/torso).
+function sampleSphereSurfaceBand(radius: number, count: number, yFracMin: number, yFracMax: number): Float32Array {
+  const pts = new Float32Array(count * 3);
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < count; i++) {
+    const t = count > 1 ? i / (count - 1) : 0;
+    const yFrac = yFracMax - t * (yFracMax - yFracMin);
+    const r = Math.sqrt(Math.max(0, 1 - yFrac * yFrac));
+    const theta = goldenAngle * i;
+    pts[i * 3] = Math.cos(theta) * r * radius;
+    pts[i * 3 + 1] = yFrac * radius;
+    pts[i * 3 + 2] = Math.sin(theta) * r * radius;
+  }
+  return pts;
+}
+
+// Post-proceso barato (O(count), se corre UNA vez al formar la figura, no
+// por frame): para cada punto ya generado (relativo al centro de la
+// esfera/elipsoide que lo contiene), si su dirección cae dentro de un
+// cono alrededor de (dirX,dirY,dirZ) — umbral `coneCos` = coseno del
+// ángulo del cono, más alto = cono más angosto — lo acerca al centro
+// (`pullFactor` < 1) para fingir una concavidad (cuenca ocular, cavidad
+// nasal) sobre una superficie ya generada, sin necesitar geometría
+// cóncava real (esto es una nube de puntos, no una malla con booleanas).
+function carveSocket(
+  pts: Float32Array,
+  count: number,
+  dirX: number,
+  dirY: number,
+  dirZ: number,
+  coneCos: number,
+  pullFactor: number,
+): void {
+  const len = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ) || 1;
+  const ux = dirX / len, uy = dirY / len, uz = dirZ / len;
+  for (let i = 0; i < count; i++) {
+    const x = pts[i * 3], y = pts[i * 3 + 1], z = pts[i * 3 + 2];
+    const r = Math.sqrt(x * x + y * y + z * z) || 1;
+    const cos = (x * ux + y * uy + z * uz) / r;
+    if (cos < coneCos) continue;
+    pts[i * 3] = x * pullFactor;
+    pts[i * 3 + 1] = y * pullFactor;
+    pts[i * 3 + 2] = z * pullFactor;
+  }
+}
+
 // Cilindro con eje en Y (igual que THREE.CylinderGeometry): superficie
 // lateral (85%) + tapas (15%).
 function sampleCylinderSurface(radius: number, halfHeight: number, count: number): Float32Array {
@@ -830,16 +883,133 @@ function persona(count: number): Float32Array {
 // esqueleto/hueso literal (Microbots) sale de las funciones *Bones más
 // abajo, ver HUMANOID_BONE_GENERATORS.
 
-function cabeza(count: number): Float32Array {
+// Constantes de posición/radio compartidas entre el tejido (cabezaSkin/
+// cabezaHair/cabezaEyes/cabezaLips) y el hueso (cabezaBones, ver más
+// abajo) — así el cráneo queda SIEMPRE por dentro de la piel (mismo
+// centro, `skullR` es una fracción de `headR`), garantizando el hueco
+// "sin contacto" pedido, en vez de mantener dos escalas independientes a
+// mano que podrían desalinearse.
+function cabezaLayout() {
   const headR = s * 0.5;
   const neckR = s * 0.24;
   const neckHalfH = s * 0.16;
   const headCenterY = neckHalfH + headR * 0.9;
+  const skullR = headR * 0.78; // cráneo de hueso: ~78% del radio de la piel
+  return { headR, neckR, neckHalfH, headCenterY, skullR };
+}
 
-  const [headCount, neckCount] = splitCounts(count, [85, 15]);
-  const head = translate(scaleAxis(sampleSphereSurface(headR, headCount), 2, 0.82), 0, headCenterY, 0);
+// --- Tejido/piel de "cabeza" (Fase 21) — reemplaza la esfera achatada
+// lisa de antes por una cara con mandíbula/mentón, orejas y nariz, más
+// ojos/cabello/labios como generadores PROPIOS (ver CABEZA_PARTS): cada
+// uno es la fuente de verdad tanto para su ola de color (formShapeWithRoles)
+// como, sumados, para la silueta completa (cabeza(), usada por DETALLE).
+
+function cabezaSkin(count: number): Float32Array {
+  const { headR, neckR, neckHalfH, headCenterY } = cabezaLayout();
+  const jawR = headR * 0.62;
+  const jawCenterY = headCenterY - headR * 0.55;
+  const earR = headR * 0.22;
+  const earY = headCenterY - headR * 0.05;
+  const noseR = headR * 0.14;
+  const noseCenterY = headCenterY - headR * 0.05;
+
+  const [craniumCount, jawCount, earsTotal, noseCount, neckCount] = splitCounts(count, [44, 22, 10, 8, 16]);
+  const [leftEarCount, rightEarCount] = splitCounts(earsTotal, [1, 1]);
+
+  // Cráneo (cobertura general de la cabeza) + mandíbula (esfera más chica
+  // y angosta, desplazada abajo-adelante) — el solapamiento entre ambas
+  // da la silueta de "cara con mentón" en vez de una bola perfecta.
+  const cranium = translate(scaleAxis(sampleSphereSurface(headR, craniumCount), 2, 0.86), 0, headCenterY, 0);
+  const jaw = translate(scaleAxis(sampleSphereSurface(jawR, jawCount), 2, 0.8), 0, jawCenterY, headR * 0.1);
+  const ears = [
+    translate(scaleAxis(sampleSphereSurface(earR, leftEarCount), 0, 0.35), -headR * 0.92, earY, 0),
+    translate(scaleAxis(sampleSphereSurface(earR, rightEarCount), 0, 0.35), headR * 0.92, earY, 0),
+  ];
+  const nose = translate(scaleAxis(sampleSphereSurface(noseR, noseCount), 1, 0.7), 0, noseCenterY, headR * 0.88);
   const neck = translate(sampleTaperedCylinderSurface(neckR, neckR * 1.15, neckHalfH, neckCount), 0, 0, 0);
-  return concatParts([head, neck]);
+
+  return concatParts([cranium, jaw, ...ears, nose, neck]);
+}
+
+function cabezaHair(count: number): Float32Array {
+  const { headR, headCenterY } = cabezaLayout();
+  const [capCount, browsTotal] = splitCounts(count, [88, 12]);
+  const [leftBrowCount, rightBrowCount] = splitCounts(browsTotal, [1, 1]);
+
+  // Cuero cabelludo: banda superior de una esfera levemente más grande
+  // que la piel en esa zona — al ir "por fuera", tapa visualmente a la
+  // piel de abajo sin necesitar excluir nada (mismo principio de
+  // solapamiento que el resto del archivo).
+  const cap = translate(scaleAxis(sampleSphereSurfaceBand(headR * 1.04, capCount, 0.05, 1), 2, 0.88), 0, headCenterY, 0);
+  const browY = headCenterY + headR * 0.18;
+  const browZ = headR * 0.84;
+  const browSpan = headR * 0.16;
+  const brows = [
+    samplePolyline(
+      [[-headR * 0.42, browY, browZ], [-headR * 0.42 + browSpan, browY + headR * 0.02, browZ]],
+      leftBrowCount,
+      headR * 0.015,
+    ),
+    samplePolyline(
+      [[headR * 0.42 - browSpan, browY + headR * 0.02, browZ], [headR * 0.42, browY, browZ]],
+      rightBrowCount,
+      headR * 0.015,
+    ),
+  ];
+  return concatParts([cap, ...brows]);
+}
+
+function cabezaEyes(count: number): Float32Array {
+  const { headR, headCenterY } = cabezaLayout();
+  const eyeR = headR * 0.1;
+  const eyeY = headCenterY + headR * 0.08;
+  const eyeX = headR * 0.36;
+  const eyeZ = headR * 0.82;
+  const [leftCount, rightCount] = splitCounts(count, [1, 1]);
+  return concatParts([
+    translate(sampleSphereSurface(eyeR, leftCount), -eyeX, eyeY, eyeZ),
+    translate(sampleSphereSurface(eyeR, rightCount), eyeX, eyeY, eyeZ),
+  ]);
+}
+
+function cabezaLips(count: number): Float32Array {
+  const { headR, headCenterY } = cabezaLayout();
+  const lipY = headCenterY - headR * 0.42;
+  const lipZ = headR * 0.85;
+  const halfWidth = headR * 0.22;
+  return samplePolyline(
+    [
+      [-halfWidth, lipY, lipZ],
+      [0, lipY - headR * 0.02, lipZ * 1.01],
+      [halfWidth, lipY, lipZ],
+    ],
+    count,
+    headR * 0.03,
+  );
+}
+
+// Única fuente de verdad de peso+color fijo por parte anatómica — la usan
+// tanto cabeza() (silueta completa, sin color propio, para DETALLE/
+// ESTRUCTURA) como formShapeWithRoles (una ola de color POR PARTE, con su
+// tono fijo, en vez de derivarlo de la foto adjuntada — ver ahí).
+export const CABEZA_PARTS: Array<{
+  name: string;
+  generator: (count: number) => Float32Array;
+  weight: number;
+  color: number;
+}> = [
+  { name: "piel", generator: cabezaSkin, weight: 0.55, color: 0xdba579 },
+  { name: "cabello", generator: cabezaHair, weight: 0.28, color: 0x2b1b12 },
+  { name: "ojos", generator: cabezaEyes, weight: 0.07, color: 0x3f2a1a },
+  { name: "labios", generator: cabezaLips, weight: 0.1, color: 0xb1524a },
+];
+
+// Wrapper delgado: la silueta completa de "cabeza" es la SUMA de las 4
+// partes de arriba, en las mismas proporciones que sus olas de color —
+// sin duplicar geometría en dos lugares distintos.
+function cabeza(count: number): Float32Array {
+  const counts = splitCounts(count, CABEZA_PARTS.map((p) => p.weight));
+  return concatParts(CABEZA_PARTS.map((part, i) => part.generator(counts[i])));
 }
 
 function torso(count: number): Float32Array {
@@ -1150,6 +1320,13 @@ export interface ShapeFormation {
   // Cuántas olas de color tiene esta formación (>= 1 siempre) — main.ts lo
   // usa para saber cuántas sub-fases de revelado de COLOR debe recorrer.
   colorWaveCount: number;
+  // Color+peso REALMENTE usado para armar cada ola (en el mismo orden que
+  // `colorWave`) — normalmente un eco de los `colorClusters` recibidos por
+  // parámetro (derivados de la foto), pero para "cabeza" (Fase 21) son los
+  // 4 tonos fijos de CABEZA_PARTS en vez de la foto. main.ts solo necesita
+  // leer este campo para pintar bien cada ola, sin duplicar el criterio de
+  // "es cabeza o no" fuera de este archivo.
+  colorClusters: ColorClusterInput[];
 }
 
 // Árbol de expansión mínima (Prim, O(anchorCount²) — trivial para los
@@ -1456,16 +1633,61 @@ function personaBones(count: number): Float32Array {
   ]);
 }
 
+// Cráneo real (Fase 21): reemplaza la esfera lisa de antes por un cráneo
+// con cuencas oculares y cavidad nasal "talladas" (carveSocket, ver
+// arriba), mandíbula con arco de dientes, y columna cervical (sin
+// cambios). `skullR` sale de cabezaLayout() (≈78% del radio de la piel de
+// cabezaSkin) — el cráneo queda siempre por dentro del tejido, sin tocarlo.
 function cabezaBones(count: number): Float32Array {
-  const headR = s * 0.5;
-  const neckHalfH = s * 0.16;
-  const skullR = headR * 0.8;
-  const headCenterY = neckHalfH + headR * 0.9;
+  const { headCenterY, skullR } = cabezaLayout();
   const spineR = s * 0.1;
-  const [skullCount, spineCount] = splitCounts(count, [80, 20]);
-  const skull = translate(sampleSphereSurface(skullR, skullCount), 0, headCenterY, 0);
+  const jawR = skullR * 0.6;
+  const jawCenterY = headCenterY - skullR * 0.55;
+
+  const [craniumCount, jawCount, teethCount, spineCount] = splitCounts(count, [50, 18, 12, 20]);
+
+  // Se tallan las cuencas/nariz ANTES de trasladar (las direcciones de
+  // los conos son relativas al centro de la esfera, en el origen).
+  const cranium = scaleAxis(sampleSphereSurface(skullR, craniumCount), 2, 0.88);
+  carveSocket(cranium, craniumCount, -0.42, 0.12, 0.9, 0.86, 0.72); // cuenca ocular izquierda
+  carveSocket(cranium, craniumCount, 0.42, 0.12, 0.9, 0.86, 0.72); // cuenca ocular derecha
+  carveSocket(cranium, craniumCount, 0, -0.15, 1, 0.92, 0.8); // cavidad nasal
+  const craniumPlaced = translate(cranium, 0, headCenterY, 0);
+
+  // Mandíbula: arco (mentón al frente, sube hacia las articulaciones a
+  // cada lado) — el jitter de samplePolyline da volumen de hueso en vez
+  // de una línea fina.
+  const jaw = samplePolyline(
+    [
+      [-jawR * 0.9, jawCenterY + jawR * 0.5, 0],
+      [0, jawCenterY - jawR * 0.3, jawR * 0.7],
+      [jawR * 0.9, jawCenterY + jawR * 0.5, 0],
+    ],
+    jawCount,
+    jawR * 0.12,
+  );
+
+  // Dientes: 2 arcos cortos (superior/inferior) — se leen como "hilera"
+  // por posición, no por geometría de diente individual.
+  const teethY = jawCenterY - jawR * 0.05;
+  const teethZ = jawR * 0.65;
+  const [upperTeethCount, lowerTeethCount] = splitCounts(teethCount, [1, 1]);
+  const teeth = [
+    samplePolyline(
+      [[-jawR * 0.55, teethY + jawR * 0.18, teethZ], [jawR * 0.55, teethY + jawR * 0.18, teethZ]],
+      upperTeethCount,
+      jawR * 0.03,
+    ),
+    samplePolyline(
+      [[-jawR * 0.5, teethY - jawR * 0.1, teethZ * 0.95], [jawR * 0.5, teethY - jawR * 0.1, teethZ * 0.95]],
+      lowerTeethCount,
+      jawR * 0.03,
+    ),
+  ];
+
   const spine = translate(sampleSphereSurface(spineR, spineCount), 0, 0, 0);
-  return concatParts([skull, spine]);
+
+  return concatParts([craniumPlaced, jaw, ...teeth, spine]);
 }
 
 function torsoBones(count: number): Float32Array {
@@ -1730,7 +1952,18 @@ export function formShapeWithRoles(
   const canonical = resolveShapeName(name);
   if (!canonical) return null;
   const generator = SHAPE_GENERATORS[canonical];
-  const clusters = colorClusters.length > 0 ? colorClusters : DEFAULT_COLOR_CLUSTERS;
+  // "cabeza" (Fase 21): el color ya no sale de la foto adjuntada — cada ola
+  // es una PARTE anatómica propia (piel/cabello/ojos/labios, ver
+  // CABEZA_PARTS) con su tono fijo realista, en vez de un resample genérico
+  // de toda la silueta teñido con el color dominante de la foto. Para
+  // cualquier otra forma, el comportamiento (foto -> clusters -> olas) no
+  // cambia en absoluto.
+  const isCabeza = canonical === "cabeza";
+  const clusters = isCabeza
+    ? CABEZA_PARTS.map((p) => ({ color: p.color, weight: p.weight }))
+    : colorClusters.length > 0
+      ? colorClusters
+      : DEFAULT_COLOR_CLUSTERS;
 
   // COLOR se calcula PRIMERO y de forma independiente (75% fijo del
   // total) — ESTRUCTURA/RELACION/DETALLE (el "esqueleto") se reparten
@@ -1744,9 +1977,13 @@ export function formShapeWithRoles(
   // Cada ola de color es una MUESTRA INDEPENDIENTE de la silueta completa
   // (mismo generador que DETALLE, no un subconjunto de colorPts) — así cada
   // una por sí sola ya cubre parejo toda la figura, en vez de quedar
-  // agrupada en una sola zona.
+  // agrupada en una sola zona. Para "cabeza", en cambio, cada ola es la
+  // parte anatómica correspondiente (CABEZA_PARTS[wave].generator) — no un
+  // resample de la silueta completa.
   const colorWaveCounts = splitCounts(colorCount, clusters.map((c) => c.weight));
-  const colorWavePts = colorWaveCounts.map((n) => generator(n));
+  const colorWavePts = isCabeza
+    ? colorWaveCounts.map((n, wave) => CABEZA_PARTS[wave].generator(n))
+    : colorWaveCounts.map((n) => generator(n));
 
   const points = new Float32Array(count * 3);
   const roles = new Uint8Array(count);
@@ -1778,7 +2015,7 @@ export function formShapeWithRoles(
     }
   }
 
-  return { points, roles, relationSpans, colorWave, colorWaveCount: clusters.length };
+  return { points, roles, relationSpans, colorWave, colorWaveCount: clusters.length, colorClusters: clusters };
 }
 
 // Cluster de reposo: cáscara esférica aleatoria alrededor del núcleo.
