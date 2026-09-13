@@ -39,15 +39,17 @@ agente que antes topaba a Nanobots en 10.000 (ver "Notas de rendimiento"):
    Microbots no tiene física boid propia ni "Comandos" propio — siempre
    sigue automáticamente la figura activa de Nanobots.
 2. Recién cuando ese exoesqueleto termina de asentarse, **Nanobots** sale
-   del núcleo con una animación de **"bola fusionada + esparción"**: todas
-   las instancias arrancan amontonadas exactamente en el núcleo (se leen
-   como un único "nanobot gigante"), viajan como un solo grupo rígido hasta
-   el centro de la figura y ahí recién se esparcen, instancia por instancia
-   y con el mismo remolino orgánico que usan los Microbots, hacia su
-   posición final de tejido/piel — rodeando el hueso de Microbots sin
-   tocarlo, con tanta densidad que se lee como un segundo exoesqueleto
-   pero de piel. Detalle y Color llegan juntos en esta misma esparción
-   (ya no salen de a uno por vez, ver abajo).
+   del núcleo con un **enjambre escalonado por capas**, al estilo del
+   nanotech que se auto-ensambla partícula por partícula (referencia:
+   la armadura de Iron Man): primero Detalle (la capa de tejido/relleno
+   base) — cada nanobot vuela individualmente desde el núcleo hacia su
+   punto final, con su PROPIO instante de salida (no todos a la vez, así
+   se ve como una ola/flujo asentándose progresivamente, no un bloque
+   sincronizado) y el mismo remolino orgánico que usan los Microbots.
+   Recién cuando Detalle termina de asentarse por completo se abre la
+   siguiente capa (cada ola de Color, una por una, ver abajo) — rodeando
+   el hueso de Microbots sin tocarlo, con tanta densidad que se lee como
+   un segundo exoesqueleto pero de piel.
 
 **Color es un 75% FIJO e independiente del total** de Nanobots (no es "lo
 que sobra" de un reparto entre roles): Detalle se lleva el 25% restante
@@ -57,8 +59,8 @@ entero.
 |---|---|---|---|
 | Microbots | Nodo | Icosaedro chico celeste | Anclas del exoesqueleto (*farthest-point sampling*), acotadas a un máximo (`MICROBOT_ANCHOR_CAP`) para que el cálculo (~O(n²)) no se trabe con conteos altos. |
 | Microbots | Viga | Cilindro chico celeste | Conecta cada ancla con su vecina (MST + vecinos cercanos) — la mayoría del budget de Microbots, ya que son baratas de generar a cualquier escala. |
-| Nanobots | **Detalle** | Esfera sólida emissive verde (gris apagado mientras hay figura activa) | 25% del total de Nanobots. Relleno de base — llega junto con Color en la misma esparción. |
-| Nanobots | **Color** | Esfera sólida emissive (ligeramente más grande) | **75% FIJO del total** de Nanobots. Repartido en hasta **4 "olas" de color**, una por cada zona de color reconociblemente distinta de la foto (ver abajo) — todas llegan a la vez, no una por vez. |
+| Nanobots | **Detalle** | Esfera sólida emissive verde (gris apagado apenas arranca Color) | 25% del total de Nanobots. Relleno de base — primera capa en salir, escalonada agente por agente. |
+| Nanobots | **Color** | Esfera sólida emissive (ligeramente más grande) | **75% FIJO del total** de Nanobots. Repartido en hasta **4 "olas" de color**, una por cada zona de color reconociblemente distinta de la foto (ver abajo) — cada ola es su propia capa, sale recién cuando termina la anterior. |
 
 ### Varias olas de color
 
@@ -78,38 +80,41 @@ cantidad de nanobots proporcional a su peso en la foto (una foto 70% roja
 una MUESTRA INDEPENDIENTE de toda la silueta (no una región geográfica de
 la figura — no hay forma de saber qué parte de la foto corresponde a qué
 parte de la figura 3D, ya que la forma sale del nombre escrito, no de la
-imagen). Las 4 olas (y Detalle) llegan TODAS JUNTAS en la misma esparción
-— a diferencia de fases anteriores, ya no hay un revelado secuencial por
-rol/ola: la propia animación de bola+esparción es la que ahora "revela"
-visualmente la figura.
+imagen). Detalle y las olas de Color salen en **capas secuenciales**
+(Detalle → ola 0 → ola 1 → ...): una capa entera tiene que terminar de
+asentarse antes de que se abra la siguiente — dentro de cada capa, cada
+nanobot vuela individualmente con su propio instante de salida (ver
+"Notas de rendimiento"), así el efecto es una ola/flujo de nanopartículas
+que recorre la figura, no un bloque sincronizado ni un revelado instantáneo.
 
-Detalle **pierde su color de rol fijo y pasa a un gris apagado** desde el
-arranque mismo de la esparción (no a mitad de camino como antes), así el
-color dominante real de la foto (Color) es el que predomina visualmente
-en toda la figura desde que termina de asentarse, con Detalle en gris
-apenas asomando entre las esferas.
+Detalle **pierde su color de rol fijo y pasa a un gris apagado** apenas
+arranca la primera ola de Color, así el color dominante real de la foto
+(Color) es el que predomina visualmente en toda la figura una vez que
+llega, con Detalle en gris apenas asomando entre las esferas.
 
 Al formar una figura, la física boid (`swarm.step`, cohesión/separación/
 alineación/seek) **no corre en absoluto** — los Nanobots se mueven 100%
-por la animación scripted de "bola fusionada + esparción" (ver arriba),
-mucho más rápida que la vieja convergencia física y sin el límite de
-vecinos-por-agente que antes topaba la cantidad soportada. En reposo (sin
-figura activa) la física boid sigue corriendo igual que siempre, con los
-pesos de cohesión/separación/alineación que deja el usuario en el panel,
-para el movimiento orgánico de enjambre.
+por la animación scripted por capas (ver arriba), mucho más rápida que la
+vieja convergencia física y sin el límite de vecinos-por-agente que antes
+topaba la cantidad soportada. En reposo (sin figura activa) la física boid
+sigue corriendo igual que siempre, con los pesos de cohesión/separación/
+alineación que deja el usuario en el panel, para el movimiento orgánico
+de enjambre.
 
 El exoesqueleto de Microbots se revela con un tiempo fijo (lanzamiento en
 vórtice de ~2.2s, sin física que "asentar"). Recién cuando termina, Nanobots
-arranca su propia animación de bola fusionada (~1s de viaje rígido) +
-esparción (~1.6s, con remolino por agente) — ambas de duración fija,
-tampoco dependen de ninguna física que "asentar".
+arranca su propio revelado por capas: cada capa (Detalle, luego cada ola
+de Color) dura un tiempo fijo — ~1s de vuelo por agente más ~1s de
+"ventana" en la que se reparten los instantes de salida de todos los
+agentes de esa capa — tampoco depende de ninguna física que "asentar".
 
 Al pedir "Volver al núcleo" con una figura formada, el enjambre no salta
-directo al reposo: Nanobots repliega el mismo camino de bola+esparción
-pero al revés (esparción-in → viaje de vuelta → bola en el núcleo →
-oculto), igual que Microbots repliega su propio remolino — si se pide
-volver a mitad de la salida, el repliegue arranca suave desde el progreso
-actual en vez de saltar.
+directo al reposo: Nanobots repliega las mismas capas pero en orden
+inverso (la última ola de Color se repliega primero, Detalle al final),
+cada agente volando de vuelta al núcleo igual de escalonado que a la
+ida — igual que Microbots repliega su propio remolino — si se pide volver
+a mitad de la salida, el repliegue arranca suave desde el progreso actual
+en vez de saltar.
 
 | Lenguaje | Rol | Carpeta |
 |---|---|---|
@@ -317,8 +322,8 @@ npm run test:e2e
   suben de segmentos/detalle para verse más redondeadas de cerca.
 - **Nanobots a 60.000 (antes 10.000)**: la física boid pasó a correr **solo
   en reposo** — al formar una figura, `main.ts` ya no llama a
-  `swarm.step(dt)` en absoluto (se mueve por la animación scripted de
-  "bola fusionada + esparción"), así que el límite de vecinos-por-agente de
+  `swarm.step(dt)` en absoluto (se mueve por la animación scripted por
+  capas escalonadas), así que el límite de vecinos-por-agente de
   `boids.cpp` deja de ser el techo real de la cantidad soportada al formar.
   El otro costo — `nanobot-mesh.ts: updateFromPositions` armando cada
   matriz vía `THREE.Object3D`/`dummy.updateMatrix()` por instancia — se
