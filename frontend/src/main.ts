@@ -11,6 +11,7 @@ import {
 } from "./shapes";
 import { createControlPanel, type UiState } from "./ui";
 import { loadConfig, saveConfig, type SwarmConfig } from "./config-client";
+import { DEFAULT_DOMINANT_COLOR } from "./image-color";
 
 const MAX_NANOBOTS = 10000;
 
@@ -24,21 +25,23 @@ const FORMING_SEEK_WEIGHT = 3.5;
 // derecho a su target en vez de pelear con sus vecinos por el camino.
 const FORMING_FLOCK_SCALE = 0.12;
 
-// Revelado por fases al formar una figura: primero ESTRUCTURA, luego
-// RELACION, por último DETALLE. En vez de un tiempo fijo (el viaje real
-// desde el núcleo hasta el punto de formación puede tardar varios segundos
-// según la distancia/velocidad), se espera a que el grupo recién revelado
-// esté cerca de su posición final (distancia promedio por debajo de
-// PHASE_SETTLE_DISTANCE) y se QUEDE así de forma sostenida —no un instante
-// fugaz— durante PHASE_SETTLE_HOLD_SECONDS antes de soltar al siguiente, así
-// da tiempo real a ver la malla de Relación ya sincronizada/unida con
-// Estructura antes de que aparezca Detalle. Con un tope de tiempo
-// (PHASE_MAX_SECONDS) para no quedarse trabado si nunca converge del todo.
+// Revelado por fases al formar una figura: ESTRUCTURA, luego RELACION,
+// luego DETALLE y por último COLOR (la capa de pintura con el color
+// dominante de la foto, ver image-color.ts/nanobot-mesh.ts). En vez de un
+// tiempo fijo (el viaje real desde el núcleo hasta el punto de formación
+// puede tardar varios segundos según la distancia/velocidad), se espera a
+// que el grupo recién revelado esté cerca de su posición final (distancia
+// promedio por debajo de PHASE_SETTLE_DISTANCE) y se QUEDE así de forma
+// sostenida —no un instante fugaz— durante PHASE_SETTLE_HOLD_SECONDS antes
+// de soltar al siguiente, así da tiempo real a ver cada capa ya
+// sincronizada/unida con la anterior antes de que aparezca la próxima. Con
+// un tope de tiempo (PHASE_MAX_SECONDS) para no quedarse trabado si nunca
+// converge del todo.
 const PHASE_MIN_HOLD_SECONDS = 0.5;
 const PHASE_SETTLE_DISTANCE = 0.6;
 const PHASE_SETTLE_HOLD_SECONDS = 1;
 const PHASE_MAX_SECONDS = 7;
-const PHASE_COUNT = 3;
+const PHASE_COUNT = 4;
 
 // Animación de regreso al núcleo: cada nanobot espera su turno (en fila,
 // por índice) y luego recorre una espiral (radio decreciente + giro)
@@ -58,8 +61,8 @@ const DEFAULT_STATE: UiState = {
 };
 
 type Mode = "idle" | "forming";
-type RoleVisibility = readonly [boolean, boolean, boolean];
-const ALL_ROLES_VISIBLE: RoleVisibility = [true, true, true];
+type RoleVisibility = readonly [boolean, boolean, boolean, boolean];
+const ALL_ROLES_VISIBLE: RoleVisibility = [true, true, true, true];
 
 interface ReturnAnimation {
   startAngle: Float32Array;
@@ -98,6 +101,10 @@ async function main() {
 
   let mode: Mode = "idle";
   let currentShapeName: string | null = null;
+  // Color dominante (0xRRGGBB) de la última foto adjuntada, para el rol
+  // COLOR — se reaplica si hace falta rearmar la figura (p.ej. al cambiar
+  // la cantidad de nanobots) sin pedir la foto de nuevo.
+  let currentDominantColor: number = DEFAULT_DOMINANT_COLOR;
   // Rol (estructura/relación/detalle) y vigas de relación de cada agente —
   // solo tienen sentido mientras se está formando una figura; en reposo el
   // enjambre está oculto así que el contenido no importa visualmente.
@@ -186,7 +193,7 @@ async function main() {
     return n === 0 || sum / n < PHASE_SETTLE_DISTANCE;
   }
 
-  function startFormation(name: string): void {
+  function startFormation(name: string, dominantColor: number): void {
     const formation = formShapeWithRoles(name, state.count, FORMATION_CENTER);
     if (!formation) return;
     currentFormation = formation;
@@ -194,6 +201,8 @@ async function main() {
     currentRelationSpans = formation.relationSpans;
     currentFormationTargets = formation.points;
     idlePointsForFormation = idleCluster(state.count, reactorCenter);
+    currentDominantColor = dominantColor;
+    swarmMesh.setDominantColor(dominantColor);
     formationPhase = 1; // ESTRUCTURA sale de inmediato
     phaseTimer = 0;
     settledStreak = 0;
@@ -203,12 +212,12 @@ async function main() {
   // Transición de modo: recalcula los targets del enjambre (reposo o
   // figura), ajusta la fuerza de seek acorde, y muestra/oculta el enjambre
   // (en reposo "está dentro" del núcleo, no se dibuja).
-  function setMode(next: Mode, shapeName?: string) {
+  function setMode(next: Mode, shapeName?: string, dominantColor?: number) {
     mode = next;
     returnAnimation = null;
     if (next === "forming" && shapeName) {
       currentShapeName = shapeName;
-      startFormation(shapeName);
+      startFormation(shapeName, dominantColor ?? DEFAULT_DOMINANT_COLOR);
       swarmMesh.setVisible(true);
     } else {
       currentShapeName = null;
@@ -290,7 +299,7 @@ async function main() {
     state.count = count;
     swarm.init(count);
     swarmMesh.setCount(count);
-    if (mode === "forming" && currentShapeName) startFormation(currentShapeName);
+    if (mode === "forming" && currentShapeName) startFormation(currentShapeName, currentDominantColor);
     else applyIdleTargets();
   }
 
@@ -311,7 +320,7 @@ async function main() {
       applyParams();
       gui.controllersRecursive().forEach((c) => c.updateDisplay());
     },
-    onFormShape: (shapeName: string) => setMode("forming", shapeName),
+    onFormShape: (shapeName: string, dominantColor: number) => setMode("forming", shapeName, dominantColor),
     onReturnToCore: () => returnToCore(),
   });
 
@@ -354,7 +363,7 @@ async function main() {
         }
       }
       if (mode === "forming") {
-        visibleRoles = [0 < formationPhase, 1 < formationPhase, 2 < formationPhase];
+        visibleRoles = [0 < formationPhase, 1 < formationPhase, 2 < formationPhase, 3 < formationPhase];
       }
       swarm.step(dt);
     }

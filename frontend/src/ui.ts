@@ -2,6 +2,7 @@ import GUI from "lil-gui";
 import type { SwarmParams } from "./swarm";
 import type { SwarmConfig } from "./config-client";
 import { resolveShapeName, listSupportedNames } from "./shapes";
+import { extractDominantColorFromFile } from "./image-color";
 
 export interface UiState extends SwarmParams {
   count: number;
@@ -12,7 +13,9 @@ export interface UiCallbacks {
   onParamsChange: (params: SwarmParams) => void;
   onSave: (config: SwarmConfig) => void;
   onLoad: () => void;
-  onFormShape: (canonicalShapeName: string) => void;
+  // dominantColor: 0xRRGGBB extraído de la foto adjuntada (ver
+  // image-color.ts) — lo usa el 4to rol de nanobots (COLOR, ver shapes.ts).
+  onFormShape: (canonicalShapeName: string, dominantColor: number) => void;
   onReturnToCore: () => void;
 }
 
@@ -71,12 +74,17 @@ export function createControlPanel(state: UiState, callbacks: UiCallbacks): GUI 
 }
 
 // Carpeta "Comandos": el usuario escribe el nombre de un objeto, adjunta
-// una foto de confirmación (no se analiza — no hay backend/IA de visión en
-// producción, es solo un requisito de UX) y el enjambre forma esa figura.
+// una foto de confirmación y el enjambre forma esa figura. La foto sirve
+// para dos cosas: es el requisito de confirmación de UX (no hay backend/IA
+// de visión en producción — la FORMA real sale de shapes.ts, no de la
+// imagen) y además se le extrae el color RGB dominante en el navegador
+// (histograma simple, ver image-color.ts) para el 4to rol de nanobots
+// (COLOR) — así la figura queda pintada con el color real del objeto
+// fotografiado.
 function addCommandsFolder(gui: GUI, callbacks: UiCallbacks): void {
   const folder = gui.addFolder("Comandos");
   const commands = { objectName: "" };
-  let hasPhoto = false;
+  let attachedFile: File | null = null;
 
   const fileInput = document.createElement("input");
   fileInput.type = "file";
@@ -99,7 +107,7 @@ function addCommandsFolder(gui: GUI, callbacks: UiCallbacks): void {
     photoObjectUrl = URL.createObjectURL(file);
     preview.src = photoObjectUrl;
     preview.style.display = "block";
-    hasPhoto = true;
+    attachedFile = file;
     status.textContent = `Foto adjunta: ${file.name}`;
   });
 
@@ -107,8 +115,8 @@ function addCommandsFolder(gui: GUI, callbacks: UiCallbacks): void {
 
   const actions = {
     adjuntarFoto: () => fileInput.click(),
-    formarObjeto: () => {
-      if (!hasPhoto) {
+    formarObjeto: async () => {
+      if (!attachedFile) {
         status.textContent = "Subí una foto del objeto antes de formarlo.";
         return;
       }
@@ -118,7 +126,8 @@ function addCommandsFolder(gui: GUI, callbacks: UiCallbacks): void {
         return;
       }
       status.textContent = `Formando: ${canonical}`;
-      callbacks.onFormShape(canonical);
+      const dominantColor = await extractDominantColorFromFile(attachedFile);
+      callbacks.onFormShape(canonical, dominantColor);
     },
     volverAlNucleo: () => {
       status.textContent = "Volviendo al núcleo...";

@@ -15,17 +15,18 @@ guardarse en el núcleo cuando se quiera (con una animación de regreso en
 espiral, ver abajo). La cámara se puede rotar (arrastrar) y hacer zoom
 (rueda del mouse) para mirar la figura desde cualquier ángulo.
 
-Al formar una figura, el enjambre se reparte en **3 roles** con geometría y
-color propios, y **salen del núcleo de a uno por vez** (no los 3 a la vez):
+Al formar una figura, el enjambre se reparte en **4 roles** con geometría y
+color propios, y **salen del núcleo de a uno por vez** (no los 4 a la vez):
 primero Estructura, luego Relación (recién cuando Estructura ya llegó a su
-posición), y por último Detalle — así se ve cómo se va construyendo la
-figura en capas.
+posición), luego Detalle, y por último Color — así se ve cómo se va
+construyendo y pintando la figura en capas.
 
 | Rol | Geometría | Función |
 |---|---|---|
 | **Estructura** | Icosaedro sólido cian | ~10-15% del total. Nodos ancla de la figura — el "exoesqueleto"/las juntas de una construcción. Se eligen con *farthest-point sampling* (sobre-muestrear y quedarse con las mejor distribuidas) en vez de al azar, para que cubran la silueta de manera pareja sin dejar zonas sin anclas. |
 | **Relación** | Viga (cilindro) sólida magenta | ~35-40% del total. Une cada ancla de Estructura con su vecina más cercana siguiendo un árbol de expansión mínima (garantiza que TODA la figura quede conectada en una sola red, sin zonas sueltas) más algunas conexiones extra para una malla más rica — una barra real entre ambas, no un punto suelto. Al ser una fracción grande y fija del total (no "lo que sobre"), siempre hay de sobra para cubrir el árbol completo aunque la figura tenga muchas anclas. |
-| **Detalle** | Esfera sólida emissive verde (más grande que las otras dos, para solaparse y tapar huecos) | El resto del total (~45-55%) — da el color y los últimos retoques para una silueta 3D nítida y sólida por encima del esqueleto de las otras dos, sin grietas visibles. |
+| **Detalle** | Esfera sólida emissive verde | ~24% del total. Relleno con el color fijo de su rol — da el volumen que tapa los huecos que dejan Estructura y Relación. |
+| **Color** | Esfera sólida emissive (ligeramente más grande, misma silueta que Detalle) | El resto del total (~25%). No tiene un color de rol fijo: es el color RGB **dominante de la foto** adjuntada en "Comandos" (si la foto es mayormente roja, sale roja) — se calcula 100% en el navegador con un histograma de color simple (`frontend/src/image-color.ts`, sin IA/backend de visión), ignorando fondo blanco/negro/transparente. Al ser la última capa en salir, cubre la silueta completa con el color real del objeto fotografiado, por encima de los colores fijos de las otras 3. |
 
 Mientras se arma una figura, la cohesión/separación/alineación entre
 nanobots (los pesos configurables del panel) se atenúan casi del todo: la
@@ -35,7 +36,7 @@ como un temblor errático en vez de una convergencia prolija. En reposo esos
 mismos pesos se respetan tal cual los deja el usuario, para el movimiento
 orgánico de enjambre.
 
-Cada rol solo suelta al siguiente (Estructura → Relación → Detalle) cuando
+Cada rol solo suelta al siguiente (Estructura → Relación → Detalle → Color) cuando
 el grupo recién salido lleva un segundo entero cerca de su posición final —
 no apenas un instante fugaz — para que se vea a Relación terminar de
 sincronizarse/unirse con Estructura antes de que aparezca Detalle. Y una vez
@@ -135,9 +136,13 @@ los pesos de cohesión/separación/alineación, guardar/cargar esa configuració
 (persistida por el backend en `backend/config/swarm_config.json`), y en la
 carpeta "Comandos": escribir el nombre de un objeto, adjuntar una foto de
 confirmación y pedirle al enjambre que lo forme ("Volver al núcleo" para
-deshacerlo y ocultarlo de nuevo). La foto no se analiza — no hay backend/IA
-de visión en producción — es solo un paso de confirmación de UX; la figura
-real (y el reparto en los 3 roles) sale de `frontend/src/shapes.ts`. Podés
+deshacerlo y ocultarlo de nuevo). La foto NO se analiza con ningún modelo
+de IA/visión (no hay backend de eso en producción) — la figura real (y el
+reparto en Estructura/Relación/Detalle) sale de `frontend/src/shapes.ts` a
+partir del nombre escrito, no de la imagen. Lo único que sí se calcula a
+partir de la foto es su color RGB dominante (un histograma de color simple,
+100% en el navegador — ver rol Color arriba y `frontend/src/image-color.ts`),
+para pintar la figura con el color real del objeto fotografiado. Podés
 rotar la cámara arrastrando y hacer zoom con la rueda del mouse.
 
 ## Despliegue en GitHub Pages (solo frontend)
@@ -193,7 +198,7 @@ pytest
 
 **Frontend (TypeScript)** — Vitest, unitarios sobre la lógica pura de
 `shapes.ts` (resolución de nombres/alias, generadores de figuras, cluster
-de reposo):
+de reposo) e `image-color.ts` (histograma de color dominante):
 
 ```bash
 cd frontend
