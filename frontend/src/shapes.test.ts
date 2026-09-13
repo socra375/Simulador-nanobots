@@ -3,6 +3,7 @@ import {
   resolveShapeName,
   listSupportedNames,
   formShapeWithRoles,
+  buildExoskeleton,
   idleCluster,
   FORMATION_CENTER,
   IDLE_RADIUS,
@@ -78,107 +79,10 @@ describe("formShapeWithRoles", () => {
     }
   });
 
-  it("las anclas de ESTRUCTURA quedan parejamente distribuidas (farthest-point sampling, sin duplicados pegados)", () => {
-    // Con un muestreo al azar crudo, algunas anclas caerían muy cerca unas
-    // de otras (huecos en otras zonas) — farthest-point sampling evita eso.
-    // No comparamos contra el muestreo crudo (no expuesto públicamente):
-    // alcanza con verificar que ninguna ancla quede pegada a su vecina más
-    // cercana, para varias formas y tamaños.
-    for (const name of ["cubo", "esfera", "estrella"]) {
-      for (const count of [100, 400]) {
-        const formation = formShapeWithRoles(name, count)!;
-        const anchors: number[] = [];
-        for (let i = 0; i < count; i++) {
-          if (formation.roles[i] === NANOBOT_ROLE.STRUCTURE) anchors.push(i);
-        }
-        expect(anchors.length).toBeGreaterThan(3);
-
-        let minNearestDist = Infinity;
-        for (const a of anchors) {
-          let nearest = Infinity;
-          for (const b of anchors) {
-            if (a === b) continue;
-            const dx = formation.points[a * 3 + 0] - formation.points[b * 3 + 0];
-            const dy = formation.points[a * 3 + 1] - formation.points[b * 3 + 1];
-            const dz = formation.points[a * 3 + 2] - formation.points[b * 3 + 2];
-            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            if (dist < nearest) nearest = dist;
-          }
-          if (nearest < minNearestDist) minNearestDist = nearest;
-        }
-        // Umbral laxo a propósito (solo detecta clustering catastrófico,
-        // p.ej. si farthest-point sampling se rompiera y devolviera
-        // duplicados exactos o casi-duplicados).
-        expect(minNearestDist).toBeGreaterThan(0.15);
-      }
-    }
-  });
-
-  it("cada agente RELACION trae 2 anclas distintas y no colapsadas en el mismo punto", () => {
-    const formation = formShapeWithRoles("cubo", 500)!;
-    let checked = 0;
-    for (let i = 0; i < 500; i++) {
-      if (formation.roles[i] !== NANOBOT_ROLE.RELATION) continue;
-      const ax = formation.relationSpans[i * 6 + 0];
-      const ay = formation.relationSpans[i * 6 + 1];
-      const az = formation.relationSpans[i * 6 + 2];
-      const bx = formation.relationSpans[i * 6 + 3];
-      const by = formation.relationSpans[i * 6 + 4];
-      const bz = formation.relationSpans[i * 6 + 5];
-      const dist = Math.hypot(ax - bx, ay - by, az - bz);
-      expect(dist).toBeGreaterThan(0);
-      // el punto físico (target) del agente debe ser el punto medio del segmento
-      const midX = (ax + bx) / 2;
-      const midY = (ay + by) / 2;
-      const midZ = (az + bz) / 2;
-      expect(formation.points[i * 3 + 0]).toBeCloseTo(midX, 5);
-      expect(formation.points[i * 3 + 1]).toBeCloseTo(midY, 5);
-      expect(formation.points[i * 3 + 2]).toBeCloseTo(midZ, 5);
-      checked++;
-    }
-    expect(checked).toBeGreaterThan(0);
-  });
-
-  it("las conexiones de RELACION dejan TODAS las anclas de ESTRUCTURA en una sola red conectada", () => {
-    for (const count of [80, 500, 2000]) {
-      const formation = formShapeWithRoles("estrella", count)!;
-      const structurePoints: string[] = [];
-      const pointKey = (x: number, y: number, z: number) => `${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)}`;
-      const indexByKey = new Map<string, number>();
-      for (let i = 0; i < count; i++) {
-        if (formation.roles[i] !== NANOBOT_ROLE.STRUCTURE) continue;
-        const key = pointKey(formation.points[i * 3], formation.points[i * 3 + 1], formation.points[i * 3 + 2]);
-        indexByKey.set(key, structurePoints.length);
-        structurePoints.push(key);
-      }
-      // Union-Find sobre los índices de anclas, uniendo cada arista de RELACION.
-      const parent = structurePoints.map((_, i) => i);
-      const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x])));
-      const union = (a: number, b: number) => {
-        const ra = find(a);
-        const rb = find(b);
-        if (ra !== rb) parent[ra] = rb;
-      };
-      for (let i = 0; i < count; i++) {
-        if (formation.roles[i] !== NANOBOT_ROLE.RELATION) continue;
-        const aKey = pointKey(
-          formation.relationSpans[i * 6 + 0],
-          formation.relationSpans[i * 6 + 1],
-          formation.relationSpans[i * 6 + 2],
-        );
-        const bKey = pointKey(
-          formation.relationSpans[i * 6 + 3],
-          formation.relationSpans[i * 6 + 4],
-          formation.relationSpans[i * 6 + 5],
-        );
-        const a = indexByKey.get(aKey);
-        const b = indexByKey.get(bKey);
-        expect(a).not.toBeUndefined();
-        expect(b).not.toBeUndefined();
-        union(a!, b!);
-      }
-      const roots = new Set(parent.map((_, i) => find(i)));
-      expect(roots.size).toBe(1);
+  it("los agentes ESTRUCTURA/RELACION quedan en 0 (el exoesqueleto ahora lo arma Microbots, ver buildExoskeleton)", () => {
+    const formation = formShapeWithRoles("esfera", 500)!;
+    for (const role of formation.roles) {
+      expect(role === NANOBOT_ROLE.STRUCTURE || role === NANOBOT_ROLE.RELATION).toBe(false);
     }
   });
 
@@ -196,7 +100,7 @@ describe("formShapeWithRoles", () => {
     expect(formShapeWithRoles("no-existe", 50)).toBeNull();
   });
 
-  it("COLOR es un 75% FIJO e independiente del total, y ESTRUCTURA/RELACION/DETALLE se reparten el 25% restante (13:38:24 entre sí)", () => {
+  it("COLOR es un 75% FIJO del total y DETALLE absorbe el 25% restante (ESTRUCTURA/RELACION quedan en 0)", () => {
     const formation = formShapeWithRoles("esfera", 1000)!;
     let structure = 0, relation = 0, detail = 0, color = 0;
     for (const role of formation.roles) {
@@ -207,22 +111,13 @@ describe("formShapeWithRoles", () => {
       else color++;
     }
     expect(structure + relation + detail + color).toBe(1000);
-    // COLOR: 75% FIJO del total, sin importar cuánto usen las otras 3 (no
-    // es "lo que sobra" de un reparto de 4 — es al revés: las otras 3 se
-    // reparten lo que sobra DESPUÉS de reservarle su 75% a COLOR).
+    expect(structure).toBe(0);
+    expect(relation).toBe(0);
+    // COLOR: 75% FIJO del total; DETALLE se lleva el 25% restante entero,
+    // ya que el exoesqueleto (antes ESTRUCTURA/RELACION) ahora lo arma
+    // Microbots por separado (ver buildExoskeleton).
     expect(color).toBe(750);
-    // Las otras 3 comparten el 25% restante (250 agentes) manteniendo la
-    // proporción relativa 13:38:24 que tenían como fracciones directas del
-    // total en la fase anterior — RELACION sigue con margen de sobra sobre
-    // el árbol de expansión mínima entre anclas de ESTRUCTURA (ver
-    // buildRelationEdges), para cubrirlo completo.
-    expect(structure + relation + detail).toBe(250);
-    expect(structure).toBeGreaterThan(30); // ~13% de 250
-    expect(structure).toBeLessThan(60);
-    expect(relation).toBeGreaterThan(100); // ~38% de 250, mayoría del resto
-    expect(relation).toBeLessThan(150);
-    expect(detail).toBeGreaterThan(60); // ~24% de 250
-    expect(detail).toBeLessThan(100);
+    expect(detail).toBe(250);
   });
 
   it("sin clusters de color explícitos, todos los agentes COLOR quedan en la ola 0 (colorWaveCount=1)", () => {
@@ -317,6 +212,118 @@ describe("idleCluster", () => {
       const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
       expect(dist).toBeLessThanOrEqual(IDLE_RADIUS + 1e-6);
       expect(dist).toBeGreaterThanOrEqual(IDLE_RADIUS * 0.5 - 1e-6);
+    }
+  });
+});
+
+describe("buildExoskeleton", () => {
+  it("devuelve exactamente count*3 floats sin NaN, para varios counts y formas, incluyendo counts chicos", () => {
+    for (const name of ["cubo", "esfera", "persona", "carro"]) {
+      for (const count of [0, 1, 2, 3, 50, 500, 5000]) {
+        const exo = buildExoskeleton(name, count);
+        expect(exo).not.toBeNull();
+        expect(exo!.points.length).toBe(count * 3);
+        expect(exo!.isBeam.length).toBe(count);
+        expect(exo!.relationSpans.length).toBe(count * 6);
+        expect(exo!.points.some((v) => Number.isNaN(v))).toBe(false);
+      }
+    }
+  });
+
+  it("devuelve null para un nombre no reconocido", () => {
+    expect(buildExoskeleton("no-existe", 50)).toBeNull();
+  });
+
+  it("los nodos (isBeam=0) quedan parejamente distribuidos (farthest-point sampling, sin duplicados pegados)", () => {
+    for (const name of ["cubo", "esfera", "estrella"]) {
+      for (const count of [100, 400]) {
+        const exo = buildExoskeleton(name, count)!;
+        const nodes: number[] = [];
+        for (let i = 0; i < count; i++) {
+          if (!exo.isBeam[i]) nodes.push(i);
+        }
+        expect(nodes.length).toBeGreaterThan(3);
+
+        let minNearestDist = Infinity;
+        for (const a of nodes) {
+          let nearest = Infinity;
+          for (const b of nodes) {
+            if (a === b) continue;
+            const dx = exo.points[a * 3 + 0] - exo.points[b * 3 + 0];
+            const dy = exo.points[a * 3 + 1] - exo.points[b * 3 + 1];
+            const dz = exo.points[a * 3 + 2] - exo.points[b * 3 + 2];
+            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist < nearest) nearest = dist;
+          }
+          if (nearest < minNearestDist) minNearestDist = nearest;
+        }
+        // Umbral laxo a propósito (solo detecta clustering catastrófico).
+        expect(minNearestDist).toBeGreaterThan(0.15);
+      }
+    }
+  });
+
+  it("cada viga (isBeam=1) trae 2 anclas distintas y su punto es el punto medio del segmento", () => {
+    const exo = buildExoskeleton("cubo", 500)!;
+    let checked = 0;
+    for (let i = 0; i < 500; i++) {
+      if (!exo.isBeam[i]) continue;
+      const ax = exo.relationSpans[i * 6 + 0];
+      const ay = exo.relationSpans[i * 6 + 1];
+      const az = exo.relationSpans[i * 6 + 2];
+      const bx = exo.relationSpans[i * 6 + 3];
+      const by = exo.relationSpans[i * 6 + 4];
+      const bz = exo.relationSpans[i * 6 + 5];
+      expect(Math.hypot(ax - bx, ay - by, az - bz)).toBeGreaterThan(0);
+      expect(exo.points[i * 3 + 0]).toBeCloseTo((ax + bx) / 2, 5);
+      expect(exo.points[i * 3 + 1]).toBeCloseTo((ay + by) / 2, 5);
+      expect(exo.points[i * 3 + 2]).toBeCloseTo((az + bz) / 2, 5);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  it("las vigas dejan TODOS los nodos en una sola red conectada", () => {
+    for (const count of [80, 500, 5000]) {
+      const exo = buildExoskeleton("estrella", count)!;
+      const pointKey = (x: number, y: number, z: number) => `${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)}`;
+      const indexByKey = new Map<string, number>();
+      const nodeKeys: string[] = [];
+      for (let i = 0; i < count; i++) {
+        if (exo.isBeam[i]) continue;
+        const key = pointKey(exo.points[i * 3], exo.points[i * 3 + 1], exo.points[i * 3 + 2]);
+        indexByKey.set(key, nodeKeys.length);
+        nodeKeys.push(key);
+      }
+      const parent = nodeKeys.map((_, i) => i);
+      const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+      const union = (a: number, b: number) => {
+        const ra = find(a);
+        const rb = find(b);
+        if (ra !== rb) parent[ra] = rb;
+      };
+      for (let i = 0; i < count; i++) {
+        if (!exo.isBeam[i]) continue;
+        const aKey = pointKey(exo.relationSpans[i * 6 + 0], exo.relationSpans[i * 6 + 1], exo.relationSpans[i * 6 + 2]);
+        const bKey = pointKey(exo.relationSpans[i * 6 + 3], exo.relationSpans[i * 6 + 4], exo.relationSpans[i * 6 + 5]);
+        const a = indexByKey.get(aKey);
+        const b = indexByKey.get(bKey);
+        expect(a).not.toBeUndefined();
+        expect(b).not.toBeUndefined();
+        union(a!, b!);
+      }
+      const roots = new Set(parent.map((_, i) => find(i)));
+      expect(roots.size).toBe(1);
+    }
+  });
+
+  it("traslada el exoesqueleto a un centro custom", () => {
+    const custom: [number, number, number] = [10, 10, 10];
+    const exo = buildExoskeleton("cubo", 60, custom)!;
+    for (let i = 0; i < 60; i++) {
+      expect(Math.abs(exo.points[i * 3] - custom[0])).toBeLessThanOrEqual(6);
+      expect(Math.abs(exo.points[i * 3 + 1] - custom[1])).toBeLessThanOrEqual(6);
+      expect(Math.abs(exo.points[i * 3 + 2] - custom[2])).toBeLessThanOrEqual(6);
     }
   });
 });

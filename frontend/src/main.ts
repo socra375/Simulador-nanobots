@@ -1,19 +1,33 @@
 import { createScene } from "./scene";
 import { createNanobotSwarmMesh } from "./nanobot-mesh";
+import { createMicrobotSwarmMesh } from "./microbot-mesh";
 import { Swarm } from "./swarm";
 import { createReactor } from "./reactor";
 import {
   formShapeWithRoles,
+  buildExoskeleton,
   idleCluster,
   FORMATION_CENTER,
   NANOBOT_ROLE,
   type ShapeFormation,
+  type Exoskeleton,
 } from "./shapes";
 import { createControlPanel, type UiState } from "./ui";
 import { loadConfig, saveConfig, type SwarmConfig } from "./config-client";
 import { DEFAULT_COLOR_CLUSTERS, type ColorCluster } from "./image-color";
 
 const MAX_NANOBOTS = 10000;
+// Techo inicial de Microbots (Fase 15): sin física boid propia (ease-in
+// puro en TS, ver animate()) y con render de escritura directa a buffer
+// (microbot-mesh.ts) en vez de THREE.Object3D por instancia, el costo por
+// agente es mucho menor que el de Nanobots — se parte de 6x el techo de
+// Nanobots como punto de partida conservador (ver plan de Fase 15),
+// ajustable acá si la verificación visual real sugiere subir/bajar.
+const MAX_MICROBOTS = 60000;
+// Duración fija del ease-in del exoesqueleto de Microbots: no depende de
+// física (no hay nada que "asentar"), así que es un tiempo fijo en vez del
+// mecanismo de asentamiento sostenido que usa el resto de las fases.
+const MICROBOT_EXO_DURATION = 1.6;
 
 // Seek más suave en reposo (cluster orgánico alrededor del núcleo) y más
 // fuerte al formar una figura (para que se vea nítida pese al ruido de
@@ -56,6 +70,7 @@ const RETURN_SPIRAL_TURNS = 2.5;
 
 const DEFAULT_STATE: UiState = {
   count: 80,
+  microbotCount: 4000,
   cohesion: 0.8,
   separation: 1.5,
   alignment: 0.6,
@@ -86,6 +101,10 @@ async function main() {
 
   const swarmMesh = createNanobotSwarmMesh(MAX_NANOBOTS);
   scene.add(swarmMesh.group);
+
+  const microbotMesh = createMicrobotSwarmMesh(MAX_MICROBOTS);
+  microbotMesh.setVisible(false);
+  scene.add(microbotMesh.group);
 
   const reactor = createReactor();
   scene.add(reactor.group);
@@ -135,6 +154,30 @@ async function main() {
   let settledStreak = 0; // segundos consecutivos que el grupo revelado lleva asentado
 
   let returnAnimation: ReturnAnimation | null = null;
+
+  // Microbots (Fase 15): exoesqueleto denso e independiente de la física
+  // Wasm — se anima con un simple ease-in (posición inicial de reposo ->
+  // posición final del exoesqueleto) en vez de simularse. Los Nanobots
+  // esperan a que este ease-in termine (`pendingFormation`) antes de
+  // empezar a moverse, para que el exoesqueleto ya esté sólido cuando
+  // Nanobots llegue a alinearse/rellenar encima.
+  let microbotCount = Math.min(state.microbotCount, MAX_MICROBOTS);
+  let microbotExo: Exoskeleton | null = null;
+  let microbotIdlePoints: Float32Array = new Float32Array(0);
+  let microbotElapsed = 0;
+  // Buffer reusado cuadro a cuadro para la posición interpolada — evita
+  // asignar un Float32Array nuevo por frame con decenas de miles de
+  // elementos (ver animate()).
+  const microbotRenderPoints = new Float32Array(MAX_MICROBOTS * 3);
+  // Formación de Nanobots que espera a que el exoesqueleto de Microbots
+  // termine de asentarse antes de arrancar (ver setMode/animate()).
+  let pendingFormation: { shapeName: string; colorClusters: ColorCluster[] } | null = null;
+
+  function computeMicrobotTargets(): void {
+    microbotExo = buildExoskeleton(currentShapeName ?? "", microbotCount, FORMATION_CENTER);
+    microbotIdlePoints = idleCluster(microbotCount, reactorCenter);
+    microbotElapsed = 0;
+  }
 
   function applyParams() {
     const forming = mode === "forming";
@@ -231,20 +274,27 @@ async function main() {
 
   // Transición de modo: recalcula los targets del enjambre (reposo o
   // figura), ajusta la fuerza de seek acorde, y muestra/oculta el enjambre
-  // (en reposo "está dentro" del núcleo, no se dibuja).
+  // (en reposo "está dentro" del núcleo, no se dibuja). Al formar, los
+  // Nanobots quedan pendientes (`pendingFormation`) hasta que el
+  // exoesqueleto de Microbots termine su ease-in (ver animate()).
   function setMode(next: Mode, shapeName?: string, colorClusters?: ColorCluster[]) {
     mode = next;
     returnAnimation = null;
+    pendingFormation = null;
+    currentFormation = null;
+    formationPhase = 0;
+    applyIdleTargets();
+    swarmMesh.setVisible(false);
     if (next === "forming" && shapeName) {
       currentShapeName = shapeName;
-      startFormation(shapeName, colorClusters ?? DEFAULT_COLOR_CLUSTERS);
-      swarmMesh.setVisible(true);
+      currentColorClusters = colorClusters ?? DEFAULT_COLOR_CLUSTERS;
+      pendingFormation = { shapeName, colorClusters: currentColorClusters };
+      computeMicrobotTargets();
+      microbotMesh.setVisible(true);
     } else {
       currentShapeName = null;
-      currentFormation = null;
-      formationPhase = 0;
-      applyIdleTargets();
-      swarmMesh.setVisible(false);
+      microbotExo = null;
+      microbotMesh.setVisible(false);
     }
     applyParams();
   }
@@ -309,18 +359,40 @@ async function main() {
     currentShapeName = null;
     currentFormation = null;
     formationPhase = 0;
+    pendingFormation = null;
+    microbotExo = null;
+    microbotMesh.setVisible(false);
     beginReturnAnimation();
   }
 
   // `swarm.init()` reasigna (y reinicializa) el buffer de targets en C++,
   // así que tras cambiar la cantidad hay que reescribir el target activo.
+  // Si Nanobots todavía está esperando al exoesqueleto de Microbots
+  // (`pendingFormation`), no hay figura propia que reescribir todavía —
+  // se queda en reposo con la nueva cantidad hasta que le toque su turno.
   function applyCount(count: number) {
     returnAnimation = null;
     state.count = count;
     swarm.init(count);
     swarmMesh.setCount(count);
-    if (mode === "forming" && currentShapeName) startFormation(currentShapeName, currentColorClusters);
-    else applyIdleTargets();
+    if (mode === "forming" && currentShapeName && !pendingFormation) {
+      startFormation(currentShapeName, currentColorClusters);
+    } else {
+      applyIdleTargets();
+    }
+  }
+
+  // Cambia la cantidad de Microbots: si hay una figura en curso y el
+  // exoesqueleto ya terminó su ease-in (Nanobots ya está rellenando), el
+  // exoesqueleto se recalcula y se muestra directo en su posición final
+  // (sin repetir la suspenso del ease-in); si todavía está pendiente, el
+  // nuevo conteo simplemente sigue su ease-in normal.
+  function applyMicrobotCount(count: number): void {
+    microbotCount = Math.min(count, MAX_MICROBOTS);
+    state.microbotCount = microbotCount;
+    if (mode !== "forming") return;
+    computeMicrobotTargets();
+    if (!pendingFormation) microbotElapsed = MICROBOT_EXO_DURATION;
   }
 
   applyCount(state.count);
@@ -342,6 +414,7 @@ async function main() {
     },
     onFormShape: (shapeName: string, colorClusters: ColorCluster[]) => setMode("forming", shapeName, colorClusters),
     onReturnToCore: () => returnToCore(),
+    onMicrobotCountChange: applyMicrobotCount,
   });
 
   let lastTime = performance.now();
@@ -355,6 +428,26 @@ async function main() {
 
     reactor.update(dt);
     controls.update(); // necesario por el damping de OrbitControls
+
+    // Microbots: ease-in propio (sin física Wasm) del cluster de reposo al
+    // exoesqueleto de la figura. Nanobots espera a que termine
+    // (`pendingFormation`) antes de arrancar su propio revelado — así el
+    // esqueleto ya está sólido cuando Nanobots empieza a alinearse encima.
+    if (mode === "forming" && microbotExo) {
+      microbotElapsed = Math.min(microbotElapsed + dt, MICROBOT_EXO_DURATION);
+      const eased = easeInOutCubic(microbotElapsed / MICROBOT_EXO_DURATION);
+      const exoPoints = microbotExo.points;
+      for (let i = 0; i < microbotCount * 3; i++) {
+        microbotRenderPoints[i] = microbotIdlePoints[i] + (exoPoints[i] - microbotIdlePoints[i]) * eased;
+      }
+      microbotMesh.updateFromPositions(microbotRenderPoints, microbotCount, microbotExo.isBeam, microbotExo.relationSpans);
+      if (microbotElapsed >= MICROBOT_EXO_DURATION && pendingFormation) {
+        const { shapeName, colorClusters } = pendingFormation;
+        pendingFormation = null;
+        startFormation(shapeName, colorClusters);
+        swarmMesh.setVisible(true);
+      }
+    }
 
     let visibleRoles: RoleVisibility = ALL_ROLES_VISIBLE;
     let revealedColorWaves = 0;
@@ -370,7 +463,7 @@ async function main() {
         swarmMesh.setVisible(false);
       }
     } else {
-      if (mode === "forming" && formationPhase < phaseCount) {
+      if (mode === "forming" && !pendingFormation && formationPhase < phaseCount) {
         phaseTimer += dt;
         settledStreak = isPhaseGroupSettled() ? settledStreak + dt : 0;
         const readyForNext =

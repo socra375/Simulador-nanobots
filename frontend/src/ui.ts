@@ -6,10 +6,15 @@ import { extractColorClustersFromFile, type ColorCluster } from "./image-color";
 
 export interface UiState extends SwarmParams {
   count: number;
+  // Cantidad de Microbots (Fase 15): población aparte que arma el
+  // exoesqueleto (nodos+vigas) de la figura antes que Nanobots — no tiene
+  // física propia ni "Comandos" propio, ver microbot-mesh.ts/main.ts.
+  microbotCount: number;
 }
 
 export interface UiCallbacks {
   onCountChange: (count: number) => void;
+  onMicrobotCountChange: (count: number) => void;
   onParamsChange: (params: SwarmParams) => void;
   onSave: (config: SwarmConfig) => void;
   onLoad: () => void;
@@ -28,6 +33,16 @@ export interface UiCallbacks {
 // vez de comparar cada agente contra todos los demás.
 export function createControlPanel(state: UiState, callbacks: UiCallbacks): GUI {
   const gui = new GUI({ title: "Parámetros del enjambre" });
+
+  // Microbots: capa de exoesqueleto por debajo de Nanobots (ver
+  // microbot-mesh.ts) — sin física propia, así que soporta MUCHOS más
+  // agentes (hasta 60.000) sin frisar; paso de slider más grueso (100)
+  // porque el rango es mucho más ancho que el de Nanobots.
+  const microbotsFolder = gui.addFolder("Microbots (exoesqueleto)");
+  microbotsFolder
+    .add(state, "microbotCount", 0, 60000, 100)
+    .name("Cantidad")
+    .onFinishChange((value: number) => callbacks.onMicrobotCountChange(value));
 
   gui
     .add(state, "count", 20, 10000, 1)
