@@ -53,20 +53,22 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 // sigue exactamente igual que siempre.
 const IDLE_SEEK_WEIGHT = 0.5;
 
-// Animación de "bola fusionada + esparción" al formar una figura (Fase 18,
-// reemplaza al revelado por fases físico): un solo "nanobot gigante"
-// (todas las instancias amontonadas en el núcleo) viaja como grupo rígido
-// hasta el centro de formación (NANOBOT_TRAVEL_DURATION) y ahí se esparce
-// instancia por instancia hacia su posición final de tejido/piel
-// (NANOBOT_SCATTER_DURATION), con el mismo remolino por agente que ya usan
-// los Microbots (ver swirlOffset) para un esparcido orgánico en vez de un
-// lerp sincronizado. Progreso único (`nanobotElapsed`, 0..
-// NANOBOT_FORM_DURATION) reversible para el repliegue.
+// Animación de "enjambre escalonado por capas" al formar una figura (Fase
+// 19, reemplaza la "bola fusionada" de Fase 18 — ese bloque sincronizado
+// se veía como una maraña de esferas grandes superpuestas en vez de un
+// enjambre de nanopartículas asentándose, como el nanotech de Iron Man).
+// Se arma por CAPAS en secuencia (Detalle primero, luego cada ola de Color
+// una por una — ver nanobotLayerOf más abajo), y DENTRO de cada capa cada
+// agente tiene su PROPIO instante de salida del núcleo (no sincronizado):
+// NANOBOT_TRAVEL_DURATION es cuánto tarda UN agente en volar del núcleo a
+// su punto final; NANOBOT_LAYER_STAGGER_SPAN es cuánto se reparte el
+// instante de salida entre el primer y el último agente de esa capa (mismo
+// rol que RETURN_QUEUE_SPAN en la vieja espiral de regreso pre-Fase-18).
 const NANOBOT_TRAVEL_DURATION = 1.0;
-const NANOBOT_SCATTER_DURATION = 1.6;
-const NANOBOT_FORM_DURATION = NANOBOT_TRAVEL_DURATION + NANOBOT_SCATTER_DURATION;
-const NANOBOT_SCATTER_SWIRL_TURNS = 1.2;
-const NANOBOT_SCATTER_SWIRL_MAX_RADIUS = 1.0;
+const NANOBOT_LAYER_STAGGER_SPAN = 1.0;
+const NANOBOT_LAYER_DURATION = NANOBOT_TRAVEL_DURATION + NANOBOT_LAYER_STAGGER_SPAN;
+const NANOBOT_SWIRL_TURNS = 1.2;
+const NANOBOT_SWIRL_MAX_RADIUS = 1.0;
 
 const DEFAULT_STATE: UiState = {
   // Antes 80 (sin cambios desde la Fase 1) — con el exoesqueleto de
@@ -163,15 +165,16 @@ async function main() {
   let currentFormationTargets: Float32Array = new Float32Array(state.count * 3);
 
   // Figura activa de Nanobots (null en reposo) — sus `points` son el
-  // destino final que persigue la animación de esparción (ver
-  // renderNanobotsAt).
+  // destino final que persigue el vuelo por capas de renderNanobotsAt.
   let currentFormation: ShapeFormation | null = null;
 
-  // Animación de Nanobots al formar (Fase 18): sin física de convergencia
-  // — ver NANOBOT_*_DURATION arriba y renderNanobotsAt más abajo. Espeja el
-  // ciclo de vida de MicrobotPhase: "forming" sube `nanobotElapsed` de 0 a
-  // NANOBOT_FORM_DURATION (bola -> viaje -> esparción), "settled" no
-  // recalcula nada cuadro a cuadro, "retracting" revierte el mismo camino.
+  // Animación de Nanobots al formar (Fase 19): sin física de convergencia
+  // — ver NANOBOT_*/renderNanobotsAt más abajo. Espeja el ciclo de vida de
+  // MicrobotPhase: "forming" sube `nanobotElapsed` de 0 a
+  // `nanobotTotalDuration` (una capa detrás de otra, cada una con salida
+  // escalonada por agente), "settled" no recalcula nada cuadro a cuadro,
+  // "retracting" revierte el mismo camino (las capas posteriores se
+  // repliegan primero, orden inverso del armado).
   type NanobotPhase = "idle" | "forming" | "settled" | "retracting";
   let nanobotPhase: NanobotPhase = "idle";
   let nanobotElapsed = 0;
@@ -181,11 +184,18 @@ async function main() {
   // (ver applyCount), así que el buffer de destino sigue siendo válido
   // hasta que el repliegue termine solo.
   let nanobotAnimCount = 0;
-  // Cuántas olas de color deja pasar updateFromPositions — con la nueva
-  // animación todas las olas (y el rol DETALLE) llegan juntas, así que
-  // queda fijo en `colorWaveCount` durante toda la formación (ver
-  // startFormation), no un revelado progresivo como antes.
-  let nanobotRevealedWaves = 0;
+  // Capa de cada agente (0 = Detalle, 1+colorWave = ola de Color) y su
+  // posición relativa (0..1) DENTRO de esa capa — ambos calculados una sola
+  // vez en startFormation (los agentes de una misma capa ya salen
+  // CONTIGUOS del `write()` de formShapeWithRoles, así que el orden de
+  // aparición ya sirve como "índice dentro de la capa", sin necesidad de
+  // ordenarlos). `nanobotLayerCount` = 1 (Detalle) + colorWaveCount;
+  // `nanobotTotalDuration` = nanobotLayerCount * NANOBOT_LAYER_DURATION,
+  // el tope de `nanobotElapsed`.
+  let nanobotLayerOf = new Uint8Array(0);
+  let nanobotDelayFraction = new Float32Array(0);
+  let nanobotLayerCount = 1;
+  let nanobotTotalDuration = NANOBOT_LAYER_DURATION;
   const nanobotRenderPositions = new Float32Array(MAX_NANOBOTS * 3);
   const nanobotSwirlScratch: [number, number, number] = [0, 0, 0];
 
@@ -220,8 +230,8 @@ async function main() {
   // remolino — `Math.sin(eased*PI)`) y máximo a mitad de camino. `i *
   // GOLDEN_ANGLE` da a cada agente su propia fase, para que no giren todos
   // sincronizados (mismo truco de ángulo dorado que sampleSphereSurface en
-  // shapes.ts). Compartido entre Microbots (lanzamiento) y Nanobots
-  // (esparción, Fase 18) — cada uno con su propio `turns`/`maxRadius`.
+  // shapes.ts). Compartido entre Microbots (lanzamiento) y Nanobots (vuelo
+  // individual por capa, Fase 19) — cada uno con su propio `turns`/`maxRadius`.
   function swirlOffset(eased: number, i: number, turns: number, maxRadius: number, out: [number, number, number]): void {
     const amplitude = maxRadius * Math.sin(eased * Math.PI);
     const angle = eased * turns * Math.PI * 2 + i * GOLDEN_ANGLE;
@@ -258,40 +268,47 @@ async function main() {
     microbotMesh.updateFromPositions(microbotRenderPoints, microbotCount, isBeam, microbotRenderRelationSpans);
   }
 
+  // Qué capa (0=Detalle, 1+colorWave=ola de Color) está activa/animando en
+  // el progreso `elapsed` (0..nanobotTotalDuration) — compartida entre
+  // renderNanobotsAt y la visibilidad/grayscale en animate()/applyCount
+  // para que ambas coincidan siempre en qué capa es "la actual".
+  function nanobotLayerIndexAt(elapsed: number): number {
+    return Math.min(Math.floor(elapsed / NANOBOT_LAYER_DURATION), nanobotLayerCount - 1);
+  }
+
   // Dibuja la animación de Nanobots en el progreso `elapsed` (0..
-  // NANOBOT_FORM_DURATION) en `nanobotRenderPositions`: hasta
-  // NANOBOT_TRAVEL_DURATION, TODOS los agentes comparten el mismo punto
-  // (grupo rígido viajando del núcleo al centro de formación — se lee como
-  // un único "nanobot gigante"); de ahí en adelante, cada uno se esparce
-  // individualmente desde ese centro hacia su posición final de tejido/piel
-  // (con el mismo remolino por agente que Microbots, para un esparcido
-  // orgánico en vez de un lerp sincronizado). Continuo en el empalme: a
-  // `elapsed === NANOBOT_TRAVEL_DURATION` ambas fórmulas dan exactamente
-  // `FORMATION_CENTER`, sin salto visual.
+  // nanobotTotalDuration) en `nanobotRenderPositions`: capa por capa
+  // (Detalle, luego cada ola de Color), y DENTRO de cada capa cada agente
+  // vuela individualmente del núcleo a su punto final con su propio
+  // instante de salida (`nanobotDelayFraction`) — un enjambre que fluye y
+  // se asienta progresivamente, no un bloque sincronizado. Los agentes de
+  // capas ya asentadas quedan exactos en su target (sin recalcular
+  // trigonometría); los de capas futuras se quedan en el núcleo (ocultos
+  // por `visibleRoles`/`revealedColorWaves`, ver animate()).
   function renderNanobotsAt(elapsed: number): void {
     if (!currentFormation) return;
-    const n = nanobotAnimCount;
-    if (elapsed <= NANOBOT_TRAVEL_DURATION) {
-      const t = NANOBOT_TRAVEL_DURATION > 0 ? Math.min(elapsed / NANOBOT_TRAVEL_DURATION, 1) : 1;
-      const eased = easeInOutCubic(t);
-      const x = reactorCenter[0] + (FORMATION_CENTER[0] - reactorCenter[0]) * eased;
-      const y = reactorCenter[1] + (FORMATION_CENTER[1] - reactorCenter[1]) * eased;
-      const z = reactorCenter[2] + (FORMATION_CENTER[2] - reactorCenter[2]) * eased;
-      for (let i = 0; i < n; i++) {
-        nanobotRenderPositions[i * 3 + 0] = x;
-        nanobotRenderPositions[i * 3 + 1] = y;
-        nanobotRenderPositions[i * 3 + 2] = z;
-      }
-      return;
-    }
     const { points } = currentFormation;
-    const scatterT = Math.min(Math.max((elapsed - NANOBOT_TRAVEL_DURATION) / NANOBOT_SCATTER_DURATION, 0), 1);
-    const eased = easeInOutCubic(scatterT);
+    const n = nanobotAnimCount;
+    const layerIndex = nanobotLayerIndexAt(elapsed);
+    const layerElapsed = elapsed - layerIndex * NANOBOT_LAYER_DURATION;
     for (let i = 0; i < n; i++) {
-      swirlOffset(eased, i, NANOBOT_SCATTER_SWIRL_TURNS, NANOBOT_SCATTER_SWIRL_MAX_RADIUS, nanobotSwirlScratch);
-      nanobotRenderPositions[i * 3 + 0] = FORMATION_CENTER[0] + (points[i * 3 + 0] - FORMATION_CENTER[0]) * eased + nanobotSwirlScratch[0];
-      nanobotRenderPositions[i * 3 + 1] = FORMATION_CENTER[1] + (points[i * 3 + 1] - FORMATION_CENTER[1]) * eased + nanobotSwirlScratch[1];
-      nanobotRenderPositions[i * 3 + 2] = FORMATION_CENTER[2] + (points[i * 3 + 2] - FORMATION_CENTER[2]) * eased + nanobotSwirlScratch[2];
+      const layer = nanobotLayerOf[i];
+      if (layer < layerIndex) {
+        nanobotRenderPositions[i * 3 + 0] = points[i * 3 + 0];
+        nanobotRenderPositions[i * 3 + 1] = points[i * 3 + 1];
+        nanobotRenderPositions[i * 3 + 2] = points[i * 3 + 2];
+      } else if (layer > layerIndex) {
+        nanobotRenderPositions[i * 3 + 0] = reactorCenter[0];
+        nanobotRenderPositions[i * 3 + 1] = reactorCenter[1];
+        nanobotRenderPositions[i * 3 + 2] = reactorCenter[2];
+      } else {
+        const localT = (layerElapsed - nanobotDelayFraction[i] * NANOBOT_LAYER_STAGGER_SPAN) / NANOBOT_TRAVEL_DURATION;
+        const eased = easeInOutCubic(Math.min(Math.max(localT, 0), 1));
+        swirlOffset(eased, i, NANOBOT_SWIRL_TURNS, NANOBOT_SWIRL_MAX_RADIUS, nanobotSwirlScratch);
+        nanobotRenderPositions[i * 3 + 0] = reactorCenter[0] + (points[i * 3 + 0] - reactorCenter[0]) * eased + nanobotSwirlScratch[0];
+        nanobotRenderPositions[i * 3 + 1] = reactorCenter[1] + (points[i * 3 + 1] - reactorCenter[1]) * eased + nanobotSwirlScratch[1];
+        nanobotRenderPositions[i * 3 + 2] = reactorCenter[2] + (points[i * 3 + 2] - reactorCenter[2]) * eased + nanobotSwirlScratch[2];
+      }
     }
   }
 
@@ -317,10 +334,12 @@ async function main() {
     currentFormationTargets = new Float32Array(state.count * 3);
   }
 
-  // Calcula la figura completa (todas las olas de color a la vez, sin
-  // revelado progresivo — la animación de bola+esparción de
-  // renderNanobotsAt es la que ahora "revela" visualmente) y la deja lista
-  // para animar desde `nanobotElapsed = 0`.
+  // Calcula la figura completa y arma el revelado por capas (Detalle,
+  // luego cada ola de Color en orden) para animar desde `nanobotElapsed =
+  // 0`: `nanobotLayerOf[i]` es la capa de cada agente, `nanobotDelayFraction[i]`
+  // su posición relativa (0..1) dentro de esa capa (agentes de una misma
+  // capa ya salen contiguos de `write()` en formShapeWithRoles, así que un
+  // contador por capa alcanza, sin ordenar nada).
   function startFormation(name: string, colorClusters: ColorCluster[]): void {
     const formation = formShapeWithRoles(name, state.count, FORMATION_CENTER, colorClusters);
     if (!formation) return;
@@ -331,13 +350,28 @@ async function main() {
     currentColorWave = formation.colorWave;
     currentColorClusters = colorClusters;
     nanobotAnimCount = state.count;
-    nanobotRevealedWaves = formation.colorWaveCount;
+    nanobotLayerCount = 1 + formation.colorWaveCount;
+    nanobotTotalDuration = nanobotLayerCount * NANOBOT_LAYER_DURATION;
+
+    const layerOf = new Uint8Array(state.count);
+    const layerCounts = new Array<number>(nanobotLayerCount).fill(0);
+    for (let i = 0; i < state.count; i++) {
+      const layer = formation.roles[i] === NANOBOT_ROLE.COLOR ? 1 + formation.colorWave[i] : 0;
+      layerOf[i] = layer;
+      layerCounts[layer]++;
+    }
+    const delayFraction = new Float32Array(state.count);
+    const layerCursor = new Array<number>(nanobotLayerCount).fill(0);
+    for (let i = 0; i < state.count; i++) {
+      const layer = layerOf[i];
+      const n = layerCounts[layer];
+      delayFraction[i] = n > 1 ? layerCursor[layer] / (n - 1) : 0;
+      layerCursor[layer]++;
+    }
+    nanobotLayerOf = layerOf;
+    nanobotDelayFraction = delayFraction;
+
     swarmMesh.setColorClusters(colorClusters);
-    // Con DETALLE y todas las olas de COLOR llegando juntas (sin revelado
-    // progresivo), el look final deseado (colores reales de la foto
-    // predominando sobre el relleno base) se aplica de una desde el
-    // arranque, no a mitad de camino como antes.
-    swarmMesh.setSkeletonGrayscale(true);
   }
 
   // Transición de modo: recalcula los targets del enjambre (reposo o
@@ -411,8 +445,9 @@ async function main() {
       startFormation(currentShapeName, currentColorClusters);
       if (wasSettled) {
         nanobotPhase = "settled";
-        nanobotElapsed = NANOBOT_FORM_DURATION;
+        nanobotElapsed = nanobotTotalDuration;
         renderNanobotsAt(nanobotElapsed);
+        swarmMesh.setSkeletonGrayscale(nanobotLayerCount > 1);
         swarmMesh.updateFromPositions(
           nanobotRenderPositions,
           nanobotAnimCount,
@@ -421,7 +456,7 @@ async function main() {
           currentFormationTargets,
           ALL_ROLES_VISIBLE,
           currentColorWave,
-          nanobotRevealedWaves,
+          nanobotLayerCount - 1,
         );
       }
       // Si seguía "forming", continúa animando desde el progreso actual con
@@ -507,27 +542,32 @@ async function main() {
       }
     }
 
-    // Nanobots: física boid SOLO en reposo (Fase 18) — al formar/replegar,
-    // la posición la maneja por completo la animación scripted de
-    // renderNanobotsAt (bola -> viaje -> esparción y su reverso), sin tocar
-    // swarm.step(dt) en absoluto (ver applyParams/startFormation). Una vez
-    // "settled" no hace falta recalcular ni redibujar nada cuadro a
-    // cuadro — el buffer de instancias ya quedó en su posición final.
+    // Nanobots: física boid SOLO en reposo (Fase 19) — al formar/replegar,
+    // la posición la maneja por completo la animación scripted por capas
+    // (renderNanobotsAt) y su reverso, sin tocar swarm.step(dt) en
+    // absoluto (ver applyParams/startFormation). Una vez "settled" no hace
+    // falta recalcular ni redibujar nada cuadro a cuadro — el buffer de
+    // instancias ya quedó en su posición final.
     if (nanobotPhase === "forming" || nanobotPhase === "retracting") {
       const direction = nanobotPhase === "forming" ? 1 : -1;
-      nanobotElapsed = Math.min(Math.max(nanobotElapsed + direction * dt, 0), NANOBOT_FORM_DURATION);
+      nanobotElapsed = Math.min(Math.max(nanobotElapsed + direction * dt, 0), nanobotTotalDuration);
       renderNanobotsAt(nanobotElapsed);
+      const layerIndex = nanobotLayerIndexAt(nanobotElapsed);
+      // Detalle se pasa a gris apenas arranca la primera ola de Color
+      // (capa 1), para que el color real de la foto termine predominando
+      // en vez de competir con el verde fijo del rol.
+      swarmMesh.setSkeletonGrayscale(layerIndex >= 1);
       swarmMesh.updateFromPositions(
         nanobotRenderPositions,
         nanobotAnimCount,
         currentRoles,
         currentRelationSpans,
         currentFormationTargets,
-        ALL_ROLES_VISIBLE,
+        [false, false, true, layerIndex >= 1],
         currentColorWave,
-        nanobotRevealedWaves,
+        layerIndex,
       );
-      if (nanobotPhase === "forming" && nanobotElapsed >= NANOBOT_FORM_DURATION) {
+      if (nanobotPhase === "forming" && nanobotElapsed >= nanobotTotalDuration) {
         nanobotPhase = "settled";
       } else if (nanobotPhase === "retracting" && nanobotElapsed <= 0) {
         nanobotPhase = "idle";
