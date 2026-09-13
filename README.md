@@ -260,3 +260,15 @@ npm run test:e2e
   por debajo del presupuesto de 16.6ms/frame a 60 FPS) — medido en
   `cpp/test_boids.cpp`. El renderizado usa `THREE.InstancedMesh` (una
   llamada de dibujo por variante de geometría, no una por nanobot).
+- **Profundidad/definición visual** (`scene.ts`): sombras reales (una
+  `DirectionalLight` con `castShadow`, recibidas por un piso invisible
+  `ShadowMaterial` debajo del grid), `ACESFilmicToneMapping` +
+  `SRGBColorSpace` para un contraste más cinematográfico, y postprocesado
+  de **bloom/glow** (`EffectComposer` + `UnrealBloomPass`, ambos ya
+  incluidos en `three/examples/jsm` — sin dependencias nuevas) sobre los
+  materiales emissive del enjambre y el reactor. Las geometrías de los 4
+  roles de nanobot (`nanobot-mesh.ts`) y del reactor (`reactor.ts`) también
+  suben de segmentos/detalle para verse más redondeadas de cerca. Se
+  prioriza calidad fija por sobre el conteo de nanobots — a 10.000 puede
+  bajar el frame rate en hardware débil, pero no rompe (el mismo test E2E
+  del límite máximo lo cubre).

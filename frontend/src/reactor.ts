@@ -20,7 +20,7 @@ export function createReactor(position: THREE.Vector3 = REACTOR_POSITION): React
   // (no depende de las luces de la escena), coherente con el resto del
   // enjambre en modo "wireframe/neón".
   const core = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(0.9, 1),
+    new THREE.IcosahedronGeometry(0.9, 2),
     new THREE.MeshStandardMaterial({
       color: 0x332400,
       emissive: 0xffe14b,
@@ -29,12 +29,13 @@ export function createReactor(position: THREE.Vector3 = REACTOR_POSITION): React
       metalness: 0.2,
     }),
   );
+  core.castShadow = true;
   group.add(core);
 
   // Carcasa de contención: wireframe semitransparente, mismo lenguaje
   // visual que los nanobots (MeshBasicMaterial wireframe).
   const shell = new THREE.Mesh(
-    new THREE.IcosahedronGeometry(1.8, 1),
+    new THREE.IcosahedronGeometry(1.8, 2),
     new THREE.MeshBasicMaterial({
       color: 0xffe14b,
       wireframe: true,

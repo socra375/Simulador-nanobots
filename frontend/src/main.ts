@@ -79,7 +79,7 @@ function easeInOutCubic(t: number): number {
 
 async function main() {
   const container = document.getElementById("app")!;
-  const { scene, camera, renderer, controls } = createScene(container);
+  const { scene, composer, controls } = createScene(container);
 
   const swarmMesh = createNanobotSwarmMesh(MAX_NANOBOTS);
   scene.add(swarmMesh.group);
@@ -386,7 +386,7 @@ async function main() {
       visibleRoles,
     );
 
-    renderer.render(scene, camera);
+    composer.render();
   }
 
   requestAnimationFrame(animate);

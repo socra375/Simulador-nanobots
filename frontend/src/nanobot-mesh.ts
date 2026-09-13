@@ -52,10 +52,10 @@ const SKELETON_GRAYSCALE_EMISSIVE = 0x2a2a2a;
 // sí para tapar huecos/grietas en el relleno en vez de dejar el fondo negro
 // visible entre esfera y esfera.
 const ROLE_GEOMETRIES: THREE.BufferGeometry[] = [
-  new THREE.IcosahedronGeometry(0.4, 0), // estructura
-  new THREE.CylinderGeometry(0.16, 0.16, 1, 6), // relación
-  new THREE.SphereGeometry(0.55, 8, 6), // detalle
-  new THREE.SphereGeometry(0.6, 8, 6), // color (capa de pintura final)
+  new THREE.IcosahedronGeometry(0.4, 1), // estructura
+  new THREE.CylinderGeometry(0.16, 0.16, 1, 10), // relación
+  new THREE.SphereGeometry(0.55, 16, 12), // detalle
+  new THREE.SphereGeometry(0.6, 16, 12), // color (capa de pintura final)
 ];
 
 function buildRoleMaterial(role: number): THREE.Material {
@@ -136,6 +136,8 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   const instancedMeshes = ROLE_GEOMETRIES.map((geometry, role) => {
     const mesh = new THREE.InstancedMesh(geometry, buildRoleMaterial(role), maxCount);
     mesh.count = 0;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     group.add(mesh);
     return mesh;
   });
