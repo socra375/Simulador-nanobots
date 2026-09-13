@@ -24,8 +24,16 @@ figura en capas.
 | Rol | Geometría | Función |
 |---|---|---|
 | **Estructura** | Icosaedro sólido cian | Nodos ancla dispersos de la figura — el "esqueleto"/las juntas de una construcción. |
-| **Relación** | Viga (cilindro) sólida magenta | Une cada ancla de Estructura con su vecina más cercana — una barra real entre ambas, no solo un punto suelto, para que la figura se vea conectada en vez de flotante. |
+| **Relación** | Viga (cilindro) sólida magenta | Une cada ancla de Estructura con su vecina más cercana siguiendo un árbol de expansión mínima (garantiza que TODA la figura quede conectada en una sola red, sin zonas sueltas) más algunas conexiones extra para una malla más rica — una barra real entre ambas, no un punto suelto. |
 | **Detalle** | Esfera sólida emissive verde | Relleno denso a resolución completa — da el color y los últimos retoques para una silueta 3D nítida y sólida por encima del esqueleto de las otras dos. |
+
+Mientras se arma una figura, la cohesión/separación/alineación entre
+nanobots (los pesos configurables del panel) se atenúan casi del todo: la
+nube de puntos ya define la forma completa, así que dejarlos a pleno
+competiría contra el imán hacia el target propio de cada nanobot y se vería
+como un temblor errático en vez de una convergencia prolija. En reposo esos
+mismos pesos se respetan tal cual los deja el usuario, para el movimiento
+orgánico de enjambre.
 
 Al pedir "Volver al núcleo" con una figura formada, el enjambre no salta
 directo al reposo: cada nanobot espera su turno **en fila** (por orden) y
