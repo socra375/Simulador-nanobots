@@ -70,6 +70,23 @@ const NANOBOT_LAYER_DURATION = NANOBOT_TRAVEL_DURATION + NANOBOT_LAYER_STAGGER_S
 const NANOBOT_SWIRL_TURNS = 1.2;
 const NANOBOT_SWIRL_MAX_RADIUS = 1.0;
 
+// Fase 22: SOLO la 1ra ola de Color (layerIndex === 1, la que sigue a
+// Detalle) sale distinto — en vez de que cada agente vuele individual
+// desde el núcleo de entrada, primero viaja una "bola mediana" (todos los
+// agentes de esa ola juntos, con un remolino chico) desde el núcleo hasta
+// el centroide de esa ola (`nanobotWave0Landing`, ver startFormation), y
+// RECIÉN AHÍ se abren en el mismo enjambre escalonado de siempre — sin
+// sumar duración: se reparte el mismo NANOBOT_LAYER_DURATION de esa capa
+// en "bola" (primera fracción) + "enjambre" (el resto). El resto de las
+// capas (Detalle, y las olas de color siguientes) no cambian.
+const NANOBOT_PACKET_FRACTION = 0.35;
+const NANOBOT_PACKET_SWIRL_TURNS = 1.5;
+const NANOBOT_PACKET_SWIRL_MAX_RADIUS = 0.4;
+const NANOBOT_PACKET_DURATION = NANOBOT_LAYER_DURATION * NANOBOT_PACKET_FRACTION;
+const NANOBOT_BURST_WINDOW = NANOBOT_LAYER_DURATION - NANOBOT_PACKET_DURATION;
+const NANOBOT_BURST_TRAVEL_DURATION = NANOBOT_BURST_WINDOW / 2;
+const NANOBOT_BURST_STAGGER_SPAN = NANOBOT_BURST_WINDOW / 2;
+
 const DEFAULT_STATE: UiState = {
   // Antes 80 (sin cambios desde la Fase 1) — con el exoesqueleto de
   // Microbots ahora mucho más rico (Fase 15), ese relleno por defecto se
@@ -198,6 +215,11 @@ async function main() {
   let nanobotTotalDuration = NANOBOT_LAYER_DURATION;
   const nanobotRenderPositions = new Float32Array(MAX_NANOBOTS * 3);
   const nanobotSwirlScratch: [number, number, number] = [0, 0, 0];
+  // Fase 22: centroide de la 1ra ola de Color (colorWave === 0) — el punto
+  // de "aterrizaje" de la bola antes de abrirse en enjambre (ver
+  // renderNanobotsAt). Calculado una vez en startFormation; cualquier otra
+  // forma lo calcula igual (mecanismo genérico, no específico de "cabeza").
+  let nanobotWave0Landing: [number, number, number] = [...FORMATION_CENTER];
 
   // Microbots (Fase 15/16): exoesqueleto denso e independiente de la
   // física Wasm — se anima con un lanzamiento en vórtice propio (ver
@@ -291,6 +313,7 @@ async function main() {
     const n = nanobotAnimCount;
     const layerIndex = nanobotLayerIndexAt(elapsed);
     const layerElapsed = elapsed - layerIndex * NANOBOT_LAYER_DURATION;
+    const isFirstColorWave = layerIndex === 1;
     for (let i = 0; i < n; i++) {
       const layer = nanobotLayerOf[i];
       if (layer < layerIndex) {
@@ -301,6 +324,27 @@ async function main() {
         nanobotRenderPositions[i * 3 + 0] = reactorCenter[0];
         nanobotRenderPositions[i * 3 + 1] = reactorCenter[1];
         nanobotRenderPositions[i * 3 + 2] = reactorCenter[2];
+      } else if (isFirstColorWave && layerElapsed < NANOBOT_PACKET_DURATION) {
+        // "Bola": todo el grupo viaja junto hacia nanobotWave0Landing, con
+        // un remolino chico (se ve como una bola mediana, no una maraña —
+        // es solo esta ola, no toda la población, y dura poco).
+        const eased = easeInOutCubic(Math.min(Math.max(layerElapsed / NANOBOT_PACKET_DURATION, 0), 1));
+        swirlOffset(eased, i, NANOBOT_PACKET_SWIRL_TURNS, NANOBOT_PACKET_SWIRL_MAX_RADIUS, nanobotSwirlScratch);
+        nanobotRenderPositions[i * 3 + 0] = reactorCenter[0] + (nanobotWave0Landing[0] - reactorCenter[0]) * eased + nanobotSwirlScratch[0];
+        nanobotRenderPositions[i * 3 + 1] = reactorCenter[1] + (nanobotWave0Landing[1] - reactorCenter[1]) * eased + nanobotSwirlScratch[1];
+        nanobotRenderPositions[i * 3 + 2] = reactorCenter[2] + (nanobotWave0Landing[2] - reactorCenter[2]) * eased + nanobotSwirlScratch[2];
+      } else if (isFirstColorWave) {
+        // "Enjambre": igual que el vuelo individual de siempre, pero desde
+        // nanobotWave0Landing (donde aterrizó la bola) en vez del núcleo —
+        // en layerElapsed = NANOBOT_PACKET_DURATION exacto, todos arrancan
+        // justo ahí (eased de la bola = 1), sin salto.
+        const burstElapsed = layerElapsed - NANOBOT_PACKET_DURATION;
+        const localT = (burstElapsed - nanobotDelayFraction[i] * NANOBOT_BURST_STAGGER_SPAN) / NANOBOT_BURST_TRAVEL_DURATION;
+        const eased = easeInOutCubic(Math.min(Math.max(localT, 0), 1));
+        swirlOffset(eased, i, NANOBOT_SWIRL_TURNS, NANOBOT_SWIRL_MAX_RADIUS, nanobotSwirlScratch);
+        nanobotRenderPositions[i * 3 + 0] = nanobotWave0Landing[0] + (points[i * 3 + 0] - nanobotWave0Landing[0]) * eased + nanobotSwirlScratch[0];
+        nanobotRenderPositions[i * 3 + 1] = nanobotWave0Landing[1] + (points[i * 3 + 1] - nanobotWave0Landing[1]) * eased + nanobotSwirlScratch[1];
+        nanobotRenderPositions[i * 3 + 2] = nanobotWave0Landing[2] + (points[i * 3 + 2] - nanobotWave0Landing[2]) * eased + nanobotSwirlScratch[2];
       } else {
         const localT = (layerElapsed - nanobotDelayFraction[i] * NANOBOT_LAYER_STAGGER_SPAN) / NANOBOT_TRAVEL_DURATION;
         const eased = easeInOutCubic(Math.min(Math.max(localT, 0), 1));
@@ -355,11 +399,25 @@ async function main() {
 
     const layerOf = new Uint8Array(state.count);
     const layerCounts = new Array<number>(nanobotLayerCount).fill(0);
+    // Centroide de la 1ra ola de Color (layer===1), para la "bola" de
+    // Fase 22 (ver renderNanobotsAt) — acumulado en el mismo pase que ya
+    // recorre todos los agentes, sin costo extra.
+    let wave0SumX = 0, wave0SumY = 0, wave0SumZ = 0, wave0Count = 0;
     for (let i = 0; i < state.count; i++) {
       const layer = formation.roles[i] === NANOBOT_ROLE.COLOR ? 1 + formation.colorWave[i] : 0;
       layerOf[i] = layer;
       layerCounts[layer]++;
+      if (layer === 1) {
+        wave0SumX += formation.points[i * 3 + 0];
+        wave0SumY += formation.points[i * 3 + 1];
+        wave0SumZ += formation.points[i * 3 + 2];
+        wave0Count++;
+      }
     }
+    nanobotWave0Landing =
+      wave0Count > 0
+        ? [wave0SumX / wave0Count, wave0SumY / wave0Count, wave0SumZ / wave0Count]
+        : [...FORMATION_CENTER];
     const delayFraction = new Float32Array(state.count);
     const layerCursor = new Array<number>(nanobotLayerCount).fill(0);
     for (let i = 0; i < state.count; i++) {

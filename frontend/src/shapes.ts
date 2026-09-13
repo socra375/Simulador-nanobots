@@ -939,8 +939,12 @@ function cabezaHair(count: number): Float32Array {
   // Cuero cabelludo: banda superior de una esfera levemente más grande
   // que la piel en esa zona — al ir "por fuera", tapa visualmente a la
   // piel de abajo sin necesitar excluir nada (mismo principio de
-  // solapamiento que el resto del archivo).
-  const cap = translate(scaleAxis(sampleSphereSurfaceBand(headR * 1.04, capCount, 0.05, 1), 2, 0.88), 0, headCenterY, 0);
+  // solapamiento que el resto del archivo). Fase 22: `yFracMin` sube de
+  // 0.05 a 0.34 (por encima de la altura de cejas, ≈0.18) — antes el
+  // cabello arrancaba MÁS ABAJO que cejas/ojos y les caía encima; ahora
+  // queda una franja de frente despejada entre el nacimiento del pelo y
+  // las cejas.
+  const cap = translate(scaleAxis(sampleSphereSurfaceBand(headR * 1.04, capCount, 0.34, 1), 2, 0.88), 0, headCenterY, 0);
   const browY = headCenterY + headR * 0.18;
   const browZ = headR * 0.84;
   const browSpan = headR * 0.16;
@@ -1644,27 +1648,42 @@ function cabezaBones(count: number): Float32Array {
   const jawR = skullR * 0.6;
   const jawCenterY = headCenterY - skullR * 0.55;
 
-  const [craniumCount, jawCount, teethCount, spineCount] = splitCounts(count, [50, 18, 12, 20]);
+  // Fase 22: más peso relativo a cráneo/mandíbula/dientes (más
+  // definición) y algo menos a columna (elemento menor en la silueta de
+  // "cabeza" sola).
+  const [craniumCount, jawCount, teethCount, spineCount] = splitCounts(count, [48, 20, 14, 18]);
 
-  // Se tallan las cuencas/nariz ANTES de trasladar (las direcciones de
-  // los conos son relativas al centro de la esfera, en el origen).
+  // Se tallan/abultan ANTES de trasladar (las direcciones de los conos
+  // son relativas al centro de la esfera, en el origen). `carveSocket`
+  // con pullFactor<1 hunde (cuenca/cavidad), con pullFactor>1 abulta
+  // (arco superciliar/pómulo/puente nasal) — mismo helper, mismo costo.
   const cranium = scaleAxis(sampleSphereSurface(skullR, craniumCount), 2, 0.88);
-  carveSocket(cranium, craniumCount, -0.42, 0.12, 0.9, 0.86, 0.72); // cuenca ocular izquierda
-  carveSocket(cranium, craniumCount, 0.42, 0.12, 0.9, 0.86, 0.72); // cuenca ocular derecha
-  carveSocket(cranium, craniumCount, 0, -0.15, 1, 0.92, 0.8); // cavidad nasal
+  carveSocket(cranium, craniumCount, -0.42, 0.12, 0.9, 0.8, 0.6); // cuenca ocular izquierda (más ancha/profunda)
+  carveSocket(cranium, craniumCount, 0.42, 0.12, 0.9, 0.8, 0.6); // cuenca ocular derecha
+  carveSocket(cranium, craniumCount, 0, -0.15, 1, 0.94, 0.72); // cavidad nasal (más definida)
+  carveSocket(cranium, craniumCount, -0.42, 0.32, 0.85, 0.9, 1.15); // arco superciliar izquierdo
+  carveSocket(cranium, craniumCount, 0.42, 0.32, 0.85, 0.9, 1.15); // arco superciliar derecho
+  carveSocket(cranium, craniumCount, -0.55, -0.05, 0.8, 0.88, 1.12); // pómulo izquierdo
+  carveSocket(cranium, craniumCount, 0.55, -0.05, 0.8, 0.88, 1.12); // pómulo derecho
+  carveSocket(cranium, craniumCount, 0, 0.05, 1, 0.95, 1.08); // puente nasal
   const craniumPlaced = translate(cranium, 0, headCenterY, 0);
 
-  // Mandíbula: arco (mentón al frente, sube hacia las articulaciones a
-  // cada lado) — el jitter de samplePolyline da volumen de hueso en vez
-  // de una línea fina.
+  // Mandíbula: arco de 5 puntos (cóndilo/articulación -> ángulo mandibular
+  // -> mentón -> ángulo -> cóndilo) en vez de 3 — contorno más nítido y
+  // anatómico; el jitter de samplePolyline sigue dando volumen de hueso.
+  const condyleY = jawCenterY + jawR * 0.7;
+  const angleY = jawCenterY + jawR * 0.1;
+  const chinY = jawCenterY - jawR * 0.35;
   const jaw = samplePolyline(
     [
-      [-jawR * 0.9, jawCenterY + jawR * 0.5, 0],
-      [0, jawCenterY - jawR * 0.3, jawR * 0.7],
-      [jawR * 0.9, jawCenterY + jawR * 0.5, 0],
+      [-jawR, condyleY, 0],
+      [-jawR * 0.95, angleY, jawR * 0.35],
+      [0, chinY, jawR * 0.78],
+      [jawR * 0.95, angleY, jawR * 0.35],
+      [jawR, condyleY, 0],
     ],
     jawCount,
-    jawR * 0.12,
+    jawR * 0.1,
   );
 
   // Dientes: 2 arcos cortos (superior/inferior) — se leen como "hilera"
