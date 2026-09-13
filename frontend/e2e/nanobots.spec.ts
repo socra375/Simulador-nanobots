@@ -41,7 +41,10 @@ async function readCommandsStatus(page: Page): Promise<string | null> {
 }
 
 async function attachFakePhoto(page: Page) {
-  const fileInput = page.locator('input[type="file"]');
+  // Fase 23 agregó 4 inputs de archivo más (carpeta "Escaneo 3D",
+  // marcados con data-scan-slot) — el de "Comandos" es el único sin ese
+  // atributo.
+  const fileInput = page.locator('input[type="file"]:not([data-scan-slot])');
   const pngBuffer = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64",
