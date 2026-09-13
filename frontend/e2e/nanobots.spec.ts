@@ -107,18 +107,20 @@ test("Volver al núcleo tras formar una figura actualiza el status", async ({ pa
 });
 
 async function setNanobotCount(page: Page, count: number) {
-  await page.evaluate((value) => {
-    const controllers = Array.from(document.querySelectorAll(".lil-gui .controller"));
-    const nanobots = controllers.find((c) => c.querySelector(".name")?.textContent === "Nanobots");
-    const input = nanobots!.querySelector<HTMLInputElement>("input")!;
-    input.value = String(value);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-  }, count);
-  // El slider de lil-gui solo confirma el valor (dispara onFinishChange, que
-  // llama a swarm.init() con la nueva cantidad) al perder el foco — sin este
-  // Tab, `state.count` en JS queda desincronizado del buffer real de Wasm.
-  await page.keyboard.press("Tab");
+  // IMPORTANTE: fijar `input.value` a mano y disparar eventos "input"/"change"
+  // sintéticos NO dispara de forma confiable el onFinishChange de lil-gui (se
+  // confirmó investigando un falso positivo: el valor mostrado cambiaba pero
+  // `swarm.init()` nunca se llamaba, dejando el buffer de Wasm desincronizado
+  // del conteo real). Una interacción realista — click, seleccionar todo,
+  // escribir, Tab (dispara blur) — sí lo hace siempre.
+  const controller = page.locator(".lil-gui .controller").filter({
+    has: page.locator(".name", { hasText: "Nanobots" }),
+  });
+  const input = controller.locator("input");
+  await input.click();
+  await input.press("Control+A");
+  await input.type(String(count));
+  await input.press("Tab");
 }
 
 async function dragRotateCamera(page: Page, dx = 150, dy = -80): Promise<void> {

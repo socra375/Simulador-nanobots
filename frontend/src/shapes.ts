@@ -237,9 +237,12 @@ export function listSupportedNames(): string[] {
 
 // --- Los 3 roles de nanobots que participan al formar una figura ---
 //
-// - ESTRUCTURA: un subconjunto disperso de "puntos ancla" de la propia
-//   figura (el mismo generador, llamado con menos puntos) — define el
-//   esqueleto/silueta general, como las vigas de una construcción.
+// - ESTRUCTURA: un subconjunto de "puntos ancla" de la propia figura (el
+//   mismo generador, llamado con menos puntos, pero elegidos con farthest
+//   point sampling — ver buildStructureAnchors — para que queden PAREJOS
+//   por toda la silueta en vez de un muestreo al azar que puede dejar
+//   zonas sin cubrir) — define el esqueleto/exoesqueleto, como las vigas
+//   de una construcción.
 // - RELACION: interpolados a lo largo del segmento entre pares de anclas
 //   de ESTRUCTURA cercanas — literalmente "se unen unos con otros",
 //   trazando las conexiones entre los puntos de estructura (como cables
@@ -250,9 +253,11 @@ export function listSupportedNames(): string[] {
 export const NANOBOT_ROLE = { STRUCTURE: 0, RELATION: 1, DETAIL: 2 } as const;
 export type NanobotRole = (typeof NANOBOT_ROLE)[keyof typeof NANOBOT_ROLE];
 
-const ROLE_RATIO_STRUCTURE = 0.15;
-const ROLE_RATIO_RELATION = 0.25;
-// El resto (~60%) es DETALLE.
+const ROLE_RATIO_STRUCTURE = 0.12;
+const ROLE_RATIO_RELATION = 0.16;
+// El resto (~74%) es DETALLE — la mayor parte de la cantidad, para que su
+// relleno tape los huecos entre las vigas de RELACION en vez de dejar
+// grietas visibles.
 
 export interface ShapeFormation {
   points: Float32Array; // count*3 floats, ya trasladados a `center`
@@ -417,6 +422,66 @@ function assignRelationEdges(
   return { points, spans };
 }
 
+// Cuántos candidatos de más se generan por cada ancla de ESTRUCTURA que
+// hace falta, para poder elegir con farthest-point sampling (ver abajo) en
+// vez de quedarse con la muestra al azar cruda del generador.
+const STRUCTURE_OVERSAMPLE_FACTOR = 4;
+
+// Elige `want` puntos de entre `candidates` (candidateCount de ellos) con
+// farthest-point sampling (greedy: cada nuevo punto es el más lejano a
+// todos los ya elegidos): da una distribución PAREJA por toda la silueta de
+// la figura en vez de la aglomeración/huecos que deja un muestreo al azar
+// crudo — el "exoesqueleto" de ESTRUCTURA queda cubriendo la forma de
+// manera uniforme, para que RELACION tenga anclas bien repartidas a las
+// que conectarse en cualquier zona de la figura.
+function farthestPointSample(candidates: Float32Array, candidateCount: number, want: number): Float32Array {
+  if (want <= 0 || candidateCount === 0) return new Float32Array(0);
+  const n = Math.min(want, candidateCount);
+  const chosen = new Int32Array(n);
+  const minDistSq = new Float32Array(candidateCount).fill(Infinity);
+
+  let current = Math.floor(Math.random() * candidateCount);
+  chosen[0] = current;
+
+  for (let picked = 1; picked < n; picked++) {
+    const cx = candidates[current * 3 + 0];
+    const cy = candidates[current * 3 + 1];
+    const cz = candidates[current * 3 + 2];
+    let best = -1;
+    let bestDist = -1;
+    for (let j = 0; j < candidateCount; j++) {
+      const dx = candidates[j * 3 + 0] - cx;
+      const dy = candidates[j * 3 + 1] - cy;
+      const dz = candidates[j * 3 + 2] - cz;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < minDistSq[j]) minDistSq[j] = d;
+      if (minDistSq[j] > bestDist) {
+        bestDist = minDistSq[j];
+        best = j;
+      }
+    }
+    current = best;
+    chosen[picked] = current;
+  }
+
+  const out = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const idx = chosen[i];
+    out[i * 3 + 0] = candidates[idx * 3 + 0];
+    out[i * 3 + 1] = candidates[idx * 3 + 1];
+    out[i * 3 + 2] = candidates[idx * 3 + 2];
+  }
+  return out;
+}
+
+// Genera las anclas de ESTRUCTURA: sobre-muestrea la figura y se queda con
+// las `count` mejor distribuidas (ver farthestPointSample).
+function buildStructureAnchors(generator: (n: number) => Float32Array, count: number): Float32Array {
+  if (count <= 0) return new Float32Array(0);
+  const oversampled = generator(count * STRUCTURE_OVERSAMPLE_FACTOR);
+  return farthestPointSample(oversampled, oversampled.length / 3, count);
+}
+
 // Genera la nube de puntos de la figura (repartida en los 3 roles) y la
 // traslada a `center`. Devuelve null si `name` no matchea ninguna forma
 // conocida.
@@ -433,7 +498,7 @@ export function formShapeWithRoles(
   const relationCount = Math.round(Math.max(0, count - structureCount) * ROLE_RATIO_RELATION);
   const detailCount = count - structureCount - relationCount;
 
-  const structurePts = generator(structureCount);
+  const structurePts = buildStructureAnchors(generator, structureCount);
   const relationEdges = buildRelationEdges(structurePts, structureCount);
   const { points: relationPts, spans: relationSpansLocal } = assignRelationEdges(
     structurePts,

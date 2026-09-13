@@ -61,6 +61,42 @@ describe("formShapeWithRoles", () => {
     }
   });
 
+  it("las anclas de ESTRUCTURA quedan parejamente distribuidas (farthest-point sampling, sin duplicados pegados)", () => {
+    // Con un muestreo al azar crudo, algunas anclas caerían muy cerca unas
+    // de otras (huecos en otras zonas) — farthest-point sampling evita eso.
+    // No comparamos contra el muestreo crudo (no expuesto públicamente):
+    // alcanza con verificar que ninguna ancla quede pegada a su vecina más
+    // cercana, para varias formas y tamaños.
+    for (const name of ["cubo", "esfera", "estrella"]) {
+      for (const count of [100, 400]) {
+        const formation = formShapeWithRoles(name, count)!;
+        const anchors: number[] = [];
+        for (let i = 0; i < count; i++) {
+          if (formation.roles[i] === NANOBOT_ROLE.STRUCTURE) anchors.push(i);
+        }
+        expect(anchors.length).toBeGreaterThan(3);
+
+        let minNearestDist = Infinity;
+        for (const a of anchors) {
+          let nearest = Infinity;
+          for (const b of anchors) {
+            if (a === b) continue;
+            const dx = formation.points[a * 3 + 0] - formation.points[b * 3 + 0];
+            const dy = formation.points[a * 3 + 1] - formation.points[b * 3 + 1];
+            const dz = formation.points[a * 3 + 2] - formation.points[b * 3 + 2];
+            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist < nearest) nearest = dist;
+          }
+          if (nearest < minNearestDist) minNearestDist = nearest;
+        }
+        // Umbral laxo a propósito (solo detecta clustering catastrófico,
+        // p.ej. si farthest-point sampling se rompiera y devolviera
+        // duplicados exactos o casi-duplicados).
+        expect(minNearestDist).toBeGreaterThan(0.15);
+      }
+    }
+  });
+
   it("cada agente RELACION trae 2 anclas distintas y no colapsadas en el mismo punto", () => {
     const formation = formShapeWithRoles("cubo", 500)!;
     let checked = 0;
@@ -143,7 +179,7 @@ describe("formShapeWithRoles", () => {
     expect(formShapeWithRoles("no-existe", 50)).toBeNull();
   });
 
-  it("reparte los 3 roles aproximadamente 15/25/60 y usa solo valores válidos", () => {
+  it("reparte los 3 roles aproximadamente 12/14/74 (DETALLE es la mayoría) y usa solo valores válidos", () => {
     const formation = formShapeWithRoles("esfera", 1000)!;
     let structure = 0, relation = 0, detail = 0;
     for (const role of formation.roles) {
@@ -153,10 +189,12 @@ describe("formShapeWithRoles", () => {
       else detail++;
     }
     expect(structure + relation + detail).toBe(1000);
-    // proporciones aproximadas: 15% estructura, ~21% relación (25% del resto), el resto detalle
-    expect(structure).toBeGreaterThan(100);
-    expect(structure).toBeLessThan(200);
-    expect(detail).toBeGreaterThan(relation);
+    // proporciones aproximadas: 12% estructura, ~14% relación (16% del resto), ~74% detalle —
+    // DETALLE se lleva la mayor parte a propósito, para tapar huecos/grietas en el relleno.
+    expect(structure).toBeGreaterThan(80);
+    expect(structure).toBeLessThan(160);
+    expect(detail).toBeGreaterThan(700);
+    expect(detail).toBeGreaterThan(relation * 4);
   });
 
   it("con counts muy chicos (< 4) sigue devolviendo roles válidos sin crashear", () => {
