@@ -2,41 +2,25 @@ import * as THREE from "three";
 import { NANOBOT_ROLE } from "./shapes";
 
 // Geometría y material por ROL de nanobot (ver shapes.ts):
-// - ESTRUCTURA: icosaedro wireframe — el "esqueleto" de la figura.
-// - RELACION: hexágono extruido wireframe — las "conexiones" entre anclas.
-// - DETALLE: esfera SÓLIDA emissive (no wireframe) — el relleno que le da
-//   color y pulido final a la silueta, encima del esqueleto de las otras dos.
-function buildHexagonGeometry(radius: number, depth: number): THREE.ExtrudeGeometry {
-  const shape = new THREE.Shape();
-  const sides = 6;
-  for (let i = 0; i <= sides; i++) {
-    const angle = (i / sides) * Math.PI * 2;
-    const x = Math.cos(angle) * radius;
-    const y = Math.sin(angle) * radius;
-    if (i === 0) shape.moveTo(x, y);
-    else shape.lineTo(x, y);
-  }
-  return new THREE.ExtrudeGeometry(shape, {
-    depth,
-    bevelEnabled: false,
-    curveSegments: 6,
-  });
-}
-
-// Cantidad para la que se afinó el tamaño/proporción visual original de
-// cada nanobot (Fase 1/2). Por encima de esto, se achican con la densidad.
+// - ESTRUCTURA: icosaedro SÓLIDO — los "nodos"/anclas soldados del esqueleto.
+// - RELACION: viga (cilindro) SÓLIDA, orientada y estirada entre las 2
+//   anclas de ESTRUCTURA que conecta (ver relationSpans) — así se ve
+//   literalmente "unida" a la estructura en vez de flotar suelta.
+// - DETALLE: esfera SÓLIDA emissive — el relleno que le da color y pulido
+//   final a la silueta, encima del esqueleto de las otras dos.
 const SCALE_BASELINE_COUNT = 80;
 
-// Índice = NANOBOT_ROLE.{STRUCTURE,RELATION,DETAIL}.
+// Índice = NANOBOT_ROLE.{STRUCTURE,RELATION,DETAIL}. La viga de RELACION usa
+// un cilindro de altura unitaria (largo 1): se escala en Y al largo real del
+// segmento que conecta, así que su "tamaño de diseño" es solo el radio.
 const ROLE_GEOMETRIES: THREE.BufferGeometry[] = [
-  new THREE.IcosahedronGeometry(0.45, 0), // estructura
-  buildHexagonGeometry(0.4, 0.15), // relación
+  new THREE.IcosahedronGeometry(0.4, 0), // estructura
+  new THREE.CylinderGeometry(0.16, 0.16, 1, 6), // relación
   new THREE.SphereGeometry(0.4, 8, 6), // detalle
 ];
 
 function buildRoleMaterial(role: number): THREE.Material {
   if (role === NANOBOT_ROLE.DETAIL) {
-    // Sólido y emissive: el rol que "da color y los últimos retoques".
     return new THREE.MeshStandardMaterial({
       color: 0x1c8f5a,
       emissive: 0x7dffb3,
@@ -45,14 +29,34 @@ function buildRoleMaterial(role: number): THREE.Material {
       metalness: 0.1,
     });
   }
-  const color = role === NANOBOT_ROLE.STRUCTURE ? 0x4be3ff : 0xff5fd6;
-  return new THREE.MeshBasicMaterial({ color, wireframe: true });
+  if (role === NANOBOT_ROLE.RELATION) {
+    return new THREE.MeshStandardMaterial({
+      color: 0x8a1f6e,
+      emissive: 0xff5fd6,
+      emissiveIntensity: 0.8,
+      roughness: 0.4,
+      metalness: 0.2,
+    });
+  }
+  return new THREE.MeshStandardMaterial({
+    color: 0x1f5c8a,
+    emissive: 0x4be3ff,
+    emissiveIntensity: 0.8,
+    roughness: 0.4,
+    metalness: 0.2,
+  });
 }
 
 export interface NanobotSwarmMesh {
   group: THREE.Group;
   setCount: (count: number) => void;
-  updateFromPositions: (positions: Float32Array, count: number, roles: Uint8Array<ArrayBufferLike>) => void;
+  updateFromPositions: (
+    positions: Float32Array,
+    count: number,
+    roles: Uint8Array<ArrayBufferLike>,
+    relationSpans: Float32Array,
+    visibleRoles: readonly [boolean, boolean, boolean],
+  ) => void;
   setVisible: (visible: boolean) => void;
 }
 
@@ -63,6 +67,10 @@ export interface NanobotSwarmMesh {
 export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   const group = new THREE.Group();
   const dummy = new THREE.Object3D();
+  const relationA = new THREE.Vector3();
+  const relationB = new THREE.Vector3();
+  const relationDir = new THREE.Vector3();
+  const UP = new THREE.Vector3(0, 1, 0);
 
   const instancedMeshes = ROLE_GEOMETRIES.map((geometry, role) => {
     const mesh = new THREE.InstancedMesh(geometry, buildRoleMaterial(role), maxCount);
@@ -82,7 +90,13 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     });
   }
 
-  function updateFromPositions(positions: Float32Array, count: number, roles: Uint8Array<ArrayBufferLike>) {
+  function updateFromPositions(
+    positions: Float32Array,
+    count: number,
+    roles: Uint8Array<ArrayBufferLike>,
+    relationSpans: Float32Array,
+    visibleRoles: readonly [boolean, boolean, boolean],
+  ) {
     // Con miles de nanobots en el mismo volumen, el tamaño fijo (afinado
     // para ~80) los hace superponerse tanto que una figura se ve como un
     // blob sólido en vez de un contorno nítido. Se achican con la densidad
@@ -92,12 +106,38 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
 
     for (let i = 0; i < count; i++) {
       const role = roles[i];
+      // Rol todavía no revelado (ver formationPhase en main.ts): el agente
+      // sigue "dentro" del núcleo, no se dibuja hasta que le toque su turno.
+      if (!visibleRoles[role]) continue;
       const mesh = instancedMeshes[role];
       const localIndex = localCounters[role]++;
 
-      dummy.position.set(positions[i * 3 + 0], positions[i * 3 + 1], positions[i * 3 + 2]);
-      dummy.rotation.set(positions[i * 3 + 1] * 0.15, positions[i * 3 + 0] * 0.15, 0);
-      dummy.scale.setScalar(scale);
+      if (role === NANOBOT_ROLE.RELATION) {
+        // Viga sólida entre las 2 anclas de ESTRUCTURA que este nanobot
+        // conecta: se posiciona en su punto físico real (cerca del punto
+        // medio del segmento) y se orienta/estira para cubrir el largo
+        // real de la conexión.
+        relationA.set(
+          relationSpans[i * 6 + 0],
+          relationSpans[i * 6 + 1],
+          relationSpans[i * 6 + 2],
+        );
+        relationB.set(
+          relationSpans[i * 6 + 3],
+          relationSpans[i * 6 + 4],
+          relationSpans[i * 6 + 5],
+        );
+        relationDir.subVectors(relationB, relationA);
+        const length = Math.max(relationDir.length(), 0.001);
+        relationDir.normalize();
+        dummy.position.set(positions[i * 3 + 0], positions[i * 3 + 1], positions[i * 3 + 2]);
+        dummy.quaternion.setFromUnitVectors(UP, relationDir);
+        dummy.scale.set(scale, length, scale);
+      } else {
+        dummy.position.set(positions[i * 3 + 0], positions[i * 3 + 1], positions[i * 3 + 2]);
+        dummy.rotation.set(positions[i * 3 + 1] * 0.15, positions[i * 3 + 0] * 0.15, 0);
+        dummy.scale.setScalar(scale);
+      }
       dummy.updateMatrix();
       mesh.setMatrixAt(localIndex, dummy.matrix);
     }

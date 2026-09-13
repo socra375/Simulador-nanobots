@@ -257,23 +257,82 @@ const ROLE_RATIO_RELATION = 0.25;
 export interface ShapeFormation {
   points: Float32Array; // count*3 floats, ya trasladados a `center`
   roles: Uint8Array<ArrayBufferLike>; // largo count, uno de NANOBOT_ROLE por agente
+  // Para agentes RELACION: las 2 anclas de ESTRUCTURA que ese nanobot une,
+  // ya trasladadas a `center`, como [ax,ay,az,bx,by,bz] — permite dibujarlo
+  // como una viga sólida entre ambas en vez de un punto flotante suelto
+  // (ver nanobot-mesh.ts). Sin uso para ESTRUCTURA/DETALLE (queda en 0).
+  relationSpans: Float32Array; // count*6 floats
 }
 
-function nearestNeighborInterpolated(anchors: Float32Array, anchorCount: number, outCount: number): Float32Array {
-  const out = new Float32Array(outCount * 3);
-  if (anchorCount === 0) return out;
+// Cada nanobot de RELACION vive en el punto medio de la viga que conecta un
+// ancla de ESTRUCTURA con una de sus vecinas MÁS CERCANAS (no un par al azar
+// cualquiera: conectar anclas lejanas entre sí dibuja una maraña de líneas
+// cruzando el interior de la figura en vez de trazar su silueta), y devuelve
+// también ambos extremos para poder dibujarla como una barra sólida — así
+// "se unen unos con otros" siguiendo la forma real, en vez de flotar sin
+// conexión visible.
+const RELATION_NEAREST_K = 4;
+
+function buildRelationSpans(
+  anchors: Float32Array,
+  anchorCount: number,
+  outCount: number,
+): { points: Float32Array; spans: Float32Array } {
+  const points = new Float32Array(outCount * 3);
+  const spans = new Float32Array(outCount * 6);
+  if (anchorCount < 2) return { points, spans };
+
+  const k = Math.min(RELATION_NEAREST_K, anchorCount - 1);
+  const nearestIdx = new Int32Array(k);
+  const nearestDist = new Float32Array(k);
+
+  const insertSorted = (filled: number, idx: number, dist: number): number => {
+    let pos = filled < k ? filled : k - 1;
+    if (filled === k) {
+      if (dist >= nearestDist[k - 1]) return filled;
+    } else {
+      filled++;
+    }
+    while (pos > 0 && nearestDist[pos - 1] > dist) {
+      nearestDist[pos] = nearestDist[pos - 1];
+      nearestIdx[pos] = nearestIdx[pos - 1];
+      pos--;
+    }
+    nearestDist[pos] = dist;
+    nearestIdx[pos] = idx;
+    return filled;
+  };
+
   for (let i = 0; i < outCount; i++) {
     const a = Math.floor(Math.random() * anchorCount);
-    let b = a;
-    if (anchorCount > 1) {
-      while (b === a) b = Math.floor(Math.random() * anchorCount);
+    const ax = anchors[a * 3 + 0];
+    const ay = anchors[a * 3 + 1];
+    const az = anchors[a * 3 + 2];
+
+    let filled = 0;
+    for (let j = 0; j < anchorCount; j++) {
+      if (j === a) continue;
+      const dx = anchors[j * 3 + 0] - ax;
+      const dy = anchors[j * 3 + 1] - ay;
+      const dz = anchors[j * 3 + 2] - az;
+      filled = insertSorted(filled, j, dx * dx + dy * dy + dz * dz);
     }
-    const t = Math.random();
-    out[i * 3 + 0] = anchors[a * 3 + 0] * (1 - t) + anchors[b * 3 + 0] * t;
-    out[i * 3 + 1] = anchors[a * 3 + 1] * (1 - t) + anchors[b * 3 + 1] * t;
-    out[i * 3 + 2] = anchors[a * 3 + 2] * (1 - t) + anchors[b * 3 + 2] * t;
+
+    const b = nearestIdx[Math.floor(Math.random() * filled)];
+    const bx = anchors[b * 3 + 0];
+    const by = anchors[b * 3 + 1];
+    const bz = anchors[b * 3 + 2];
+    points[i * 3 + 0] = (ax + bx) / 2;
+    points[i * 3 + 1] = (ay + by) / 2;
+    points[i * 3 + 2] = (az + bz) / 2;
+    spans[i * 6 + 0] = ax;
+    spans[i * 6 + 1] = ay;
+    spans[i * 6 + 2] = az;
+    spans[i * 6 + 3] = bx;
+    spans[i * 6 + 4] = by;
+    spans[i * 6 + 5] = bz;
   }
-  return out;
+  return { points, spans };
 }
 
 // Genera la nube de puntos de la figura (repartida en los 3 roles) y la
@@ -293,11 +352,16 @@ export function formShapeWithRoles(
   const detailCount = count - structureCount - relationCount;
 
   const structurePts = generator(structureCount);
-  const relationPts = nearestNeighborInterpolated(structurePts, structureCount, relationCount);
+  const { points: relationPts, spans: relationSpansLocal } = buildRelationSpans(
+    structurePts,
+    structureCount,
+    relationCount,
+  );
   const detailPts = generator(detailCount);
 
   const points = new Float32Array(count * 3);
   const roles = new Uint8Array(count);
+  const relationSpans = new Float32Array(count * 6);
   let cursor = 0;
 
   const write = (src: Float32Array, n: number, role: NanobotRole) => {
@@ -311,10 +375,24 @@ export function formShapeWithRoles(
   };
 
   write(structurePts, structureCount, NANOBOT_ROLE.STRUCTURE);
-  write(relationPts, relationCount, NANOBOT_ROLE.RELATION);
+
+  for (let i = 0; i < relationCount; i++) {
+    points[cursor * 3 + 0] = relationPts[i * 3 + 0] + center[0];
+    points[cursor * 3 + 1] = relationPts[i * 3 + 1] + center[1];
+    points[cursor * 3 + 2] = relationPts[i * 3 + 2] + center[2];
+    roles[cursor] = NANOBOT_ROLE.RELATION;
+    relationSpans[cursor * 6 + 0] = relationSpansLocal[i * 6 + 0] + center[0];
+    relationSpans[cursor * 6 + 1] = relationSpansLocal[i * 6 + 1] + center[1];
+    relationSpans[cursor * 6 + 2] = relationSpansLocal[i * 6 + 2] + center[2];
+    relationSpans[cursor * 6 + 3] = relationSpansLocal[i * 6 + 3] + center[0];
+    relationSpans[cursor * 6 + 4] = relationSpansLocal[i * 6 + 4] + center[1];
+    relationSpans[cursor * 6 + 5] = relationSpansLocal[i * 6 + 5] + center[2];
+    cursor++;
+  }
+
   write(detailPts, detailCount, NANOBOT_ROLE.DETAIL);
 
-  return { points, roles };
+  return { points, roles, relationSpans };
 }
 
 // Cluster de reposo: cáscara esférica aleatoria alrededor del núcleo.

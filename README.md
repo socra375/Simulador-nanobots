@@ -11,18 +11,26 @@ núcleo/reactor en una esquina superior de la escena (los nanobots no se
 dibujan mientras están en reposo); desde la sección "Comandos" del panel se
 le puede pedir que forme un objeto (cubo, esfera, pirámide, estrella,
 anillo, corazón o cruz) — sale del núcleo, arma la figura, y puede volver a
-guardarse en el núcleo cuando se quiera. La cámara se puede rotar
-(arrastrar) y hacer zoom (rueda del mouse) para mirar la figura desde
-cualquier ángulo.
+guardarse en el núcleo cuando se quiera (con una animación de regreso en
+espiral, ver abajo). La cámara se puede rotar (arrastrar) y hacer zoom
+(rueda del mouse) para mirar la figura desde cualquier ángulo.
 
 Al formar una figura, el enjambre se reparte en **3 roles** con geometría y
-color propios:
+color propios, y **salen del núcleo de a uno por vez** (no los 3 a la vez):
+primero Estructura, luego Relación (recién cuando Estructura ya llegó a su
+posición), y por último Detalle — así se ve cómo se va construyendo la
+figura en capas.
 
 | Rol | Geometría | Función |
 |---|---|---|
-| **Estructura** | Icosaedro wireframe cian | Puntos ancla dispersos de la figura — el "esqueleto". |
-| **Relación** | Hexágono wireframe magenta | Interpolados entre anclas de Estructura cercanas — las conexiones que "unen" el esqueleto. |
-| **Detalle** | Esfera sólida emissive verde | Relleno denso a resolución completa — da el color y los últimos retoques para una silueta 3D nítida. |
+| **Estructura** | Icosaedro sólido cian | Nodos ancla dispersos de la figura — el "esqueleto"/las juntas de una construcción. |
+| **Relación** | Viga (cilindro) sólida magenta | Une cada ancla de Estructura con su vecina más cercana — una barra real entre ambas, no solo un punto suelto, para que la figura se vea conectada en vez de flotante. |
+| **Detalle** | Esfera sólida emissive verde | Relleno denso a resolución completa — da el color y los últimos retoques para una silueta 3D nítida y sólida por encima del esqueleto de las otras dos. |
+
+Al pedir "Volver al núcleo" con una figura formada, el enjambre no salta
+directo al reposo: cada nanobot espera su turno **en fila** (por orden) y
+recorre una **espiral** (radio decreciente + giro) convergiendo al núcleo,
+como una hilera entrando por un embudo, antes de ocultarse de nuevo.
 
 | Lenguaje | Rol | Carpeta |
 |---|---|---|
