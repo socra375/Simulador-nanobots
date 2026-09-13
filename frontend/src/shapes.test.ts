@@ -71,6 +71,11 @@ describe("listSupportedNames", () => {
     expect(resolveShapeName("manos")).toBe("mano");
     expect(resolveShapeName("tronco")).toBe("torso");
   });
+
+  it("resuelve brazo y pierna a sí mismos, sin intercambiarse (Fase 18)", () => {
+    expect(resolveShapeName("brazo")).toBe("brazo");
+    expect(resolveShapeName("pierna")).toBe("pierna");
+  });
 });
 
 describe("formShapeWithRoles", () => {

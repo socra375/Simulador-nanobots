@@ -14,20 +14,24 @@ anillo, corazón, cruz, carro, teléfono, persona/personaje, o una parte del
 cuerpo por separado — cabeza, torso, brazo, pierna, mano, pie — ver
 `frontend/src/shapes.ts` para la lista completa de sinónimos aceptados)
 — sale del núcleo, arma la figura, y puede volver a guardarse en el
-núcleo cuando se quiera (con una animación de regreso en espiral, ver
-abajo). La cámara se puede rotar (arrastrar) y hacer zoom (rueda del
-mouse) para mirar la figura desde cualquier ángulo.
+núcleo cuando se quiera (con una animación de repliegue, ver abajo). La
+cámara se puede rotar (arrastrar) y hacer zoom (rueda del mouse) para
+mirar la figura desde cualquier ángulo.
 
 Al formar una figura hay **dos poblaciones independientes** que trabajan en
-secuencia:
+secuencia, y ninguna de las dos usa física boid mientras se forma — la física
+de `boids.cpp` corre **solo en reposo** (el enjambre orgánico alrededor del
+núcleo); al formar, ambas poblaciones se mueven con animaciones 100%
+scripted en TypeScript, mucho más rápidas y sin el límite de vecinos-por-
+agente que antes topaba a Nanobots en 10.000 (ver "Notas de rendimiento"):
 
 1. **Microbots** (panel "Microbots (exoesqueleto)", conteo propio hasta
    60.000) arman primero el exoesqueleto de la figura, lanzándose desde el
-   núcleo en un remolino/vórtice propio (ver "Notas de rendimiento") que se
-   repliega igual al pedir "Volver al núcleo". Para las formas humanoides
-   (persona y las partes del cuerpo) el exoesqueleto es **literalmente el
-   hueso** — cráneo, columna/costillas, y huesos largos con forma real
-   (grueso en las puntas/epífisis, angosto en el medio/diáfisis, ver
+   núcleo en un remolino/vórtice propio que se repliega igual al pedir
+   "Volver al núcleo". Para las formas humanoides (persona y las partes del
+   cuerpo) el exoesqueleto es **literalmente el hueso** — cráneo,
+   columna/costillas, y huesos largos con forma real (grueso en las
+   puntas/epífisis, angosto en el medio/diáfisis, ver
    `sampleLongBoneSurface`) en vez de una red genérica de nodos y vigas.
    Las formas no-humanoides (cubo, carro, etc.) sí usan esa red genérica
    (nodos ancla por *farthest-point sampling* conectados por un árbol de
@@ -35,8 +39,15 @@ secuencia:
    Microbots no tiene física boid propia ni "Comandos" propio — siempre
    sigue automáticamente la figura activa de Nanobots.
 2. Recién cuando ese exoesqueleto termina de asentarse, **Nanobots** sale
-   del núcleo y se alinea/rellena encima (tejido y piel), en 2 roles
-   (Detalle y Color) que salen de a uno por vez.
+   del núcleo con una animación de **"bola fusionada + esparción"**: todas
+   las instancias arrancan amontonadas exactamente en el núcleo (se leen
+   como un único "nanobot gigante"), viajan como un solo grupo rígido hasta
+   el centro de la figura y ahí recién se esparcen, instancia por instancia
+   y con el mismo remolino orgánico que usan los Microbots, hacia su
+   posición final de tejido/piel — rodeando el hueso de Microbots sin
+   tocarlo, con tanta densidad que se lee como un segundo exoesqueleto
+   pero de piel. Detalle y Color llegan juntos en esta misma esparción
+   (ya no salen de a uno por vez, ver abajo).
 
 **Color es un 75% FIJO e independiente del total** de Nanobots (no es "lo
 que sobra" de un reparto entre roles): Detalle se lleva el 25% restante
@@ -46,8 +57,8 @@ entero.
 |---|---|---|---|
 | Microbots | Nodo | Icosaedro chico celeste | Anclas del exoesqueleto (*farthest-point sampling*), acotadas a un máximo (`MICROBOT_ANCHOR_CAP`) para que el cálculo (~O(n²)) no se trabe con conteos altos. |
 | Microbots | Viga | Cilindro chico celeste | Conecta cada ancla con su vecina (MST + vecinos cercanos) — la mayoría del budget de Microbots, ya que son baratas de generar a cualquier escala. |
-| Nanobots | **Detalle** | Esfera sólida emissive verde | 25% del total de Nanobots. Relleno con el color fijo de su rol — rellena mientras Color todavía no está listo para salir. |
-| Nanobots | **Color** | Esfera sólida emissive (ligeramente más grande) | **75% FIJO del total** de Nanobots. Sale en hasta **4 "olas" de color**, una por cada zona de color reconociblemente distinta de la foto (ver abajo). |
+| Nanobots | **Detalle** | Esfera sólida emissive verde (gris apagado mientras hay figura activa) | 25% del total de Nanobots. Relleno de base — llega junto con Color en la misma esparción. |
+| Nanobots | **Color** | Esfera sólida emissive (ligeramente más grande) | **75% FIJO del total** de Nanobots. Repartido en hasta **4 "olas" de color**, una por cada zona de color reconociblemente distinta de la foto (ver abajo) — todas llegan a la vez, no una por vez. |
 
 ### Varias olas de color
 
@@ -61,50 +72,44 @@ válidos de la foto, ignorando fondo blanco/negro/transparente). Todo
 100% en el navegador, sin IA/backend de visión.
 
 Cada cluster es una ola de Color independiente, con su propio
-`InstancedMesh`/color real (no un tinte compartido) y su propia
-sub-fase de revelado — salen de a una por vez, en orden de mayor a menor
-peso, cada una con una cantidad de nanobots proporcional a su peso en la
-foto (una foto 70% roja / 30% azul da una ola roja bastante más grande
-que la azul). Cada ola cubre una MUESTRA INDEPENDIENTE de toda la
-silueta (no una región geográfica de la figura — no hay forma de saber
-qué parte de la foto corresponde a qué parte de la figura 3D, ya que la
-forma sale del nombre escrito, no de la imagen), así que el efecto es:
-sale la ola más grande primero cubriendo gran parte de la figura,
-"dejando el espacio" (los agentes sin asignar a esa ola) para que la
-próxima ola lo cubra, hasta que entre todas cubren el 100% del budget de
-Color.
+`InstancedMesh`/color real (no un tinte compartido), cada una con una
+cantidad de nanobots proporcional a su peso en la foto (una foto 70% roja
+/ 30% azul da una ola roja bastante más grande que la azul). Cada ola cubre
+una MUESTRA INDEPENDIENTE de toda la silueta (no una región geográfica de
+la figura — no hay forma de saber qué parte de la foto corresponde a qué
+parte de la figura 3D, ya que la forma sale del nombre escrito, no de la
+imagen). Las 4 olas (y Detalle) llegan TODAS JUNTAS en la misma esparción
+— a diferencia de fases anteriores, ya no hay un revelado secuencial por
+rol/ola: la propia animación de bola+esparción es la que ahora "revela"
+visualmente la figura.
 
-Detalle NO desaparece cuando Color sale del núcleo — recién terminó de
-asentarse bien y sigue ahí dando volumen. En vez de eso, **pierde su color
-de rol fijo y pasa a un gris apagado** apenas Color inicia su viaje desde
-el núcleo, así no compite visualmente con el color dominante real de la
-foto mientras viaja; cuando Color llega y, al ser tan mayoritario, cubre
-hasta el hueco más chico que haya dejado Detalle, ese color termina
-predominando en toda la figura (con Detalle en gris apenas asomando entre
-las esferas).
+Detalle **pierde su color de rol fijo y pasa a un gris apagado** desde el
+arranque mismo de la esparción (no a mitad de camino como antes), así el
+color dominante real de la foto (Color) es el que predomina visualmente
+en toda la figura desde que termina de asentarse, con Detalle en gris
+apenas asomando entre las esferas.
 
-Mientras se arma una figura, la cohesión/separación/alineación entre
-nanobots (los pesos configurables del panel) se atenúan casi del todo: la
-nube de puntos ya define la forma completa, así que dejarlos a pleno
-competiría contra el imán hacia el target propio de cada nanobot y se vería
-como un temblor errático en vez de una convergencia prolija. En reposo esos
-mismos pesos se respetan tal cual los deja el usuario, para el movimiento
-orgánico de enjambre.
+Al formar una figura, la física boid (`swarm.step`, cohesión/separación/
+alineación/seek) **no corre en absoluto** — los Nanobots se mueven 100%
+por la animación scripted de "bola fusionada + esparción" (ver arriba),
+mucho más rápida que la vieja convergencia física y sin el límite de
+vecinos-por-agente que antes topaba la cantidad soportada. En reposo (sin
+figura activa) la física boid sigue corriendo igual que siempre, con los
+pesos de cohesión/separación/alineación que deja el usuario en el panel,
+para el movimiento orgánico de enjambre.
 
 El exoesqueleto de Microbots se revela con un tiempo fijo (lanzamiento en
-vórtice de ~2.2s, sin física que "asentar"). Recién a partir de ahí, cada rol/ola de
-Nanobots suelta al siguiente (Detalle → ola de Color #1 → ola de Color #2
-→ ...) cuando el grupo recién salido lleva un segundo entero cerca de su
-posición final — no apenas un instante fugaz. Y una vez que un nanobot
-llega a su punto, `boids.cpp` lo frena con amortiguación real
-(antes el "seek" era un resorte sin fricción: pasaba cerca del target y
-seguía oscilando para siempre) y el render lo fija exactamente ahí — la
-figura completa queda sólida y sin ningún temblor residual, no solo "cerca".
+vórtice de ~2.2s, sin física que "asentar"). Recién cuando termina, Nanobots
+arranca su propia animación de bola fusionada (~1s de viaje rígido) +
+esparción (~1.6s, con remolino por agente) — ambas de duración fija,
+tampoco dependen de ninguna física que "asentar".
 
 Al pedir "Volver al núcleo" con una figura formada, el enjambre no salta
-directo al reposo: cada nanobot espera su turno **en fila** (por orden) y
-recorre una **espiral** (radio decreciente + giro) convergiendo al núcleo,
-como una hilera entrando por un embudo, antes de ocultarse de nuevo.
+directo al reposo: Nanobots repliega el mismo camino de bola+esparción
+pero al revés (esparción-in → viaje de vuelta → bola en el núcleo →
+oculto), igual que Microbots repliega su propio remolino — si se pide
+volver a mitad de la salida, el repliegue arranca suave desde el progreso
+actual en vez de saltar.
 
 | Lenguaje | Rol | Carpeta |
 |---|---|---|
@@ -187,7 +192,7 @@ uvicorn main:app --reload
 
 Abrí `http://127.0.0.1:8000` en el navegador. El núcleo se ve solo (los
 nanobots están dentro, ocultos); el panel de control (arriba a la derecha)
-permite ajustar la cantidad de nanobots (20–10.000), la velocidad máxima y
+permite ajustar la cantidad de nanobots (20–60.000), la velocidad máxima y
 los pesos de cohesión/separación/alineación, guardar/cargar esa configuración
 (persistida por el backend en `backend/config/swarm_config.json`), y en la
 carpeta "Comandos": escribir el nombre de un objeto, adjuntar una foto de
@@ -296,32 +301,39 @@ npm run test:e2e
   a medida que `count` sube (factor `cbrt(80/count)`), para que más
   cantidad se traduzca en más detalle en el contorno de una figura en vez
   de una superposición sólida.
-- Con estos cambios, 10.000 nanobots corren a ~4ms/step en C++ nativo (muy
-  por debajo del presupuesto de 16.6ms/frame a 60 FPS) — medido en
-  `cpp/test_boids.cpp`. El renderizado usa `THREE.InstancedMesh` (una
-  llamada de dibujo por variante de geometría, no una por nanobot).
+- En reposo (única situación en la que hoy corre la física, ver más abajo),
+  10.000 nanobots corren a ~4ms/step en C++ nativo (muy por debajo del
+  presupuesto de 16.6ms/frame a 60 FPS) — medido en `cpp/test_boids.cpp`.
+  El renderizado usa `THREE.InstancedMesh` (una llamada de dibujo por
+  variante de geometría, no una por nanobot).
 - **Profundidad/definición visual** (`scene.ts`): sombras reales (una
   `DirectionalLight` con `castShadow`, recibidas por un piso invisible
   `ShadowMaterial` debajo del grid), `ACESFilmicToneMapping` +
   `SRGBColorSpace` para un contraste más cinematográfico, y postprocesado
   de **bloom/glow** (`EffectComposer` + `UnrealBloomPass`, ambos ya
   incluidos en `three/examples/jsm` — sin dependencias nuevas) sobre los
-  materiales emissive del enjambre y el reactor. Las geometrías de los 4
+  materiales emissive del enjambre y el reactor. Las geometrías de los
   roles de nanobot (`nanobot-mesh.ts`) y del reactor (`reactor.ts`) también
-  suben de segmentos/detalle para verse más redondeadas de cerca. Se
-  prioriza calidad fija por sobre el conteo de nanobots — a 10.000 puede
-  bajar el frame rate en hardware débil, pero no rompe (el mismo test E2E
-  del límite máximo lo cubre).
+  suben de segmentos/detalle para verse más redondeadas de cerca.
+- **Nanobots a 60.000 (antes 10.000)**: la física boid pasó a correr **solo
+  en reposo** — al formar una figura, `main.ts` ya no llama a
+  `swarm.step(dt)` en absoluto (se mueve por la animación scripted de
+  "bola fusionada + esparción"), así que el límite de vecinos-por-agente de
+  `boids.cpp` deja de ser el techo real de la cantidad soportada al formar.
+  El otro costo — `nanobot-mesh.ts: updateFromPositions` armando cada
+  matriz vía `THREE.Object3D`/`dummy.updateMatrix()` por instancia — se
+  eliminó por completo: como los roles Estructura/Relación quedaron en 0
+  puntos desde Fase 15 (solo quedan esferas de Detalle/Color, sin rotación
+  por instancia), ahora escribe los 16 floats de cada matriz directo sobre
+  `instanceMatrix.array`, mismo patrón que ya usaba `microbot-mesh.ts`. Con
+  ambos costos fuera del camino, el techo de Nanobots se iguala al de
+  Microbots (`MAX_NANOBOTS = MAX_MICROBOTS = 60.000`).
 - **Microbots** (`microbot-mesh.ts`): sin física boid (Wasm) propia — se
-  animan con un ease-in puro en TS, así su costo no compite con el de
-  Nanobots. El loop de render tampoco usa `THREE.Object3D`/
-  `dummy.updateMatrix()` por instancia (el camino caro de
-  `nanobot-mesh.ts`, que compone quaternion+posición+escala vía objetos):
-  escribe directo los 16 floats de cada matriz sobre
-  `instanceMatrix.array`, con una base ortonormal armada a mano (sin
-  `Quaternion`) para orientar cada viga. Con eso, el techo se fija en
-  `MAX_MICROBOTS = 60.000` (6x el de Nanobots) como punto de partida
-  conservador — no hay una medición de FPS real en navegador con GPU
-  (solo headless/SwiftShader, que subestima mucho el rendimiento real,
-  igual que con Nanobots); si hace falta, es un solo número para ajustar
-  en `main.ts`.
+  animan con un remolino/vórtice puro en TS, así su costo no compite con
+  el de Nanobots. El loop de render tampoco usa `THREE.Object3D`/
+  `dummy.updateMatrix()` por instancia: escribe directo los 16 floats de
+  cada matriz sobre `instanceMatrix.array`, con una base ortonormal armada
+  a mano (sin `Quaternion`) para orientar cada viga. No hay una medición de
+  FPS real en navegador con GPU (solo headless/SwiftShader, que subestima
+  mucho el rendimiento real); si hace falta, `MAX_NANOBOTS`/
+  `MAX_MICROBOTS` son un solo número cada uno para ajustar en `main.ts`.

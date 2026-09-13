@@ -145,11 +145,23 @@ export interface NanobotSwarmMesh {
 // (15/25/60), sería frágil intentar repartir la capacidad de antemano.
 export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   const group = new THREE.Group();
-  const dummy = new THREE.Object3D();
+  // Escritura directa al buffer de instanceMatrix (Fase 18): con hasta
+  // 60.000 instancias, el costo por-agente de THREE.Object3D/updateMatrix()
+  // (compone posición+rotación+escala vía Matrix4.compose) es el cuello de
+  // botella real del render — mismo diagnóstico que llevó a microbot-mesh.ts
+  // a evitarlo desde el principio. STRUCTURE/RELATION quedan siempre en 0
+  // instancias desde Fase 15 (ver formShapeWithRoles en shapes.ts), así que
+  // la única geometría que de verdad se dibuja es esférica (DETALLE/COLOR)
+  // — no hace falta rotación por instancia (una esfera se ve igual rotada).
+  // El caso RELATION (viga orientada) se deja andando por si se reactiva,
+  // reusando la misma técnica de base ortonormal que microbot-mesh.ts.
   const relationA = new THREE.Vector3();
   const relationB = new THREE.Vector3();
-  const relationDir = new THREE.Vector3();
-  const UP = new THREE.Vector3(0, 1, 0);
+  const relationUp = new THREE.Vector3();
+  const relationRight = new THREE.Vector3();
+  const relationForward = new THREE.Vector3();
+  const relationArbitrary = new THREE.Vector3();
+  const relationBasis = new THREE.Matrix4();
 
   const instancedMeshes = ROLE_GEOMETRIES.map((geometry, role) => {
     const mesh = new THREE.InstancedMesh(geometry, buildRoleMaterial(role), maxCount);
@@ -196,6 +208,25 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     snapped.fill(0);
   }
 
+  function writeScaleMatrix(arr: Float32Array, offset: number, px: number, py: number, pz: number, scale: number) {
+    arr[offset + 0] = scale;
+    arr[offset + 1] = 0;
+    arr[offset + 2] = 0;
+    arr[offset + 3] = 0;
+    arr[offset + 4] = 0;
+    arr[offset + 5] = scale;
+    arr[offset + 6] = 0;
+    arr[offset + 7] = 0;
+    arr[offset + 8] = 0;
+    arr[offset + 9] = 0;
+    arr[offset + 10] = scale;
+    arr[offset + 11] = 0;
+    arr[offset + 12] = px;
+    arr[offset + 13] = py;
+    arr[offset + 14] = pz;
+    arr[offset + 15] = 1;
+  }
+
   function updateFromPositions(
     positions: Float32Array,
     count: number,
@@ -213,6 +244,8 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     const scale = Math.min(1, Math.cbrt(SCALE_BASELINE_COUNT / count));
     const localCounters = new Array<number>(instancedMeshes.length).fill(0);
     const waveLocalCounters = new Array<number>(colorWaveMeshes.length).fill(0);
+    const meshArrays = instancedMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
+    const waveArrays = colorWaveMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
 
     for (let i = 0; i < count; i++) {
       const role = roles[i];
@@ -220,7 +253,7 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
       // sigue "dentro" del núcleo, no se dibuja hasta que le toque su turno.
       if (!visibleRoles[role]) continue;
 
-      let mesh: THREE.InstancedMesh;
+      let arr: Float32Array;
       let localIndex: number;
       if (role === NANOBOT_ROLE.COLOR) {
         // Dentro de COLOR, cada agente pertenece a una "ola" (colorWave)
@@ -230,10 +263,10 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
         const wave = colorWave[i];
         if (wave >= revealedColorWaves) continue;
         const waveIndex = Math.min(wave, colorWaveMeshes.length - 1);
-        mesh = colorWaveMeshes[waveIndex];
+        arr = waveArrays[waveIndex];
         localIndex = waveLocalCounters[waveIndex]++;
       } else {
-        mesh = instancedMeshes[role];
+        arr = meshArrays[role];
         localIndex = localCounters[role]++;
       }
 
@@ -279,19 +312,24 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
           relationSpans[i * 6 + 4],
           relationSpans[i * 6 + 5],
         );
-        relationDir.subVectors(relationB, relationA);
-        const length = Math.max(relationDir.length(), 0.001);
-        relationDir.normalize();
-        dummy.position.set(px, py, pz);
-        dummy.quaternion.setFromUnitVectors(UP, relationDir);
-        dummy.scale.set(scale, length, scale);
+        relationUp.subVectors(relationB, relationA);
+        const length = Math.max(relationUp.length(), 0.001);
+        relationUp.multiplyScalar(1 / length);
+        // Base ortonormal con `relationUp` como eje Y (evita Quaternion),
+        // misma técnica que microbot-mesh.ts: right/forward quedan
+        // escalados al radio de diseño (`scale`), solo el eje Y se escala
+        // al largo real de la conexión.
+        relationArbitrary.set(Math.abs(relationUp.y) > 0.99 ? 1 : 0, Math.abs(relationUp.y) > 0.99 ? 0 : 1, 0);
+        relationRight.crossVectors(relationArbitrary, relationUp).normalize().multiplyScalar(scale);
+        // cross(unitario, vector de magnitud `scale`) ya sale con magnitud
+        // `scale` (perpendiculares) — sin necesidad de reescalar de nuevo.
+        relationForward.crossVectors(relationUp, relationRight);
+        relationBasis.makeBasis(relationRight, relationUp.multiplyScalar(length), relationForward);
+        relationBasis.setPosition(px, py, pz);
+        relationBasis.toArray(arr, localIndex * 16);
       } else {
-        dummy.position.set(px, py, pz);
-        dummy.rotation.set(py * 0.15, px * 0.15, 0);
-        dummy.scale.setScalar(scale);
+        writeScaleMatrix(arr, localIndex * 16, px, py, pz, scale);
       }
-      dummy.updateMatrix();
-      mesh.setMatrixAt(localIndex, dummy.matrix);
     }
 
     instancedMeshes.forEach((mesh, role) => {

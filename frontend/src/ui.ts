@@ -45,7 +45,7 @@ export function createControlPanel(state: UiState, callbacks: UiCallbacks): GUI 
     .onFinishChange((value: number) => callbacks.onMicrobotCountChange(value));
 
   gui
-    .add(state, "count", 20, 10000, 1)
+    .add(state, "count", 20, 60000, 1)
     .name("Nanobots")
     .onFinishChange((value: number) => callbacks.onCountChange(value));
 
