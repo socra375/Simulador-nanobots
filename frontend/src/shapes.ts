@@ -810,18 +810,12 @@ export type NanobotRole = (typeof NANOBOT_ROLE)[keyof typeof NANOBOT_ROLE];
 // anteriores (ver formShapeWithRoles).
 const ROLE_RATIO_COLOR = 0.75;
 
-// ESTRUCTURA/RELACION/DETALLE se reparten lo que sobra después de
-// reservarle a COLOR su 75% fijo (~25% del total) — estos 3 números son
-// PESOS RELATIVOS entre sí (no fracciones directas del total): mantienen
-// la misma proporción 13:38:24 que tenían cuando sí lo eran, así
-// RELACION sigue teniendo SIEMPRE margen de sobra sobre el tamaño del
-// árbol de expansión mínima entre anclas de ESTRUCTURA (ver
-// buildRelationEdges) para cubrirlo completo, en vez de quedar apenas
-// alcanzando el mínimo.
-const SKELETON_WEIGHT_STRUCTURE = 13; // ~10-15% de ese 25% restante
-const SKELETON_WEIGHT_RELATION = 38; // ~35-40% de ese 25% restante
-const SKELETON_WEIGHT_DETAIL = 24;
-const SKELETON_WEIGHT_TOTAL = SKELETON_WEIGHT_STRUCTURE + SKELETON_WEIGHT_RELATION + SKELETON_WEIGHT_DETAIL;
+// Desde Fase 15, ESTRUCTURA/RELACION de Nanobots quedan SIEMPRE en 0: el
+// exoesqueleto (nodos+vigas) ahora lo arma la población de Microbots por
+// separado (ver buildExoskeleton más abajo y microbot-mesh.ts) — los
+// Nanobots se posan/alinean sobre ese exoesqueleto y solo aportan
+// relleno (DETALLE, ~25% del total) y pintura (COLOR, 75% fijo). El
+// 25% restante (después de COLOR) va entero a DETALLE.
 
 // Una "ola" de color: un grupo de agentes COLOR pintados con el mismo tono
 // (ver image-color.ts pickColorClusters), revelado como su propia sub-fase
@@ -1062,6 +1056,75 @@ function buildStructureAnchors(generator: (n: number) => Float32Array, count: nu
   return farthestPointSample(oversampled, oversampled.length / 3, count);
 }
 
+// --- Exoesqueleto de Microbots (Fase 15) ---
+//
+// Población aparte de Nanobots: arma un esqueleto/exoesqueleto SOLO de
+// nodos (anclas, farthest-point) + vigas (MST + vecinos cercanos) a MUCHA
+// más resolución que el (ex) esqueleto de Nanobots, ya que Nanobots ahora
+// solo rellena/pinta encima (ver comentario sobre SKELETON arriba). No
+// tiene roles COLOR/DETALLE ni olas — es un único cuerpo sólido.
+//
+// El número de anclas (nodos) se limita a MICROBOT_ANCHOR_CAP: tanto
+// farthestPointSample como el MST son ~O(anchorCount²) — con
+// microbotCount en las decenas de miles haría falta acotar las anclas
+// (que solo necesitan ser suficientes para una malla bien repartida, no
+// una por microbot) para que "Formar objeto" no se trabe. El resto del
+// budget (la gran mayoría) va a vigas, que son O(outCount) — baratas a
+// cualquier escala.
+const MICROBOT_ANCHOR_RATIO = 0.12;
+const MICROBOT_ANCHOR_CAP = 2000;
+
+export interface Exoskeleton {
+  points: Float32Array; // count*3 floats, ya trasladados a `center`
+  isBeam: Uint8Array; // largo count: 1 = viga (usar relationSpans), 0 = nodo/ancla
+  relationSpans: Float32Array; // count*6 floats, solo válido para vigas
+}
+
+export function buildExoskeleton(
+  name: string,
+  count: number,
+  center: [number, number, number] = FORMATION_CENTER,
+): Exoskeleton | null {
+  const canonical = resolveShapeName(name);
+  if (!canonical) return null;
+  const generator = SHAPE_GENERATORS[canonical];
+
+  const anchorCount =
+    count > 0 ? Math.min(count, MICROBOT_ANCHOR_CAP, Math.max(4, Math.round(count * MICROBOT_ANCHOR_RATIO))) : 0;
+  const beamCount = Math.max(0, count - anchorCount);
+
+  const anchors = buildStructureAnchors(generator, anchorCount);
+  const edges = buildRelationEdges(anchors, anchorCount);
+  const { points: beamPts, spans: beamSpansLocal } = assignRelationEdges(anchors, edges, beamCount);
+
+  const points = new Float32Array(count * 3);
+  const isBeam = new Uint8Array(count);
+  const relationSpans = new Float32Array(count * 6);
+  let cursor = 0;
+
+  for (let i = 0; i < anchorCount; i++) {
+    points[cursor * 3 + 0] = anchors[i * 3 + 0] + center[0];
+    points[cursor * 3 + 1] = anchors[i * 3 + 1] + center[1];
+    points[cursor * 3 + 2] = anchors[i * 3 + 2] + center[2];
+    cursor++;
+  }
+  for (let i = 0; i < beamCount; i++) {
+    points[cursor * 3 + 0] = beamPts[i * 3 + 0] + center[0];
+    points[cursor * 3 + 1] = beamPts[i * 3 + 1] + center[1];
+    points[cursor * 3 + 2] = beamPts[i * 3 + 2] + center[2];
+    isBeam[cursor] = 1;
+    relationSpans[cursor * 6 + 0] = beamSpansLocal[i * 6 + 0] + center[0];
+    relationSpans[cursor * 6 + 1] = beamSpansLocal[i * 6 + 1] + center[1];
+    relationSpans[cursor * 6 + 2] = beamSpansLocal[i * 6 + 2] + center[2];
+    relationSpans[cursor * 6 + 3] = beamSpansLocal[i * 6 + 3] + center[0];
+    relationSpans[cursor * 6 + 4] = beamSpansLocal[i * 6 + 4] + center[1];
+    relationSpans[cursor * 6 + 5] = beamSpansLocal[i * 6 + 5] + center[2];
+    cursor++;
+  }
+
+  return { points, isBeam, relationSpans };
+}
+
 // Genera la nube de puntos de la figura (repartida en los 3 roles) y la
 // traslada a `center`. Devuelve null si `name` no matchea ninguna forma
 // conocida.
@@ -1083,29 +1146,9 @@ export function formShapeWithRoles(
   // recién lo que sobra, no al revés, para que el 75% de COLOR nunca
   // dependa de cuánto terminen usando las otras 3.
   const colorCount = count > 0 ? Math.round(count * ROLE_RATIO_COLOR) : 0;
-  const skeletonBudget = Math.max(0, count - colorCount);
-
-  const structureCount =
-    skeletonBudget > 0
-      ? Math.min(
-          skeletonBudget,
-          Math.max(4, Math.round((skeletonBudget * SKELETON_WEIGHT_STRUCTURE) / SKELETON_WEIGHT_TOTAL)),
-        )
-      : 0;
-  const remainingAfterStructure = Math.max(0, skeletonBudget - structureCount);
-  const relationCount = Math.min(
-    remainingAfterStructure,
-    Math.round((skeletonBudget * SKELETON_WEIGHT_RELATION) / SKELETON_WEIGHT_TOTAL),
-  );
-  const detailCount = Math.max(0, skeletonBudget - structureCount - relationCount);
-
-  const structurePts = buildStructureAnchors(generator, structureCount);
-  const relationEdges = buildRelationEdges(structurePts, structureCount);
-  const { points: relationPts, spans: relationSpansLocal } = assignRelationEdges(
-    structurePts,
-    relationEdges,
-    relationCount,
-  );
+  // ESTRUCTURA/RELACION quedan en 0 (ver comentario arriba) — todo el
+  // budget restante va a DETALLE.
+  const detailCount = Math.max(0, count - colorCount);
   const detailPts = generator(detailCount);
   // Cada ola de color es una MUESTRA INDEPENDIENTE de la silueta completa
   // (mismo generador que DETALLE, no un subconjunto de colorPts) — así cada
@@ -1129,22 +1172,6 @@ export function formShapeWithRoles(
       cursor++;
     }
   };
-
-  write(structurePts, structureCount, NANOBOT_ROLE.STRUCTURE);
-
-  for (let i = 0; i < relationCount; i++) {
-    points[cursor * 3 + 0] = relationPts[i * 3 + 0] + center[0];
-    points[cursor * 3 + 1] = relationPts[i * 3 + 1] + center[1];
-    points[cursor * 3 + 2] = relationPts[i * 3 + 2] + center[2];
-    roles[cursor] = NANOBOT_ROLE.RELATION;
-    relationSpans[cursor * 6 + 0] = relationSpansLocal[i * 6 + 0] + center[0];
-    relationSpans[cursor * 6 + 1] = relationSpansLocal[i * 6 + 1] + center[1];
-    relationSpans[cursor * 6 + 2] = relationSpansLocal[i * 6 + 2] + center[2];
-    relationSpans[cursor * 6 + 3] = relationSpansLocal[i * 6 + 3] + center[0];
-    relationSpans[cursor * 6 + 4] = relationSpansLocal[i * 6 + 4] + center[1];
-    relationSpans[cursor * 6 + 5] = relationSpansLocal[i * 6 + 5] + center[2];
-    cursor++;
-  }
 
   write(detailPts, detailCount, NANOBOT_ROLE.DETAIL);
   for (let wave = 0; wave < colorWavePts.length; wave++) {
