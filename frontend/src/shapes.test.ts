@@ -39,17 +39,32 @@ describe("resolveShapeName", () => {
 });
 
 describe("listSupportedNames", () => {
-  it("incluye las 7 formas base", () => {
+  it("incluye las 10 formas soportadas", () => {
     const names = listSupportedNames();
     expect(names).toEqual(
-      expect.arrayContaining(["cubo", "esfera", "piramide", "estrella", "anillo", "corazon", "cruz"]),
+      expect.arrayContaining([
+        "cubo", "esfera", "piramide", "estrella", "anillo", "corazon", "cruz",
+        "carro", "telefono", "persona",
+      ]),
     );
-    expect(names).toHaveLength(7);
+    expect(names).toHaveLength(10);
+  });
+
+  it("resuelve alias de las formas nuevas (auto/coche/vehiculo, celular/movil/smartphone, personaje/humano/gente)", () => {
+    expect(resolveShapeName("auto")).toBe("carro");
+    expect(resolveShapeName("coche")).toBe("carro");
+    expect(resolveShapeName("vehiculo")).toBe("carro");
+    expect(resolveShapeName("celular")).toBe("telefono");
+    expect(resolveShapeName("movil")).toBe("telefono");
+    expect(resolveShapeName("smartphone")).toBe("telefono");
+    expect(resolveShapeName("personaje")).toBe("persona");
+    expect(resolveShapeName("humano")).toBe("persona");
+    expect(resolveShapeName("gente")).toBe("persona");
   });
 });
 
 describe("formShapeWithRoles", () => {
-  it("devuelve exactamente count*3 floats y count roles para cada forma soportada", () => {
+  it("devuelve exactamente count*3 floats y count roles para cada forma soportada, sin NaN", () => {
     for (const name of listSupportedNames()) {
       for (const count of [1, 20, 80, 200, 10000]) {
         const formation = formShapeWithRoles(name, count);
@@ -57,6 +72,8 @@ describe("formShapeWithRoles", () => {
         expect(formation!.points.length).toBe(count * 3);
         expect(formation!.roles.length).toBe(count);
         expect(formation!.relationSpans.length).toBe(count * 6);
+        expect(formation!.colorWave.length).toBe(count);
+        expect(formation!.points.some((v) => Number.isNaN(v))).toBe(false);
       }
     }
   });
@@ -206,6 +223,37 @@ describe("formShapeWithRoles", () => {
     expect(relation).toBeLessThan(150);
     expect(detail).toBeGreaterThan(60); // ~24% de 250
     expect(detail).toBeLessThan(100);
+  });
+
+  it("sin clusters de color explícitos, todos los agentes COLOR quedan en la ola 0 (colorWaveCount=1)", () => {
+    const formation = formShapeWithRoles("esfera", 500)!;
+    expect(formation.colorWaveCount).toBe(1);
+    for (let i = 0; i < 500; i++) {
+      if (formation.roles[i] === NANOBOT_ROLE.COLOR) expect(formation.colorWave[i]).toBe(0);
+    }
+  });
+
+  it("con varios clusters de color, cada ola de COLOR tiene un tamaño proporcional a su peso y la suma cierra exacto", () => {
+    const clusters = [
+      { color: 0xff0000, weight: 0.6 },
+      { color: 0x00ff00, weight: 0.3 },
+      { color: 0x0000ff, weight: 0.1 },
+    ];
+    const formation = formShapeWithRoles("esfera", 1000, undefined, clusters)!;
+    expect(formation.colorWaveCount).toBe(3);
+    const waveCounts = [0, 0, 0];
+    let colorTotal = 0;
+    for (let i = 0; i < 1000; i++) {
+      if (formation.roles[i] !== NANOBOT_ROLE.COLOR) continue;
+      waveCounts[formation.colorWave[i]]++;
+      colorTotal++;
+    }
+    expect(colorTotal).toBe(750); // 75% fijo del total, ver test de ratios
+    expect(waveCounts[0] + waveCounts[1] + waveCounts[2]).toBe(colorTotal);
+    // Proporciones aproximadas 60/30/10 dentro del budget de COLOR.
+    expect(waveCounts[0]).toBeGreaterThan(waveCounts[1]);
+    expect(waveCounts[1]).toBeGreaterThan(waveCounts[2]);
+    expect(waveCounts[0] / colorTotal).toBeCloseTo(0.6, 1);
   });
 
   it("con counts muy chicos (< 4) sigue devolviendo roles válidos sin crashear", () => {

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { NANOBOT_ROLE } from "./shapes";
-import { DEFAULT_DOMINANT_COLOR } from "./image-color";
+import { DEFAULT_DOMINANT_COLOR, MAX_COLOR_CLUSTERS, type ColorCluster } from "./image-color";
 
 // Geometría y material por ROL de nanobot (ver shapes.ts):
 // - ESTRUCTURA: icosaedro SÓLIDO — los "nodos"/anclas soldados del esqueleto.
@@ -9,12 +9,19 @@ import { DEFAULT_DOMINANT_COLOR } from "./image-color";
 //   literalmente "unida" a la estructura en vez de flotar suelta.
 // - DETALLE: esfera SÓLIDA emissive — el relleno que le da color y pulido
 //   final a la silueta, encima del esqueleto de las otras dos.
-// - COLOR: esfera SÓLIDA idéntica a DETALLE, pero con un color que NO es
-//   fijo — se pisa en tiempo real vía setDominantColor() con el color RGB
-//   dominante de la foto adjuntada (ver image-color.ts). Es la última capa
-//   en revelarse (ver PHASE_COUNT en main.ts): al cubrir toda la silueta
-//   con el color real del objeto fotografiado, "tapa" visualmente los
-//   colores fijos de las otras 3 capas.
+// - COLOR: esfera SÓLIDA idéntica a DETALLE, pero SIN un color de rol
+//   fijo — un InstancedMesh DEDICADO por cada "ola" de color (cluster de
+//   color de la foto, ver image-color.ts pickColorClusters), hasta
+//   MAX_COLOR_CLUSTERS, cada uno con su propio material real (color +
+//   emissive parejos, igual que las otras 3 capas — así brilla igual de
+//   fuerte, no un tono apagado). Se probó primero con color POR INSTANCIA
+//   (material.vertexColors + setColorAt) pero esa vía sólo tiñe el canal
+//   difuso — sin emissive propio quedaba visualmente apagada/invisible
+//   contra el fondo oscuro — de ahí el mesh dedicado por ola. Si la foto
+//   tiene varias zonas de color reconociblemente distintas, cada ola sale
+//   en su propia sub-fase (ver phaseCount dinámico en main.ts) en vez de
+//   mezclarse todas de una — "dejando el espacio que no es de ese color"
+//   para las olas siguientes.
 const SCALE_BASELINE_COUNT = 80;
 
 // Una vez que un nanobot está lo bastante cerca de su punto final (el
@@ -78,9 +85,11 @@ function buildRoleMaterial(role: number): THREE.Material {
     });
   }
   if (role === NANOBOT_ROLE.COLOR) {
-    // Color placeholder hasta el primer setDominantColor() real (ver
+    // Color placeholder hasta el primer setColorClusters() real (ver
     // startFormation en main.ts, que lo llama ANTES de que este rol se
-    // revele) — nunca se ve así en pantalla en la práctica.
+    // revele) — nunca se ve así en pantalla en la práctica. Cada ola tiene
+    // su PROPIA instancia de este material (ver colorWaveMeshes abajo), no
+    // una compartida.
     return new THREE.MeshStandardMaterial({
       color: DEFAULT_DOMINANT_COLOR,
       emissive: DEFAULT_DOMINANT_COLOR,
@@ -108,12 +117,15 @@ export interface NanobotSwarmMesh {
     relationSpans: Float32Array,
     formationTargets: Float32Array,
     visibleRoles: readonly [boolean, boolean, boolean, boolean],
+    colorWave: Uint8Array<ArrayBufferLike>,
+    revealedColorWaves: number,
   ) => void;
   setVisible: (visible: boolean) => void;
-  // Recolorea en caliente el rol COLOR (ver arriba) con el color RGB
-  // dominante (0xRRGGBB) extraído de la foto adjuntada — llamado una vez
-  // por "Formar objeto", antes de que ese rol se revele.
-  setDominantColor: (hex: number) => void;
+  // Fija los colores RGB de las "olas" de COLOR (ver image-color.ts
+  // pickColorClusters) — llamado una vez por "Formar objeto", antes de que
+  // el rol COLOR se revele. El color real de cada agente se aplica por
+  // instancia en updateFromPositions según su colorWave.
+  setColorClusters: (clusters: ColorCluster[]) => void;
   // true: ESTRUCTURA/RELACION/DETALLE pierden su color de rol fijo y pasan
   // a un gris apagado (mientras COLOR viaja hacia su posición, para que su
   // color termine predominando al llegar). false: los restaura a su color
@@ -142,6 +154,24 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     return mesh;
   });
 
+  // Un InstancedMesh dedicado por ola de color (ver arriba) — la ola 0
+  // reutiliza el mesh de rol COLOR ya creado arriba; las olas 1..N-1 son
+  // meshes adicionales con la misma geometría, cada uno con su propio
+  // material (recoloreable en caliente vía setColorClusters).
+  const colorWaveMeshes: THREE.InstancedMesh[] = [instancedMeshes[NANOBOT_ROLE.COLOR]];
+  for (let w = 1; w < MAX_COLOR_CLUSTERS; w++) {
+    const mesh = new THREE.InstancedMesh(
+      ROLE_GEOMETRIES[NANOBOT_ROLE.COLOR],
+      buildRoleMaterial(NANOBOT_ROLE.COLOR),
+      maxCount,
+    );
+    mesh.count = 0;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+    colorWaveMeshes.push(mesh);
+  }
+
   // Estado de histéresis por agente (1 = ya "encajado" en su target fijo).
   // Se reinicia en setCount porque los índices pueden pasar a representar
   // otro agente distinto tras un cambio de cantidad.
@@ -156,6 +186,7 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
       const end = Math.min(count, start + perRole);
       mesh.count = Math.max(0, end - start);
     });
+    for (let w = 1; w < colorWaveMeshes.length; w++) colorWaveMeshes[w].count = 0;
     snapped.fill(0);
   }
 
@@ -166,6 +197,8 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     relationSpans: Float32Array,
     formationTargets: Float32Array,
     visibleRoles: readonly [boolean, boolean, boolean, boolean],
+    colorWave: Uint8Array<ArrayBufferLike>,
+    revealedColorWaves: number,
   ) {
     // Con miles de nanobots en el mismo volumen, el tamaño fijo (afinado
     // para ~80) los hace superponerse tanto que una figura se ve como un
@@ -173,14 +206,30 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     // (proporcional a count^(-1/3)) así más cantidad aporta más detalle.
     const scale = Math.min(1, Math.cbrt(SCALE_BASELINE_COUNT / count));
     const localCounters = new Array<number>(instancedMeshes.length).fill(0);
+    const waveLocalCounters = new Array<number>(colorWaveMeshes.length).fill(0);
 
     for (let i = 0; i < count; i++) {
       const role = roles[i];
       // Rol todavía no revelado (ver formationPhase en main.ts): el agente
       // sigue "dentro" del núcleo, no se dibuja hasta que le toque su turno.
       if (!visibleRoles[role]) continue;
-      const mesh = instancedMeshes[role];
-      const localIndex = localCounters[role]++;
+
+      let mesh: THREE.InstancedMesh;
+      let localIndex: number;
+      if (role === NANOBOT_ROLE.COLOR) {
+        // Dentro de COLOR, cada agente pertenece a una "ola" (colorWave)
+        // que se revela en su propia sub-fase — aunque el rol ya esté
+        // visible, un agente de una ola posterior sigue sin dibujarse
+        // hasta su turno, y cada ola va a SU PROPIO mesh (ver arriba).
+        const wave = colorWave[i];
+        if (wave >= revealedColorWaves) continue;
+        const waveIndex = Math.min(wave, colorWaveMeshes.length - 1);
+        mesh = colorWaveMeshes[waveIndex];
+        localIndex = waveLocalCounters[waveIndex]++;
+      } else {
+        mesh = instancedMeshes[role];
+        localIndex = localCounters[role]++;
+      }
 
       const liveX = positions[i * 3 + 0];
       const liveY = positions[i * 3 + 1];
@@ -240,7 +289,12 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     }
 
     instancedMeshes.forEach((mesh, role) => {
+      if (role === NANOBOT_ROLE.COLOR) return; // lo maneja colorWaveMeshes abajo
       mesh.count = localCounters[role];
+      mesh.instanceMatrix.needsUpdate = true;
+    });
+    colorWaveMeshes.forEach((mesh, w) => {
+      mesh.count = waveLocalCounters[w];
       mesh.instanceMatrix.needsUpdate = true;
     });
   }
@@ -251,10 +305,13 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     group.visible = visible;
   }
 
-  function setDominantColor(hex: number) {
-    const material = instancedMeshes[NANOBOT_ROLE.COLOR].material as THREE.MeshStandardMaterial;
-    material.color.setHex(hex);
-    material.emissive.setHex(hex);
+  function setColorClusters(clusters: ColorCluster[]) {
+    colorWaveMeshes.forEach((mesh, w) => {
+      const hex = clusters[w]?.color ?? DEFAULT_DOMINANT_COLOR;
+      const material = mesh.material as THREE.MeshStandardMaterial;
+      material.color.setHex(hex);
+      material.emissive.setHex(hex);
+    });
   }
 
   const SKELETON_ROLE_COLORS: Array<{ role: number; color: number; emissive: number }> = [
@@ -273,5 +330,5 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
 
   setCount(maxCount);
 
-  return { group, setCount, updateFromPositions, setVisible, setDominantColor, setSkeletonGrayscale };
+  return { group, setCount, updateFromPositions, setVisible, setColorClusters, setSkeletonGrayscale };
 }
