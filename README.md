@@ -17,25 +17,31 @@ núcleo cuando se quiera (con una animación de regreso en espiral, ver
 abajo). La cámara se puede rotar (arrastrar) y hacer zoom (rueda del
 mouse) para mirar la figura desde cualquier ángulo.
 
-Al formar una figura, el enjambre se reparte en **4 roles** con geometría y
-color propios, y **salen del núcleo de a uno por vez** (no los 4 a la vez):
-primero Estructura, luego Relación (recién cuando Estructura ya llegó a su
-posición), luego Detalle, y por último Color — así se ve cómo se va
-construyendo y pintando la figura en capas.
+Al formar una figura hay **dos poblaciones independientes** que trabajan en
+secuencia:
 
-**Color es un 75% FIJO e independiente del total** (no se calcula junto
-con las otras 3 ni es "lo que sobra" de un reparto entre 4): al revés,
-Estructura/Relación/Detalle son las que se reparten lo que queda
-DESPUÉS de reservarle su 75% a Color, manteniendo entre sí la misma
-proporción relativa (13:38:24) que tenían antes. Así Color siempre es la
-amplia mayoría del enjambre, sin importar cuánto usen las otras 3.
+1. **Microbots** (panel "Microbots (exoesqueleto)", conteo propio hasta
+   60.000) arman primero un **exoesqueleto denso y unido** de la figura —
+   nodos ancla (*farthest-point sampling*) conectados por vigas siguiendo
+   un árbol de expansión mínima (garantiza una sola red conectada, sin
+   zonas sueltas) más conexiones extra para una malla más rica. No tienen
+   física boid propia: se animan con un simple *ease-in* desde el reposo
+   hasta su posición final, así soportan MUCHOS más agentes sin frisar
+   (ver "Notas de rendimiento").
+2. Recién cuando ese exoesqueleto termina de asentarse, **Nanobots** sale
+   del núcleo y se alinea/rellena encima, en 2 roles (Detalle y Color) que
+   salen de a uno por vez.
 
-| Rol | Geometría | Función |
-|---|---|---|
-| **Estructura** | Icosaedro sólido cian | ~4% del total (13/75 del 25% restante). Nodos ancla de la figura — el "exoesqueleto"/las juntas de una construcción. Se eligen con *farthest-point sampling* (sobre-muestrear y quedarse con las mejor distribuidas) en vez de al azar, para que cubran la silueta de manera pareja sin dejar zonas sin anclas. |
-| **Relación** | Viga (cilindro) sólida magenta | ~13% del total (38/75 del 25% restante — la mayoría de ese resto). Une cada ancla de Estructura con su vecina más cercana siguiendo un árbol de expansión mínima (garantiza que TODA la figura quede conectada en una sola red, sin zonas sueltas) más algunas conexiones extra para una malla más rica. Al mantener siempre la misma proporción frente a Estructura, sigue habiendo de sobra para cubrir el árbol completo. |
-| **Detalle** | Esfera sólida emissive verde | ~8% del total (24/75 del 25% restante). Relleno con el color fijo de su rol — rellena mientras Color todavía no está listo para salir. |
-| **Color** | Esfera sólida emissive (ligeramente más grande, misma silueta que Detalle) | **75% FIJO del total**, independiente de las otras 3. No tiene un color de rol fijo: sale en hasta **4 "olas" de color**, una por cada zona de color reconociblemente distinta de la foto (ver abajo). |
+**Color es un 75% FIJO e independiente del total** de Nanobots (no es "lo
+que sobra" de un reparto entre roles): Detalle se lleva el 25% restante
+entero.
+
+| Población | Rol | Geometría | Función |
+|---|---|---|---|
+| Microbots | Nodo | Icosaedro chico celeste | Anclas del exoesqueleto (*farthest-point sampling*), acotadas a un máximo (`MICROBOT_ANCHOR_CAP`) para que el cálculo (~O(n²)) no se trabe con conteos altos. |
+| Microbots | Viga | Cilindro chico celeste | Conecta cada ancla con su vecina (MST + vecinos cercanos) — la mayoría del budget de Microbots, ya que son baratas de generar a cualquier escala. |
+| Nanobots | **Detalle** | Esfera sólida emissive verde | 25% del total de Nanobots. Relleno con el color fijo de su rol — rellena mientras Color todavía no está listo para salir. |
+| Nanobots | **Color** | Esfera sólida emissive (ligeramente más grande) | **75% FIJO del total** de Nanobots. Sale en hasta **4 "olas" de color**, una por cada zona de color reconociblemente distinta de la foto (ver abajo). |
 
 ### Varias olas de color
 
@@ -62,14 +68,14 @@ sale la ola más grande primero cubriendo gran parte de la figura,
 próxima ola lo cubra, hasta que entre todas cubren el 100% del budget de
 Color.
 
-Estructura/Relación/Detalle NO desaparecen cuando Color sale del núcleo —
-Detalle recién terminó de asentarse bien y sigue ahí dando volumen. En vez
-de eso, **pierden su color de rol fijo y pasan a un gris apagado** apenas
-Color inicia su viaje desde el núcleo, así no compiten visualmente con el
-color dominante real de la foto mientras viaja; cuando Color llega y,
-al ser tan mayoritario, cubre hasta el hueco más chico que hayan dejado
-las 3 capas anteriores, ese color termina predominando en toda la figura
-(con el esqueleto en gris apenas asomando entre las esferas).
+Detalle NO desaparece cuando Color sale del núcleo — recién terminó de
+asentarse bien y sigue ahí dando volumen. En vez de eso, **pierde su color
+de rol fijo y pasa a un gris apagado** apenas Color inicia su viaje desde
+el núcleo, así no compite visualmente con el color dominante real de la
+foto mientras viaja; cuando Color llega y, al ser tan mayoritario, cubre
+hasta el hueco más chico que haya dejado Detalle, ese color termina
+predominando en toda la figura (con Detalle en gris apenas asomando entre
+las esferas).
 
 Mientras se arma una figura, la cohesión/separación/alineación entre
 nanobots (los pesos configurables del panel) se atenúan casi del todo: la
@@ -79,12 +85,12 @@ como un temblor errático en vez de una convergencia prolija. En reposo esos
 mismos pesos se respetan tal cual los deja el usuario, para el movimiento
 orgánico de enjambre.
 
-Cada rol/ola solo suelta al siguiente (Estructura → Relación → Detalle →
-ola de Color #1 → ola de Color #2 → ...) cuando el grupo recién salido
-lleva un segundo entero cerca de su posición final —
-no apenas un instante fugaz — para que se vea a Relación terminar de
-sincronizarse/unirse con Estructura antes de que aparezca Detalle. Y una vez
-que un nanobot llega a su punto, `boids.cpp` lo frena con amortiguación real
+El exoesqueleto de Microbots se revela con un tiempo fijo (ease-in de
+~1.6s, sin física que "asentar"). Recién a partir de ahí, cada rol/ola de
+Nanobots suelta al siguiente (Detalle → ola de Color #1 → ola de Color #2
+→ ...) cuando el grupo recién salido lleva un segundo entero cerca de su
+posición final — no apenas un instante fugaz. Y una vez que un nanobot
+llega a su punto, `boids.cpp` lo frena con amortiguación real
 (antes el "seek" era un resorte sin fricción: pasaba cerca del target y
 seguía oscilando para siempre) y el render lo fija exactamente ahí — la
 figura completa queda sólida y sin ningún temblor residual, no solo "cerca".
@@ -300,3 +306,16 @@ npm run test:e2e
   prioriza calidad fija por sobre el conteo de nanobots — a 10.000 puede
   bajar el frame rate en hardware débil, pero no rompe (el mismo test E2E
   del límite máximo lo cubre).
+- **Microbots** (`microbot-mesh.ts`): sin física boid (Wasm) propia — se
+  animan con un ease-in puro en TS, así su costo no compite con el de
+  Nanobots. El loop de render tampoco usa `THREE.Object3D`/
+  `dummy.updateMatrix()` por instancia (el camino caro de
+  `nanobot-mesh.ts`, que compone quaternion+posición+escala vía objetos):
+  escribe directo los 16 floats de cada matriz sobre
+  `instanceMatrix.array`, con una base ortonormal armada a mano (sin
+  `Quaternion`) para orientar cada viga. Con eso, el techo se fija en
+  `MAX_MICROBOTS = 60.000` (6x el de Nanobots) como punto de partida
+  conservador — no hay una medición de FPS real en navegador con GPU
+  (solo headless/SwiftShader, que subestima mucho el rendimiento real,
+  igual que con Nanobots); si hace falta, es un solo número para ajustar
+  en `main.ts`.
