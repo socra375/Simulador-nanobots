@@ -189,6 +189,193 @@ function cruz(count: number): Float32Array {
   return pts;
 }
 
+// --- Formas COMPUESTAS (carro/telefono/persona): arman la silueta pegando
+// varios primitivos (caja/esfera/cilindro) trasladados, en vez de una sola
+// superficie paramétrica. splitCounts() reparte `total` en partes cuyo
+// tamaño es proporcional a `weights`, pero garantiza que la SUMA sea
+// exactamente `total` (el último elemento absorbe el resto del redondeo) —
+// necesario porque cada generador debe devolver EXACTAMENTE count*3 floats.
+// Método de "mayores restos" (Hamilton): redondear cada parte por separado
+// y ajustar solo la última para cerrar la suma puede dar NEGATIVO cuando el
+// redondeo se pasa de largo (p.ej. total=2 repartido en 4 pesos iguales:
+// cada uno redondea a 1, suma 4, sobran -2 que le restarían a la última).
+// Acá en cambio se trunca (floor) cada parte —nunca negativo— y lo que
+// falta para llegar a `total` se reparte de a 1 entre las partes con mayor
+// resto fraccionario, así la suma siempre cierra exacto sin negativos.
+function splitCounts(total: number, weights: number[]): number[] {
+  const sumW = weights.reduce((a, b) => a + b, 0);
+  const raw = weights.map((w) => (w / sumW) * total);
+  const counts = raw.map((r) => Math.floor(r));
+  const remainder = total - counts.reduce((a, b) => a + b, 0);
+  const byFractionDesc = raw
+    .map((r, i) => ({ i, frac: r - counts[i] }))
+    .sort((a, b) => b.frac - a.frac);
+  for (let k = 0; k < remainder; k++) {
+    counts[byFractionDesc[k % byFractionDesc.length].i]++;
+  }
+  return counts;
+}
+
+function sampleBoxSurface(hx: number, hy: number, hz: number, count: number): Float32Array {
+  const pts = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const face = i % 6;
+    const u = randRange(-1, 1);
+    const v = randRange(-1, 1);
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    switch (face) {
+      case 0: x = hx; y = u * hy; z = v * hz; break;
+      case 1: x = -hx; y = u * hy; z = v * hz; break;
+      case 2: y = hy; x = u * hx; z = v * hz; break;
+      case 3: y = -hy; x = u * hx; z = v * hz; break;
+      case 4: z = hz; x = u * hx; y = v * hy; break;
+      default: z = -hz; x = u * hx; y = v * hy; break;
+    }
+    pts[i * 3] = x;
+    pts[i * 3 + 1] = y;
+    pts[i * 3 + 2] = z;
+  }
+  return pts;
+}
+
+function sampleSphereSurface(radius: number, count: number): Float32Array {
+  const pts = new Float32Array(count * 3);
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < count; i++) {
+    const yFrac = count > 1 ? 1 - (i / (count - 1)) * 2 : 0;
+    const r = Math.sqrt(Math.max(0, 1 - yFrac * yFrac));
+    const theta = goldenAngle * i;
+    pts[i * 3] = Math.cos(theta) * r * radius;
+    pts[i * 3 + 1] = yFrac * radius;
+    pts[i * 3 + 2] = Math.sin(theta) * r * radius;
+  }
+  return pts;
+}
+
+// Cilindro con eje en Y (igual que THREE.CylinderGeometry): superficie
+// lateral (85%) + tapas (15%).
+function sampleCylinderSurface(radius: number, halfHeight: number, count: number): Float32Array {
+  const pts = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const theta = Math.random() * Math.PI * 2;
+    if (Math.random() < 0.15) {
+      const r = radius * Math.sqrt(Math.random());
+      const y = Math.random() < 0.5 ? halfHeight : -halfHeight;
+      pts[i * 3] = Math.cos(theta) * r;
+      pts[i * 3 + 1] = y;
+      pts[i * 3 + 2] = Math.sin(theta) * r;
+    } else {
+      pts[i * 3] = Math.cos(theta) * radius;
+      pts[i * 3 + 1] = randRange(-halfHeight, halfHeight);
+      pts[i * 3 + 2] = Math.sin(theta) * radius;
+    }
+  }
+  return pts;
+}
+
+function translate(pts: Float32Array, dx: number, dy: number, dz: number): Float32Array {
+  const out = new Float32Array(pts.length);
+  for (let i = 0; i < pts.length; i += 3) {
+    out[i] = pts[i] + dx;
+    out[i + 1] = pts[i + 1] + dy;
+    out[i + 2] = pts[i + 2] + dz;
+  }
+  return out;
+}
+
+// Rota 90° alrededor de Z: (x,y,z) -> (y,-x,z) — acuesta un cilindro
+// vertical (eje Y, como sampleCylinderSurface) para que quede horizontal
+// (eje X), como el eje de una rueda de auto.
+function rotateAxisYtoX(pts: Float32Array): Float32Array {
+  const out = new Float32Array(pts.length);
+  for (let i = 0; i < pts.length; i += 3) {
+    out[i] = pts[i + 1];
+    out[i + 1] = -pts[i];
+    out[i + 2] = pts[i + 2];
+  }
+  return out;
+}
+
+function concatParts(parts: Float32Array[]): Float32Array {
+  const total = parts.reduce((sum, p) => sum + p.length, 0);
+  const out = new Float32Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
+
+// Carro: carrocería (caja) + cabina (caja más chica encima) + 4 ruedas
+// (cilindros achatados y "acostados" en las 4 esquinas inferiores).
+function carro(count: number): Float32Array {
+  const bodyHx = s;
+  const bodyHy = s * 0.28;
+  const bodyHz = s * 0.42;
+  const cabinHx = s * 0.45;
+  const cabinHy = s * 0.22;
+  const cabinHz = s * 0.38;
+  const wheelR = s * 0.22;
+  const wheelHalfH = s * 0.1;
+
+  const [bodyCount, cabinCount, wheelsTotal] = splitCounts(count, [45, 22, 33]);
+  const wheelCounts = splitCounts(wheelsTotal, [1, 1, 1, 1]);
+
+  const body = sampleBoxSurface(bodyHx, bodyHy, bodyHz, bodyCount);
+  const cabin = translate(
+    sampleBoxSurface(cabinHx, cabinHy, cabinHz, cabinCount),
+    -s * 0.05,
+    bodyHy + cabinHy,
+    0,
+  );
+  const wheelOffsets: Array<[number, number]> = [
+    [-bodyHx * 0.55, -bodyHz * 0.95],
+    [bodyHx * 0.55, -bodyHz * 0.95],
+    [-bodyHx * 0.55, bodyHz * 0.95],
+    [bodyHx * 0.55, bodyHz * 0.95],
+  ];
+  const wheels = wheelOffsets.map(([wx, wz], i) =>
+    translate(rotateAxisYtoX(sampleCylinderSurface(wheelR, wheelHalfH, wheelCounts[i])), wx, -bodyHy, wz),
+  );
+
+  return concatParts([body, cabin, ...wheels]);
+}
+
+// Teléfono: una sola caja delgada, alta y angosta (proporción reconocible
+// de smartphone) — no necesita partes compuestas.
+function telefono(count: number): Float32Array {
+  return sampleBoxSurface(s * 0.42, s * 0.85, s * 0.09, count);
+}
+
+// Persona/personaje: cabeza (esfera) + torso (caja) + 2 brazos + 2 piernas
+// (cilindros), todo centrado y apilado en Y.
+function persona(count: number): Float32Array {
+  const headR = s * 0.22;
+  const torsoHx = s * 0.32;
+  const torsoHy = s * 0.5;
+  const torsoHz = s * 0.2;
+  const armR = s * 0.09;
+  const armHalfH = s * 0.45;
+  const legR = s * 0.12;
+  const legHalfH = s * 0.55;
+
+  const [headCount, torsoCount, armsTotal, legsTotal] = splitCounts(count, [10, 30, 20, 25]);
+  const [leftArmCount, rightArmCount] = splitCounts(armsTotal, [1, 1]);
+  const [leftLegCount, rightLegCount] = splitCounts(legsTotal, [1, 1]);
+
+  const head = translate(sampleSphereSurface(headR, headCount), 0, torsoHy + headR * 0.9, 0);
+  const torso = sampleBoxSurface(torsoHx, torsoHy, torsoHz, torsoCount);
+  const leftArm = translate(sampleCylinderSurface(armR, armHalfH, leftArmCount), -(torsoHx + armR), torsoHy * 0.15, 0);
+  const rightArm = translate(sampleCylinderSurface(armR, armHalfH, rightArmCount), torsoHx + armR, torsoHy * 0.15, 0);
+  const leftLeg = translate(sampleCylinderSurface(legR, legHalfH, leftLegCount), -torsoHx * 0.5, -torsoHy - legHalfH, 0);
+  const rightLeg = translate(sampleCylinderSurface(legR, legHalfH, rightLegCount), torsoHx * 0.5, -torsoHy - legHalfH, 0);
+
+  return concatParts([head, torso, leftArm, rightArm, leftLeg, rightLeg]);
+}
+
 const SHAPE_GENERATORS: Record<string, (count: number) => Float32Array> = {
   cubo,
   esfera,
@@ -197,6 +384,9 @@ const SHAPE_GENERATORS: Record<string, (count: number) => Float32Array> = {
   anillo,
   corazon,
   cruz,
+  carro,
+  telefono,
+  persona,
 };
 
 const SHAPE_ALIASES: Record<string, string> = {
@@ -214,6 +404,15 @@ const SHAPE_ALIASES: Record<string, string> = {
   love: "corazon",
   plus: "cruz",
   mas: "cruz",
+  auto: "carro",
+  coche: "carro",
+  vehiculo: "carro",
+  celular: "telefono",
+  movil: "telefono",
+  smartphone: "telefono",
+  personaje: "persona",
+  humano: "persona",
+  gente: "persona",
 };
 
 const COMBINING_DIACRITICS = new RegExp("[\\u0300-\\u036f]", "g");
@@ -283,6 +482,16 @@ const SKELETON_WEIGHT_RELATION = 38; // ~35-40% de ese 25% restante
 const SKELETON_WEIGHT_DETAIL = 24;
 const SKELETON_WEIGHT_TOTAL = SKELETON_WEIGHT_STRUCTURE + SKELETON_WEIGHT_RELATION + SKELETON_WEIGHT_DETAIL;
 
+// Una "ola" de color: un grupo de agentes COLOR pintados con el mismo tono
+// (ver image-color.ts pickColorClusters), revelado como su propia sub-fase
+// (ver PHASE_COUNT dinámico en main.ts) — así, si la foto tiene varias
+// zonas de color reconociblemente distintas, salen de a una por vez en vez
+// de mezclarse todas juntas.
+export interface ColorClusterInput {
+  color: number; // 0xRRGGBB — informativo, no se usa acá (ver nanobot-mesh.ts)
+  weight: number; // fracción del budget de COLOR que le toca a esta ola
+}
+
 export interface ShapeFormation {
   points: Float32Array; // count*3 floats, ya trasladados a `center`
   roles: Uint8Array<ArrayBufferLike>; // largo count, uno de NANOBOT_ROLE por agente
@@ -291,6 +500,12 @@ export interface ShapeFormation {
   // como una viga sólida entre ambas en vez de un punto flotante suelto
   // (ver nanobot-mesh.ts). Sin uso para ESTRUCTURA/DETALLE (queda en 0).
   relationSpans: Float32Array; // count*6 floats
+  // Para agentes COLOR: a qué ola (índice dentro del array de clusters
+  // pasado a formShapeWithRoles) pertenece — 0 para el resto de los roles.
+  colorWave: Uint8Array<ArrayBufferLike>; // largo count
+  // Cuántas olas de color tiene esta formación (>= 1 siempre) — main.ts lo
+  // usa para saber cuántas sub-fases de revelado de COLOR debe recorrer.
+  colorWaveCount: number;
 }
 
 // Árbol de expansión mínima (Prim, O(anchorCount²) — trivial para los
@@ -509,14 +724,18 @@ function buildStructureAnchors(generator: (n: number) => Float32Array, count: nu
 // Genera la nube de puntos de la figura (repartida en los 3 roles) y la
 // traslada a `center`. Devuelve null si `name` no matchea ninguna forma
 // conocida.
+const DEFAULT_COLOR_CLUSTERS: ColorClusterInput[] = [{ color: 0, weight: 1 }];
+
 export function formShapeWithRoles(
   name: string,
   count: number,
   center: [number, number, number] = FORMATION_CENTER,
+  colorClusters: ColorClusterInput[] = DEFAULT_COLOR_CLUSTERS,
 ): ShapeFormation | null {
   const canonical = resolveShapeName(name);
   if (!canonical) return null;
   const generator = SHAPE_GENERATORS[canonical];
+  const clusters = colorClusters.length > 0 ? colorClusters : DEFAULT_COLOR_CLUSTERS;
 
   // COLOR se calcula PRIMERO y de forma independiente (75% fijo del
   // total) — ESTRUCTURA/RELACION/DETALLE (el "esqueleto") se reparten
@@ -547,11 +766,17 @@ export function formShapeWithRoles(
     relationCount,
   );
   const detailPts = generator(detailCount);
-  const colorPts = generator(colorCount);
+  // Cada ola de color es una MUESTRA INDEPENDIENTE de la silueta completa
+  // (mismo generador que DETALLE, no un subconjunto de colorPts) — así cada
+  // una por sí sola ya cubre parejo toda la figura, en vez de quedar
+  // agrupada en una sola zona.
+  const colorWaveCounts = splitCounts(colorCount, clusters.map((c) => c.weight));
+  const colorWavePts = colorWaveCounts.map((n) => generator(n));
 
   const points = new Float32Array(count * 3);
   const roles = new Uint8Array(count);
   const relationSpans = new Float32Array(count * 6);
+  const colorWave = new Uint8Array(count);
   let cursor = 0;
 
   const write = (src: Float32Array, n: number, role: NanobotRole) => {
@@ -581,9 +806,20 @@ export function formShapeWithRoles(
   }
 
   write(detailPts, detailCount, NANOBOT_ROLE.DETAIL);
-  write(colorPts, colorCount, NANOBOT_ROLE.COLOR);
+  for (let wave = 0; wave < colorWavePts.length; wave++) {
+    const src = colorWavePts[wave];
+    const n = colorWaveCounts[wave];
+    for (let i = 0; i < n; i++) {
+      points[cursor * 3 + 0] = src[i * 3 + 0] + center[0];
+      points[cursor * 3 + 1] = src[i * 3 + 1] + center[1];
+      points[cursor * 3 + 2] = src[i * 3 + 2] + center[2];
+      roles[cursor] = NANOBOT_ROLE.COLOR;
+      colorWave[cursor] = wave;
+      cursor++;
+    }
+  }
 
-  return { points, roles, relationSpans };
+  return { points, roles, relationSpans, colorWave, colorWaveCount: clusters.length };
 }
 
 // Cluster de reposo: cáscara esférica aleatoria alrededor del núcleo.

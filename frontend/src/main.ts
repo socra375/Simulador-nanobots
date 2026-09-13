@@ -11,7 +11,7 @@ import {
 } from "./shapes";
 import { createControlPanel, type UiState } from "./ui";
 import { loadConfig, saveConfig, type SwarmConfig } from "./config-client";
-import { DEFAULT_DOMINANT_COLOR } from "./image-color";
+import { DEFAULT_COLOR_CLUSTERS, type ColorCluster } from "./image-color";
 
 const MAX_NANOBOTS = 10000;
 
@@ -26,22 +26,25 @@ const FORMING_SEEK_WEIGHT = 3.5;
 const FORMING_FLOCK_SCALE = 0.12;
 
 // Revelado por fases al formar una figura: ESTRUCTURA, luego RELACION,
-// luego DETALLE y por último COLOR (la capa de pintura con el color
-// dominante de la foto, ver image-color.ts/nanobot-mesh.ts). En vez de un
-// tiempo fijo (el viaje real desde el núcleo hasta el punto de formación
-// puede tardar varios segundos según la distancia/velocidad), se espera a
-// que el grupo recién revelado esté cerca de su posición final (distancia
-// promedio por debajo de PHASE_SETTLE_DISTANCE) y se QUEDE así de forma
-// sostenida —no un instante fugaz— durante PHASE_SETTLE_HOLD_SECONDS antes
-// de soltar al siguiente, así da tiempo real a ver cada capa ya
-// sincronizada/unida con la anterior antes de que aparezca la próxima. Con
-// un tope de tiempo (PHASE_MAX_SECONDS) para no quedarse trabado si nunca
-// converge del todo.
+// luego DETALLE y por último una sub-fase por cada "ola" de COLOR (un
+// cluster de color de la foto, ver image-color.ts pickColorClusters) —
+// fase 0/1/2 son siempre ESTRUCTURA/RELACION/DETALLE, y de la fase 3 en
+// adelante cada una es una ola de color distinta (ver colorPhaseCount,
+// recalculado en cada startFormation según cuántos colores tenga la foto).
+// En vez de un tiempo fijo (el viaje real desde el núcleo hasta el punto
+// de formación puede tardar varios segundos según la distancia/velocidad),
+// se espera a que el grupo recién revelado esté cerca de su posición final
+// (distancia promedio por debajo de PHASE_SETTLE_DISTANCE) y se QUEDE así
+// de forma sostenida —no un instante fugaz— durante
+// PHASE_SETTLE_HOLD_SECONDS antes de soltar al siguiente, así da tiempo
+// real a ver cada capa/ola ya sincronizada con la anterior antes de que
+// aparezca la próxima. Con un tope de tiempo (PHASE_MAX_SECONDS) para no
+// quedarse trabado si nunca converge del todo.
 const PHASE_MIN_HOLD_SECONDS = 0.5;
 const PHASE_SETTLE_DISTANCE = 0.6;
 const PHASE_SETTLE_HOLD_SECONDS = 1;
 const PHASE_MAX_SECONDS = 7;
-const PHASE_COUNT = 4;
+const SKELETON_PHASES = 3; // ESTRUCTURA(0), RELACION(1), DETALLE(2)
 
 // Animación de regreso al núcleo: cada nanobot espera su turno (en fila,
 // por índice) y luego recorre una espiral (radio decreciente + giro)
@@ -101,10 +104,16 @@ async function main() {
 
   let mode: Mode = "idle";
   let currentShapeName: string | null = null;
-  // Color dominante (0xRRGGBB) de la última foto adjuntada, para el rol
-  // COLOR — se reaplica si hace falta rearmar la figura (p.ej. al cambiar
-  // la cantidad de nanobots) sin pedir la foto de nuevo.
-  let currentDominantColor: number = DEFAULT_DOMINANT_COLOR;
+  // Olas de color (clusters RGB + peso) de la última foto adjuntada, para
+  // el rol COLOR — se reaplican si hace falta rearmar la figura (p.ej. al
+  // cambiar la cantidad de nanobots) sin pedir la foto de nuevo.
+  let currentColorClusters: ColorCluster[] = DEFAULT_COLOR_CLUSTERS;
+  // A qué ola de color pertenece cada agente COLOR (0 para el resto de los
+  // roles) — ver ShapeFormation.colorWave en shapes.ts.
+  let currentColorWave: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+  // Fases totales de la formación activa: SKELETON_PHASES + 1 fase por
+  // cada ola de color (mínimo 1) — se recalcula en cada startFormation.
+  let phaseCount = SKELETON_PHASES + 1;
   // Rol (estructura/relación/detalle) y vigas de relación de cada agente —
   // solo tienen sentido mientras se está formando una figura; en reposo el
   // enjambre está oculto así que el contenido no importa visualmente.
@@ -121,7 +130,7 @@ async function main() {
   // rol ya salió del núcleo — el resto sigue con target de idleCluster.
   let currentFormation: ShapeFormation | null = null;
   let idlePointsForFormation: Float32Array = new Float32Array(0);
-  let formationPhase = 0; // cuántos roles ya salieron (0..PHASE_COUNT)
+  let formationPhase = 0; // cuántas fases ya salieron (0..phaseCount)
   let phaseTimer = 0;
   let settledStreak = 0; // segundos consecutivos que el grupo revelado lleva asentado
 
@@ -153,16 +162,24 @@ async function main() {
     currentFormationTargets = new Float32Array(state.count * 3);
   }
 
-  // Mezcla los targets: los agentes cuyo rol ya fue revelado (role <
-  // formationPhase) van a su punto real de la figura; el resto se queda
-  // esperando en su punto de idle, como si siguiera "dentro" del núcleo.
+  // A qué fase de revelado (0..phaseCount-1) pertenece el agente `i`: los
+  // primeros 3 roles son 1 fase cada uno; dentro de COLOR, cada ola de
+  // color es su propia fase (SKELETON_PHASES + colorWave).
+  function revealPhaseOf(i: number): number {
+    const role = currentRoles[i];
+    return role < SKELETON_PHASES ? role : SKELETON_PHASES + currentColorWave[i];
+  }
+
+  // Mezcla los targets: los agentes cuya fase ya fue revelada (< formationPhase)
+  // van a su punto real de la figura; el resto se queda esperando en su
+  // punto de idle, como si siguiera "dentro" del núcleo.
   function applyPhaseTargets(): void {
     if (!currentFormation) return;
     const count = state.count;
-    const { points, roles } = currentFormation;
+    const { points } = currentFormation;
     const mixed = new Float32Array(count * 3);
     for (let i = 0; i < count; i++) {
-      const revealed = roles[i] < formationPhase;
+      const revealed = revealPhaseOf(i) < formationPhase;
       const src = revealed ? points : idlePointsForFormation;
       mixed[i * 3 + 0] = src[i * 3 + 0];
       mixed[i * 3 + 1] = src[i * 3 + 1];
@@ -171,19 +188,19 @@ async function main() {
     swarm.setAgentTargets(mixed);
   }
 
-  // ¿El grupo que acaba de salir (rol `formationPhase - 1`) está cerca de su
-  // posición final EN ESTE INSTANTE? (el llamador exige que esto se
+  // ¿El grupo que acaba de salir (fase `formationPhase - 1`) está cerca de
+  // su posición final EN ESTE INSTANTE? (el llamador exige que esto se
   // mantenga cierto por PHASE_SETTLE_HOLD_SECONDS seguidos antes de soltar
-  // al siguiente rol — ver settledStreak en animate()).
+  // a la siguiente fase — ver settledStreak en animate()).
   function isPhaseGroupSettled(): boolean {
     if (!currentFormation) return true;
-    const roleJustRevealed = formationPhase - 1;
-    const { points, roles } = currentFormation;
+    const phaseJustRevealed = formationPhase - 1;
+    const { points } = currentFormation;
     const positions = swarm.getPositions();
     let sum = 0;
     let n = 0;
     for (let i = 0; i < state.count; i++) {
-      if (roles[i] !== roleJustRevealed) continue;
+      if (revealPhaseOf(i) !== phaseJustRevealed) continue;
       const dx = positions[i * 3 + 0] - points[i * 3 + 0];
       const dy = positions[i * 3 + 1] - points[i * 3 + 1];
       const dz = positions[i * 3 + 2] - points[i * 3 + 2];
@@ -193,16 +210,18 @@ async function main() {
     return n === 0 || sum / n < PHASE_SETTLE_DISTANCE;
   }
 
-  function startFormation(name: string, dominantColor: number): void {
-    const formation = formShapeWithRoles(name, state.count, FORMATION_CENTER);
+  function startFormation(name: string, colorClusters: ColorCluster[]): void {
+    const formation = formShapeWithRoles(name, state.count, FORMATION_CENTER, colorClusters);
     if (!formation) return;
     currentFormation = formation;
     currentRoles = formation.roles;
     currentRelationSpans = formation.relationSpans;
     currentFormationTargets = formation.points;
+    currentColorWave = formation.colorWave;
     idlePointsForFormation = idleCluster(state.count, reactorCenter);
-    currentDominantColor = dominantColor;
-    swarmMesh.setDominantColor(dominantColor);
+    currentColorClusters = colorClusters;
+    phaseCount = SKELETON_PHASES + formation.colorWaveCount;
+    swarmMesh.setColorClusters(colorClusters);
     swarmMesh.setSkeletonGrayscale(false); // por si quedó gris de una figura anterior
     formationPhase = 1; // ESTRUCTURA sale de inmediato
     phaseTimer = 0;
@@ -213,12 +232,12 @@ async function main() {
   // Transición de modo: recalcula los targets del enjambre (reposo o
   // figura), ajusta la fuerza de seek acorde, y muestra/oculta el enjambre
   // (en reposo "está dentro" del núcleo, no se dibuja).
-  function setMode(next: Mode, shapeName?: string, dominantColor?: number) {
+  function setMode(next: Mode, shapeName?: string, colorClusters?: ColorCluster[]) {
     mode = next;
     returnAnimation = null;
     if (next === "forming" && shapeName) {
       currentShapeName = shapeName;
-      startFormation(shapeName, dominantColor ?? DEFAULT_DOMINANT_COLOR);
+      startFormation(shapeName, colorClusters ?? DEFAULT_COLOR_CLUSTERS);
       swarmMesh.setVisible(true);
     } else {
       currentShapeName = null;
@@ -300,7 +319,7 @@ async function main() {
     state.count = count;
     swarm.init(count);
     swarmMesh.setCount(count);
-    if (mode === "forming" && currentShapeName) startFormation(currentShapeName, currentDominantColor);
+    if (mode === "forming" && currentShapeName) startFormation(currentShapeName, currentColorClusters);
     else applyIdleTargets();
   }
 
@@ -321,7 +340,7 @@ async function main() {
       applyParams();
       gui.controllersRecursive().forEach((c) => c.updateDisplay());
     },
-    onFormShape: (shapeName: string, dominantColor: number) => setMode("forming", shapeName, dominantColor),
+    onFormShape: (shapeName: string, colorClusters: ColorCluster[]) => setMode("forming", shapeName, colorClusters),
     onReturnToCore: () => returnToCore(),
   });
 
@@ -338,6 +357,7 @@ async function main() {
     controls.update(); // necesario por el damping de OrbitControls
 
     let visibleRoles: RoleVisibility = ALL_ROLES_VISIBLE;
+    let revealedColorWaves = 0;
 
     if (returnAnimation) {
       // Mientras dura la espiral de regreso, la física normal se pausa: la
@@ -350,7 +370,7 @@ async function main() {
         swarmMesh.setVisible(false);
       }
     } else {
-      if (mode === "forming" && formationPhase < PHASE_COUNT) {
+      if (mode === "forming" && formationPhase < phaseCount) {
         phaseTimer += dt;
         settledStreak = isPhaseGroupSettled() ? settledStreak + dt : 0;
         const readyForNext =
@@ -364,14 +384,16 @@ async function main() {
         }
       }
       if (mode === "forming") {
-        visibleRoles = [0 < formationPhase, 1 < formationPhase, 2 < formationPhase, 3 < formationPhase];
-        // Apenas COLOR se revela (ya viajando desde el núcleo hacia su
-        // posición), las otras 3 capas pierden su color de rol fijo y
-        // pasan a gris: no desaparecen (DETALLE, recién bien asentado,
-        // sigue ahí dando volumen), pero dejan de competir visualmente con
-        // el color dominante real de la foto, que termina predominando
-        // apenas COLOR llega y cubre hasta el hueco más chico.
-        swarmMesh.setSkeletonGrayscale(3 < formationPhase);
+        revealedColorWaves = Math.max(0, formationPhase - SKELETON_PHASES);
+        visibleRoles = [0 < formationPhase, 1 < formationPhase, 2 < formationPhase, revealedColorWaves > 0];
+        // Apenas la primera ola de COLOR se revela (ya viajando desde el
+        // núcleo hacia su posición), las otras 3 capas pierden su color de
+        // rol fijo y pasan a gris: no desaparecen (DETALLE, recién bien
+        // asentado, sigue ahí dando volumen), pero dejan de competir
+        // visualmente con el color real de la foto, que termina
+        // predominando apenas cada ola llega y cubre hasta el hueco más
+        // chico que le toca.
+        swarmMesh.setSkeletonGrayscale(revealedColorWaves > 0);
       }
       swarm.step(dt);
     }
@@ -384,6 +406,8 @@ async function main() {
       currentRelationSpans,
       currentFormationTargets,
       visibleRoles,
+      currentColorWave,
+      revealedColorWaves,
     );
 
     composer.render();

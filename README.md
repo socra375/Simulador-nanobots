@@ -10,10 +10,12 @@ rol donde mejor rinde. Por defecto el enjambre está **dentro** de un
 núcleo/reactor en una esquina superior de la escena (los nanobots no se
 dibujan mientras están en reposo); desde la sección "Comandos" del panel se
 le puede pedir que forme un objeto (cubo, esfera, pirámide, estrella,
-anillo, corazón o cruz) — sale del núcleo, arma la figura, y puede volver a
-guardarse en el núcleo cuando se quiera (con una animación de regreso en
-espiral, ver abajo). La cámara se puede rotar (arrastrar) y hacer zoom
-(rueda del mouse) para mirar la figura desde cualquier ángulo.
+anillo, corazón, cruz, carro, teléfono o persona/personaje — ver
+`frontend/src/shapes.ts` para la lista completa de sinónimos aceptados)
+— sale del núcleo, arma la figura, y puede volver a guardarse en el
+núcleo cuando se quiera (con una animación de regreso en espiral, ver
+abajo). La cámara se puede rotar (arrastrar) y hacer zoom (rueda del
+mouse) para mirar la figura desde cualquier ángulo.
 
 Al formar una figura, el enjambre se reparte en **4 roles** con geometría y
 color propios, y **salen del núcleo de a uno por vez** (no los 4 a la vez):
@@ -33,7 +35,32 @@ amplia mayoría del enjambre, sin importar cuánto usen las otras 3.
 | **Estructura** | Icosaedro sólido cian | ~4% del total (13/75 del 25% restante). Nodos ancla de la figura — el "exoesqueleto"/las juntas de una construcción. Se eligen con *farthest-point sampling* (sobre-muestrear y quedarse con las mejor distribuidas) en vez de al azar, para que cubran la silueta de manera pareja sin dejar zonas sin anclas. |
 | **Relación** | Viga (cilindro) sólida magenta | ~13% del total (38/75 del 25% restante — la mayoría de ese resto). Une cada ancla de Estructura con su vecina más cercana siguiendo un árbol de expansión mínima (garantiza que TODA la figura quede conectada en una sola red, sin zonas sueltas) más algunas conexiones extra para una malla más rica. Al mantener siempre la misma proporción frente a Estructura, sigue habiendo de sobra para cubrir el árbol completo. |
 | **Detalle** | Esfera sólida emissive verde | ~8% del total (24/75 del 25% restante). Relleno con el color fijo de su rol — rellena mientras Color todavía no está listo para salir. |
-| **Color** | Esfera sólida emissive (ligeramente más grande, misma silueta que Detalle) | **75% FIJO del total**, independiente de las otras 3. No tiene un color de rol fijo: es el color RGB **dominante de la foto** adjuntada en "Comandos" (si la foto es mayormente roja, sale roja) — se calcula 100% en el navegador con un histograma de color simple (`frontend/src/image-color.ts`, sin IA/backend de visión), ignorando fondo blanco/negro/transparente. Es la última capa en salir. |
+| **Color** | Esfera sólida emissive (ligeramente más grande, misma silueta que Detalle) | **75% FIJO del total**, independiente de las otras 3. No tiene un color de rol fijo: sale en hasta **4 "olas" de color**, una por cada zona de color reconociblemente distinta de la foto (ver abajo). |
+
+### Varias olas de color
+
+Si la foto tiene varias zonas de color bien distintas (p.ej. una remera
+roja y un pantalón azul), no sale un solo color promedio: `frontend/src/
+image-color.ts` (`pickColorClusters`) arma un histograma de color y
+agrupa los buckets por **proximidad** (tonos parecidos de una misma zona
+—ruido de cuantización— se funden en una sola ola, no se separan en dos),
+quedándose con hasta 4 clusters ordenados por peso (fracción de pixeles
+válidos de la foto, ignorando fondo blanco/negro/transparente). Todo
+100% en el navegador, sin IA/backend de visión.
+
+Cada cluster es una ola de Color independiente, con su propio
+`InstancedMesh`/color real (no un tinte compartido) y su propia
+sub-fase de revelado — salen de a una por vez, en orden de mayor a menor
+peso, cada una con una cantidad de nanobots proporcional a su peso en la
+foto (una foto 70% roja / 30% azul da una ola roja bastante más grande
+que la azul). Cada ola cubre una MUESTRA INDEPENDIENTE de toda la
+silueta (no una región geográfica de la figura — no hay forma de saber
+qué parte de la foto corresponde a qué parte de la figura 3D, ya que la
+forma sale del nombre escrito, no de la imagen), así que el efecto es:
+sale la ola más grande primero cubriendo gran parte de la figura,
+"dejando el espacio" (los agentes sin asignar a esa ola) para que la
+próxima ola lo cubra, hasta que entre todas cubren el 100% del budget de
+Color.
 
 Estructura/Relación/Detalle NO desaparecen cuando Color sale del núcleo —
 Detalle recién terminó de asentarse bien y sigue ahí dando volumen. En vez
@@ -52,8 +79,9 @@ como un temblor errático en vez de una convergencia prolija. En reposo esos
 mismos pesos se respetan tal cual los deja el usuario, para el movimiento
 orgánico de enjambre.
 
-Cada rol solo suelta al siguiente (Estructura → Relación → Detalle → Color) cuando
-el grupo recién salido lleva un segundo entero cerca de su posición final —
+Cada rol/ola solo suelta al siguiente (Estructura → Relación → Detalle →
+ola de Color #1 → ola de Color #2 → ...) cuando el grupo recién salido
+lleva un segundo entero cerca de su posición final —
 no apenas un instante fugaz — para que se vea a Relación terminar de
 sincronizarse/unirse con Estructura antes de que aparezca Detalle. Y una vez
 que un nanobot llega a su punto, `boids.cpp` lo frena con amortiguación real
