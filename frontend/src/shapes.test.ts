@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   resolveShapeName,
   listSupportedNames,
-  formShape,
+  formShapeWithRoles,
   idleCluster,
   FORMATION_CENTER,
   IDLE_RADIUS,
+  NANOBOT_ROLE,
 } from "./shapes";
 
 describe("resolveShapeName", () => {
@@ -47,39 +48,67 @@ describe("listSupportedNames", () => {
   });
 });
 
-describe("formShape", () => {
-  it("devuelve exactamente count*3 floats para cada forma soportada", () => {
+describe("formShapeWithRoles", () => {
+  it("devuelve exactamente count*3 floats y count roles para cada forma soportada", () => {
     for (const name of listSupportedNames()) {
       for (const count of [1, 20, 80, 200, 10000]) {
-        const points = formShape(name, count);
-        expect(points).not.toBeNull();
-        expect(points!.length).toBe(count * 3);
+        const formation = formShapeWithRoles(name, count);
+        expect(formation).not.toBeNull();
+        expect(formation!.points.length).toBe(count * 3);
+        expect(formation!.roles.length).toBe(count);
       }
     }
   });
 
   it("devuelve null para un nombre no reconocido", () => {
-    expect(formShape("no-existe", 50)).toBeNull();
+    expect(formShapeWithRoles("no-existe", 50)).toBeNull();
+  });
+
+  it("reparte los 3 roles aproximadamente 15/25/60 y usa solo valores válidos", () => {
+    const formation = formShapeWithRoles("esfera", 1000)!;
+    let structure = 0, relation = 0, detail = 0;
+    for (const role of formation.roles) {
+      expect([NANOBOT_ROLE.STRUCTURE, NANOBOT_ROLE.RELATION, NANOBOT_ROLE.DETAIL]).toContain(role);
+      if (role === NANOBOT_ROLE.STRUCTURE) structure++;
+      else if (role === NANOBOT_ROLE.RELATION) relation++;
+      else detail++;
+    }
+    expect(structure + relation + detail).toBe(1000);
+    // proporciones aproximadas: 15% estructura, ~21% relación (25% del resto), el resto detalle
+    expect(structure).toBeGreaterThan(100);
+    expect(structure).toBeLessThan(200);
+    expect(detail).toBeGreaterThan(relation);
+  });
+
+  it("con counts muy chicos (< 4) sigue devolviendo roles válidos sin crashear", () => {
+    for (const count of [0, 1, 2, 3]) {
+      const formation = formShapeWithRoles("cubo", count)!;
+      expect(formation.points.length).toBe(count * 3);
+      expect(formation.roles.length).toBe(count);
+    }
   });
 
   it("centra la figura en FORMATION_CENTER por defecto", () => {
-    const points = formShape("esfera", 200)!;
+    const formation = formShapeWithRoles("esfera", 200)!;
+    const points = formation.points;
     let sumX = 0, sumY = 0, sumZ = 0;
     for (let i = 0; i < 200; i++) {
       sumX += points[i * 3];
       sumY += points[i * 3 + 1];
       sumZ += points[i * 3 + 2];
     }
-    // Con 200 puntos en una esfera de Fibonacci, el centroide debe quedar
-    // muy cerca de FORMATION_CENTER (la esfera es simétrica).
-    expect(sumX / 200).toBeCloseTo(FORMATION_CENTER[0], 0);
-    expect(sumY / 200).toBeCloseTo(FORMATION_CENTER[1], 0);
-    expect(sumZ / 200).toBeCloseTo(FORMATION_CENTER[2], 0);
+    // La esfera es simétrica: el centroide debe quedar cerca de FORMATION_CENTER
+    // (tolerancia amplia porque ahora la mezcla estructura/relación/detalle
+    // usa sub-muestras más chicas y menos perfectamente simétricas que antes).
+    expect(Math.abs(sumX / 200 - FORMATION_CENTER[0])).toBeLessThan(1.5);
+    expect(Math.abs(sumY / 200 - FORMATION_CENTER[1])).toBeLessThan(1.5);
+    expect(Math.abs(sumZ / 200 - FORMATION_CENTER[2])).toBeLessThan(1.5);
   });
 
   it("traslada la figura a un centro custom", () => {
     const custom: [number, number, number] = [10, 10, 10];
-    const points = formShape("cubo", 60, custom)!;
+    const formation = formShapeWithRoles("cubo", 60, custom)!;
+    const points = formation.points;
     // Todos los puntos de un cubo caen dentro de +-SHAPE_HALF_EXTENT del centro.
     for (let i = 0; i < 60; i++) {
       expect(Math.abs(points[i * 3] - custom[0])).toBeLessThanOrEqual(6);
@@ -89,9 +118,10 @@ describe("formShape", () => {
   });
 
   it("resuelve alias antes de generar (bola -> esfera funciona igual que esfera)", () => {
-    const a = formShape("bola", 10, [0, 0, 0]);
-    expect(a).not.toBeNull();
-    expect(a!.length).toBe(30);
+    const formation = formShapeWithRoles("bola", 10, [0, 0, 0]);
+    expect(formation).not.toBeNull();
+    expect(formation!.points.length).toBe(30);
+    expect(formation!.roles.length).toBe(10);
   });
 });
 
@@ -102,7 +132,7 @@ describe("idleCluster", () => {
   });
 
   it("todos los puntos quedan dentro de IDLE_RADIUS del centro", () => {
-    const center: [number, number, number] = [-8, -8, -8];
+    const center: [number, number, number] = [-8, 8, -8];
     const pts = idleCluster(100, center);
     for (let i = 0; i < 100; i++) {
       const dx = pts[i * 3] - center[0];

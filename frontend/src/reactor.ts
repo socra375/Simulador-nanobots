@@ -1,11 +1,10 @@
 import * as THREE from "three";
 
-// El núcleo/reactor: objeto fijo en una esquina de la escena donde "viven"
-// los nanobots en reposo, y desde donde salen al formar una figura (ver
-// shapes.ts). Posicionado dentro del volumen físico del core C++
-// (kBounds=12 en boids.cpp) y por encima del piso de la grilla (y=-13 en
-// scene.ts).
-export const REACTOR_POSITION = new THREE.Vector3(-8, -8, -8);
+// El núcleo/reactor: objeto fijo en una esquina superior de la escena donde
+// "viven" los nanobots en reposo (ocultos — ver nanobot-mesh.ts setVisible),
+// y desde donde salen al formar una figura (ver shapes.ts). Posicionado
+// dentro del volumen físico del core C++ (kBounds=12 en boids.cpp).
+export const REACTOR_POSITION = new THREE.Vector3(-8, 8, -8);
 
 export interface Reactor {
   group: THREE.Group;

@@ -13,8 +13,8 @@
 
 export const SHAPE_HALF_EXTENT = 5.5;
 // Punto de la escena donde se arman las figuras: lejos del núcleo
-// (REACTOR_POSITION = (-8,-8,-8) en reactor.ts) y dentro de kBounds=12
-// del core C++ aun sumando SHAPE_HALF_EXTENT.
+// (REACTOR_POSITION en reactor.ts) y dentro de kBounds=12 del core C++ aun
+// sumando SHAPE_HALF_EXTENT.
 export const FORMATION_CENTER: [number, number, number] = [4, 2, 4];
 // Radio del cluster de reposo alrededor del núcleo.
 export const IDLE_RADIUS = 2.5;
@@ -235,22 +235,86 @@ export function listSupportedNames(): string[] {
   return Object.keys(SHAPE_GENERATORS);
 }
 
-// Genera la nube de puntos de la figura y la traslada a `center`.
-// Devuelve null si `name` no matchea ninguna forma conocida.
-export function formShape(
+// --- Los 3 roles de nanobots que participan al formar una figura ---
+//
+// - ESTRUCTURA: un subconjunto disperso de "puntos ancla" de la propia
+//   figura (el mismo generador, llamado con menos puntos) — define el
+//   esqueleto/silueta general, como las vigas de una construcción.
+// - RELACION: interpolados a lo largo del segmento entre pares de anclas
+//   de ESTRUCTURA cercanas — literalmente "se unen unos con otros",
+//   trazando las conexiones entre los puntos de estructura (como cables
+//   uniendo las vigas).
+// - DETALLE: el relleno denso de la figura a resolución completa (el
+//   grueso de la cantidad) — aporta el color/pulido final, dando la
+//   silueta 3D nítida y sólida por encima del esqueleto de las otras dos.
+export const NANOBOT_ROLE = { STRUCTURE: 0, RELATION: 1, DETAIL: 2 } as const;
+export type NanobotRole = (typeof NANOBOT_ROLE)[keyof typeof NANOBOT_ROLE];
+
+const ROLE_RATIO_STRUCTURE = 0.15;
+const ROLE_RATIO_RELATION = 0.25;
+// El resto (~60%) es DETALLE.
+
+export interface ShapeFormation {
+  points: Float32Array; // count*3 floats, ya trasladados a `center`
+  roles: Uint8Array<ArrayBufferLike>; // largo count, uno de NANOBOT_ROLE por agente
+}
+
+function nearestNeighborInterpolated(anchors: Float32Array, anchorCount: number, outCount: number): Float32Array {
+  const out = new Float32Array(outCount * 3);
+  if (anchorCount === 0) return out;
+  for (let i = 0; i < outCount; i++) {
+    const a = Math.floor(Math.random() * anchorCount);
+    let b = a;
+    if (anchorCount > 1) {
+      while (b === a) b = Math.floor(Math.random() * anchorCount);
+    }
+    const t = Math.random();
+    out[i * 3 + 0] = anchors[a * 3 + 0] * (1 - t) + anchors[b * 3 + 0] * t;
+    out[i * 3 + 1] = anchors[a * 3 + 1] * (1 - t) + anchors[b * 3 + 1] * t;
+    out[i * 3 + 2] = anchors[a * 3 + 2] * (1 - t) + anchors[b * 3 + 2] * t;
+  }
+  return out;
+}
+
+// Genera la nube de puntos de la figura (repartida en los 3 roles) y la
+// traslada a `center`. Devuelve null si `name` no matchea ninguna forma
+// conocida.
+export function formShapeWithRoles(
   name: string,
   count: number,
   center: [number, number, number] = FORMATION_CENTER,
-): Float32Array | null {
+): ShapeFormation | null {
   const canonical = resolveShapeName(name);
   if (!canonical) return null;
-  const local = SHAPE_GENERATORS[canonical](count);
-  for (let i = 0; i < count; i++) {
-    local[i * 3] += center[0];
-    local[i * 3 + 1] += center[1];
-    local[i * 3 + 2] += center[2];
-  }
-  return local;
+  const generator = SHAPE_GENERATORS[canonical];
+
+  const structureCount = count > 0 ? Math.min(count, Math.max(4, Math.round(count * ROLE_RATIO_STRUCTURE))) : 0;
+  const relationCount = Math.round(Math.max(0, count - structureCount) * ROLE_RATIO_RELATION);
+  const detailCount = count - structureCount - relationCount;
+
+  const structurePts = generator(structureCount);
+  const relationPts = nearestNeighborInterpolated(structurePts, structureCount, relationCount);
+  const detailPts = generator(detailCount);
+
+  const points = new Float32Array(count * 3);
+  const roles = new Uint8Array(count);
+  let cursor = 0;
+
+  const write = (src: Float32Array, n: number, role: NanobotRole) => {
+    for (let i = 0; i < n; i++) {
+      points[cursor * 3 + 0] = src[i * 3 + 0] + center[0];
+      points[cursor * 3 + 1] = src[i * 3 + 1] + center[1];
+      points[cursor * 3 + 2] = src[i * 3 + 2] + center[2];
+      roles[cursor] = role;
+      cursor++;
+    }
+  };
+
+  write(structurePts, structureCount, NANOBOT_ROLE.STRUCTURE);
+  write(relationPts, relationCount, NANOBOT_ROLE.RELATION);
+  write(detailPts, detailCount, NANOBOT_ROLE.DETAIL);
+
+  return { points, roles };
 }
 
 // Cluster de reposo: cáscara esférica aleatoria alrededor del núcleo.

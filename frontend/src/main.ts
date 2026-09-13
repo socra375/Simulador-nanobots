@@ -2,7 +2,7 @@ import { createScene } from "./scene";
 import { createNanobotSwarmMesh } from "./nanobot-mesh";
 import { Swarm } from "./swarm";
 import { createReactor } from "./reactor";
-import { formShape, idleCluster, FORMATION_CENTER } from "./shapes";
+import { formShapeWithRoles, idleCluster, FORMATION_CENTER, NANOBOT_ROLE } from "./shapes";
 import { createControlPanel, type UiState } from "./ui";
 import { loadConfig, saveConfig, type SwarmConfig } from "./config-client";
 
@@ -27,7 +27,7 @@ type Mode = "idle" | "forming";
 
 async function main() {
   const container = document.getElementById("app")!;
-  const { scene, camera, renderer } = createScene(container);
+  const { scene, camera, renderer, controls } = createScene(container);
 
   const swarmMesh = createNanobotSwarmMesh(MAX_NANOBOTS);
   scene.add(swarmMesh.group);
@@ -49,6 +49,10 @@ async function main() {
 
   let mode: Mode = "idle";
   let currentShapeName: string | null = null;
+  // Rol (estructura/relación/detalle) de cada agente — solo tiene sentido
+  // mientras se está formando una figura; en reposo el enjambre está oculto
+  // así que el contenido no importa visualmente.
+  let currentRoles: Uint8Array<ArrayBufferLike> = new Uint8Array(state.count).fill(NANOBOT_ROLE.DETAIL);
 
   function applyParams() {
     swarm.setParams({
@@ -62,21 +66,26 @@ async function main() {
 
   function applyIdleTargets() {
     swarm.setAgentTargets(idleCluster(state.count, reactorCenter));
+    currentRoles = new Uint8Array(state.count).fill(NANOBOT_ROLE.DETAIL);
   }
 
   function applyShapeTargets(name: string): void {
-    const points = formShape(name, state.count, FORMATION_CENTER);
-    if (points) swarm.setAgentTargets(points);
+    const formation = formShapeWithRoles(name, state.count, FORMATION_CENTER);
+    if (!formation) return;
+    swarm.setAgentTargets(formation.points);
+    currentRoles = formation.roles;
   }
 
   // Transición de modo: recalcula los targets del enjambre (reposo o
-  // figura) y ajusta la fuerza de seek acorde.
+  // figura), ajusta la fuerza de seek acorde, y muestra/oculta el enjambre
+  // (en reposo "está dentro" del núcleo, no se dibuja).
   function setMode(next: Mode, shapeName?: string) {
     mode = next;
     currentShapeName = next === "forming" ? (shapeName ?? null) : null;
     if (next === "forming" && currentShapeName) applyShapeTargets(currentShapeName);
     else applyIdleTargets();
     applyParams();
+    swarmMesh.setVisible(next === "forming");
   }
 
   // `swarm.init()` reasigna (y reinicializa) el buffer de targets en C++,
@@ -120,13 +129,14 @@ async function main() {
     lastTime = now;
 
     reactor.update(dt);
+    controls.update(); // necesario por el damping de OrbitControls
     // Los targets del enjambre solo se reescriben en transiciones de modo
     // y en cambios de cantidad (ver setMode/applyCount) — no hace falta
     // tocarlos en cada frame.
     swarm.step(dt);
 
     const positions = swarm.getPositions();
-    swarmMesh.updateFromPositions(positions, swarm.getCount());
+    swarmMesh.updateFromPositions(positions, swarm.getCount(), currentRoles);
 
     renderer.render(scene, camera);
   }
