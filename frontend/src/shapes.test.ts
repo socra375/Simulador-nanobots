@@ -179,7 +179,7 @@ describe("formShapeWithRoles", () => {
     expect(formShapeWithRoles("no-existe", 50)).toBeNull();
   });
 
-  it("reparte los 3 roles aproximadamente 12/14/74 (DETALLE es la mayoría) y usa solo valores válidos", () => {
+  it("reparte los 3 roles aproximadamente 13/38/49 (ESTRUCTURA 10-15%, RELACION 35-40% del TOTAL) y usa solo valores válidos", () => {
     const formation = formShapeWithRoles("esfera", 1000)!;
     let structure = 0, relation = 0, detail = 0;
     for (const role of formation.roles) {
@@ -189,12 +189,15 @@ describe("formShapeWithRoles", () => {
       else detail++;
     }
     expect(structure + relation + detail).toBe(1000);
-    // proporciones aproximadas: 12% estructura, ~14% relación (16% del resto), ~74% detalle —
-    // DETALLE se lleva la mayor parte a propósito, para tapar huecos/grietas en el relleno.
-    expect(structure).toBeGreaterThan(80);
-    expect(structure).toBeLessThan(160);
-    expect(detail).toBeGreaterThan(700);
-    expect(detail).toBeGreaterThan(relation * 4);
+    // Ambas fracciones son sobre el TOTAL (no una sobre el resto de la
+    // otra) para que RELACION siempre tenga margen de sobra sobre el
+    // tamaño del árbol de expansión mínima (ver buildRelationEdges) y
+    // cubra TODAS las conexiones de ESTRUCTURA, no solo una parte.
+    expect(structure).toBeGreaterThan(90); // >9%
+    expect(structure).toBeLessThan(160); // <16%
+    expect(relation).toBeGreaterThan(330); // >33%
+    expect(relation).toBeLessThan(420); // <42%
+    expect(detail).toBeGreaterThan(400);
   });
 
   it("con counts muy chicos (< 4) sigue devolviendo roles válidos sin crashear", () => {

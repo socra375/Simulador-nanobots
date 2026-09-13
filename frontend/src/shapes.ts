@@ -253,11 +253,16 @@ export function listSupportedNames(): string[] {
 export const NANOBOT_ROLE = { STRUCTURE: 0, RELATION: 1, DETAIL: 2 } as const;
 export type NanobotRole = (typeof NANOBOT_ROLE)[keyof typeof NANOBOT_ROLE];
 
-const ROLE_RATIO_STRUCTURE = 0.12;
-const ROLE_RATIO_RELATION = 0.16;
-// El resto (~74%) es DETALLE — la mayor parte de la cantidad, para que su
-// relleno tape los huecos entre las vigas de RELACION en vez de dejar
-// grietas visibles.
+// Ambas fracciones son sobre el TOTAL de nanobots pedido (no una sobre el
+// resto de la otra): así, por ejemplo, con 500 nanobots ESTRUCTURA usa
+// ~13% (~65) y RELACION ~38% (~190) sin importar cuánto use la otra —
+// necesario para que haya SIEMPRE suficientes vigas de RELACION como para
+// cubrir el árbol de expansión mínima completo (ver buildRelationEdges)
+// más conexiones extra, en vez de quedar apenas alcanzando el mínimo.
+const ROLE_RATIO_STRUCTURE = 0.13; // 10-15%: anclas del exoesqueleto
+const ROLE_RATIO_RELATION = 0.38; // 35-40%: vigas que unen las anclas
+// El resto (~49%) es DETALLE — el relleno que tapa los huecos que dejan
+// ESTRUCTURA y RELACION en vez de dejar grietas visibles.
 
 export interface ShapeFormation {
   points: Float32Array; // count*3 floats, ya trasladados a `center`
@@ -495,7 +500,7 @@ export function formShapeWithRoles(
   const generator = SHAPE_GENERATORS[canonical];
 
   const structureCount = count > 0 ? Math.min(count, Math.max(4, Math.round(count * ROLE_RATIO_STRUCTURE))) : 0;
-  const relationCount = Math.round(Math.max(0, count - structureCount) * ROLE_RATIO_RELATION);
+  const relationCount = Math.min(Math.max(0, count - structureCount), Math.round(count * ROLE_RATIO_RELATION));
   const detailCount = count - structureCount - relationCount;
 
   const structurePts = buildStructureAnchors(generator, structureCount);
