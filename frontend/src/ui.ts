@@ -1,8 +1,9 @@
 import GUI from "lil-gui";
 import type { SwarmParams } from "./swarm";
 import type { SwarmConfig } from "./config-client";
-import { resolveShapeName, listSupportedNames } from "./shapes";
+import { resolveShapeName, listSupportedNames, registerCustomScan } from "./shapes";
 import { extractColorClustersFromFile, type ColorCluster } from "./image-color";
+import { buildVisualHullPoints, type ScanPhotos } from "./visual-hull";
 
 export interface UiState extends SwarmParams {
   count: number;
@@ -85,6 +86,7 @@ export function createControlPanel(state: UiState, callbacks: UiCallbacks): GUI 
   gui.add(actions, "cargar").name("Cargar configuración");
 
   addCommandsFolder(gui, callbacks);
+  addScanFolder(gui, callbacks);
 
   return gui;
 }
@@ -156,5 +158,78 @@ function addCommandsFolder(gui: GUI, callbacks: UiCallbacks): void {
   folder.add(actions, "volverAlNucleo").name("Volver al núcleo");
 
   folder.domElement.appendChild(preview);
+  folder.domElement.appendChild(status);
+}
+
+// Carpeta "Escaneo 3D" (Fase 23): en vez de un nombre + 1 foto de
+// confirmación (ver addCommandsFolder), acá se suben 4 fotos reales del
+// MISMO objeto (frente/atrás/lateral izq./lateral der.) y se reconstruye
+// su forma 3D real por "visual hull" (ver visual-hull.ts) — sin nombre
+// que escribir, la forma sale de las fotos mismas. El color sigue
+// saliendo del histograma de la foto frontal (mismo mecanismo que
+// addCommandsFolder, sin cambios) — no hay color real por-punto en esta
+// fase.
+type ScanSlot = "front" | "back" | "left" | "right";
+const SCAN_SLOT_LABELS: Record<ScanSlot, string> = {
+  front: "Foto frontal",
+  back: "Foto trasera",
+  left: "Foto lateral izq.",
+  right: "Foto lateral der.",
+};
+
+function addScanFolder(gui: GUI, callbacks: UiCallbacks): void {
+  const folder = gui.addFolder("Escaneo 3D (4 fotos)");
+  const attached: Partial<Record<ScanSlot, File>> = {};
+
+  const status = document.createElement("div");
+  status.style.cssText = "font-size:11px;color:#4be3ff;padding:2px 6px;min-height:14px;";
+
+  function makeSlotInput(slot: ScanSlot): HTMLInputElement {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.style.display = "none";
+    input.dataset.scanSlot = slot; // selector estable para E2E
+    document.body.appendChild(input);
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      attached[slot] = file;
+      status.textContent = `${SCAN_SLOT_LABELS[slot]}: ${file.name}`;
+    });
+    return input;
+  }
+
+  const slots: ScanSlot[] = ["front", "back", "left", "right"];
+  const inputs = Object.fromEntries(slots.map((slot) => [slot, makeSlotInput(slot)])) as Record<
+    ScanSlot,
+    HTMLInputElement
+  >;
+
+  const actions = {
+    reconstruir: async () => {
+      const missing = slots.find((slot) => !attached[slot]);
+      if (missing) {
+        status.textContent = `Falta adjuntar: ${SCAN_SLOT_LABELS[missing]}.`;
+        return;
+      }
+      status.textContent = "Reconstruyendo en 3D...";
+      const photos = attached as ScanPhotos;
+      const points = await buildVisualHullPoints(photos);
+      if (points.length === 0) {
+        status.textContent = "No se pudo reconstruir nada — probá con fondo más liso/contrastante.";
+        return;
+      }
+      const canonical = registerCustomScan(points);
+      const colorClusters = await extractColorClustersFromFile(photos.front);
+      status.textContent = "Formando: escaneo";
+      callbacks.onFormShape(canonical, colorClusters);
+    },
+  };
+
+  for (const slot of slots) {
+    folder.add({ fn: () => inputs[slot].click() }, "fn").name(SCAN_SLOT_LABELS[slot]);
+  }
+  folder.add(actions, "reconstruir").name("Reconstruir en 3D");
   folder.domElement.appendChild(status);
 }
