@@ -6,11 +6,23 @@
 
 Enjambre de nanobots en 3D con movimiento tipo "boid" (cohesión, separación,
 alineación e inercia), construido combinando tres lenguajes, cada uno en el
-rol donde mejor rinde. Por defecto el enjambre vive agrupado alrededor de un
-núcleo/reactor en una esquina de la escena; desde la sección "Comandos" del
-panel se le puede pedir que forme un objeto (cubo, esfera, pirámide,
-estrella, anillo, corazón o cruz) — sale del núcleo, arma la figura, y puede
-volver a agruparse en el núcleo cuando se quiera.
+rol donde mejor rinde. Por defecto el enjambre está **dentro** de un
+núcleo/reactor en una esquina superior de la escena (los nanobots no se
+dibujan mientras están en reposo); desde la sección "Comandos" del panel se
+le puede pedir que forme un objeto (cubo, esfera, pirámide, estrella,
+anillo, corazón o cruz) — sale del núcleo, arma la figura, y puede volver a
+guardarse en el núcleo cuando se quiera. La cámara se puede rotar
+(arrastrar) y hacer zoom (rueda del mouse) para mirar la figura desde
+cualquier ángulo.
+
+Al formar una figura, el enjambre se reparte en **3 roles** con geometría y
+color propios:
+
+| Rol | Geometría | Función |
+|---|---|---|
+| **Estructura** | Icosaedro wireframe cian | Puntos ancla dispersos de la figura — el "esqueleto". |
+| **Relación** | Hexágono wireframe magenta | Interpolados entre anclas de Estructura cercanas — las conexiones que "unen" el esqueleto. |
+| **Detalle** | Esfera sólida emissive verde | Relleno denso a resolución completa — da el color y los últimos retoques para una silueta 3D nítida. |
 
 | Lenguaje | Rol | Carpeta |
 |---|---|---|
@@ -91,16 +103,17 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-Abrí `http://127.0.0.1:8000` en el navegador. Vas a ver el enjambre
-agrupado alrededor del núcleo; el panel de control (arriba a la derecha)
+Abrí `http://127.0.0.1:8000` en el navegador. El núcleo se ve solo (los
+nanobots están dentro, ocultos); el panel de control (arriba a la derecha)
 permite ajustar la cantidad de nanobots (20–10.000), la velocidad máxima y
 los pesos de cohesión/separación/alineación, guardar/cargar esa configuración
 (persistida por el backend en `backend/config/swarm_config.json`), y en la
 carpeta "Comandos": escribir el nombre de un objeto, adjuntar una foto de
 confirmación y pedirle al enjambre que lo forme ("Volver al núcleo" para
-deshacerlo). La foto no se analiza — no hay backend/IA de visión en
-producción — es solo un paso de confirmación de UX; la figura real sale de
-la biblioteca procedural de `frontend/src/shapes.ts`.
+deshacerlo y ocultarlo de nuevo). La foto no se analiza — no hay backend/IA
+de visión en producción — es solo un paso de confirmación de UX; la figura
+real (y el reparto en los 3 roles) sale de `frontend/src/shapes.ts`. Podés
+rotar la cámara arrastrando y hacer zoom con la rueda del mouse.
 
 ## Despliegue en GitHub Pages (solo frontend)
 

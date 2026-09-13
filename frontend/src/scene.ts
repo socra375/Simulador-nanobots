@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 // Construye la escena 3D con estética futurista/holográfica: fondo oscuro,
 // cuadrícula sutil tipo "piso de laboratorio" y una luz de acento neón.
@@ -6,6 +7,7 @@ export interface SceneBundle {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   renderer: THREE.WebGLRenderer;
+  controls: OrbitControls;
 }
 
 export function createScene(container: HTMLElement): SceneBundle {
@@ -41,11 +43,21 @@ export function createScene(container: HTMLElement): SceneBundle {
   accentLight.position.set(0, 10, 10);
   scene.add(accentLight);
 
+  // Controles de cámara: rotar arrastrando (botón izquierdo), zoom con la
+  // rueda del mouse. `controls.update()` debe llamarse en cada frame del
+  // loop de animación (necesario por el damping, que suaviza el movimiento).
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.minDistance = 6;
+  controls.maxDistance = 80;
+  controls.target.set(0, 0, 0);
+
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
-  return { scene, camera, renderer };
+  return { scene, camera, renderer, controls };
 }
