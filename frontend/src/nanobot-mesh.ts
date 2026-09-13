@@ -28,24 +28,32 @@ const GEOMETRY_VARIANTS = [
 
 const NEON_COLORS = [0x4be3ff, 0x7dffb3, 0xff5fd6];
 
+// Cantidad para la que se afinó el tamaño visual original de cada nanobot
+// (Fase 1/2). Por encima de esto, updateFromPositions los achica.
+const SCALE_BASELINE_COUNT = 80;
+
 export interface NanobotSwarmMesh {
   group: THREE.Group;
   setCount: (count: number) => void;
   updateFromPositions: (positions: Float32Array, count: number) => void;
 }
 
-// Usamos un InstancedMesh por variante geométrica para soportar hasta 200
-// nanobots con muy pocos draw calls (requisito de rendimiento).
+// Usamos un InstancedMesh por variante geométrica para soportar miles de
+// nanobots con muy pocos draw calls (requisito de rendimiento). La
+// capacidad de cada mesh es maxCount/variantes (no maxCount completo): a
+// escalas de miles de agentes, reservar 3x de más por variante ya no es
+// un redondeo despreciable.
 export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   const group = new THREE.Group();
   const dummy = new THREE.Object3D();
+  const perVariantCapacity = Math.ceil(maxCount / GEOMETRY_VARIANTS.length);
 
   const instancedMeshes = GEOMETRY_VARIANTS.map((geometry, i) => {
     const material = new THREE.MeshBasicMaterial({
       color: NEON_COLORS[i % NEON_COLORS.length],
       wireframe: true,
     });
-    const mesh = new THREE.InstancedMesh(geometry, material, maxCount);
+    const mesh = new THREE.InstancedMesh(geometry, material, perVariantCapacity);
     mesh.count = 0;
     group.add(mesh);
     return mesh;
@@ -62,6 +70,12 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
 
   function updateFromPositions(positions: Float32Array, count: number) {
     const perVariant = Math.ceil(count / instancedMeshes.length);
+    // Con miles de nanobots en el mismo volumen, el tamaño fijo (afinado
+    // para ~80) los hace superponerse tanto que una figura se ve como un
+    // blob sólido en vez de un contorno nítido. Se achican con la densidad
+    // (proporcional a count^(-1/3), para que el "área" cubierta por nanobot
+    // baje al ritmo justo) así más cantidad realmente aporta más detalle.
+    const scale = Math.min(1, Math.cbrt(SCALE_BASELINE_COUNT / count));
     for (let i = 0; i < count; i++) {
       const variantIndex = Math.min(
         instancedMeshes.length - 1,
@@ -80,6 +94,7 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
         positions[i * 3 + 0] * 0.15,
         0,
       );
+      dummy.scale.setScalar(scale);
       dummy.updateMatrix();
       mesh.setMatrixAt(localIndex, dummy.matrix);
     }

@@ -16,14 +16,17 @@ export interface UiCallbacks {
   onReturnToCore: () => void;
 }
 
-// Panel de control (lil-gui): cantidad de nanobots (20-200), velocidad máxima
-// y pesos de cohesión/separación/alineación, más botones de guardar/cargar
-// configuración (delegados al backend Python vía config-client.ts).
+// Panel de control (lil-gui): cantidad de nanobots (20-10.000), velocidad
+// máxima y pesos de cohesión/separación/alineación, más botones de
+// guardar/cargar configuración (delegados al backend Python vía
+// config-client.ts). A partir de cientos de agentes, boids.cpp usa una
+// grilla espacial para la búsqueda de vecinos (ver init()/step() ahí) en
+// vez de comparar cada agente contra todos los demás.
 export function createControlPanel(state: UiState, callbacks: UiCallbacks): GUI {
   const gui = new GUI({ title: "Parámetros del enjambre" });
 
   gui
-    .add(state, "count", 20, 200, 1)
+    .add(state, "count", 20, 10000, 1)
     .name("Nanobots")
     .onFinishChange((value: number) => callbacks.onCountChange(value));
 

@@ -6,6 +6,7 @@
 // dependencias de build solo por los tests: son asserts simples con un
 // contador de fallos, ejecutados por cpp/run_tests.sh.
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -123,6 +124,62 @@ void test_step_with_zero_agents_does_not_crash() {
     check(getCount() == 0, "init(0) + step() no crashea y mantiene count en 0");
 }
 
+// Con cientos de agentes, la búsqueda de vecinos usa la grilla espacial
+// (uniform grid) en vez de fuerza bruta. Este test coloca dos agentes
+// superpuestos entre cientos de "ruido" repartido por todo el volumen, y
+// verifica que igual se separen: si la partición en celdas estuviera mal
+// (p.ej. no revisar las celdas vecinas correctas), este par podría no
+// encontrarse a sí mismo como vecino y el test fallaría.
+void test_grid_neighbor_search_finds_correct_neighbors_among_many_agents() {
+    const int kTotal = 500;
+    init(kTotal);
+    setParams(/*cohesion=*/0.f, /*separation=*/2.f, /*alignment=*/0.f, /*maxSpeed=*/5.f, /*seekWeight=*/0.f);
+
+    float* positions = getPositionsPtr();
+    float* velocities = g_velocities.data();
+    float* targets = getTargetPositionsPtr();
+
+    positions[0] = 5.f; positions[1] = 5.f; positions[2] = 5.f;
+    positions[3] = 5.2f; positions[4] = 5.f; positions[5] = 5.f;
+    for (int a = 0; a < 6; ++a) velocities[a] = 0.f;
+    // Todos los targets = su propia posición inicial: sin seek de por
+    // medio, así el único movimiento posible es el de separación.
+    for (int i = 0; i < kTotal; ++i) {
+        targets[i * 3 + 0] = positions[i * 3 + 0];
+        targets[i * 3 + 1] = positions[i * 3 + 1];
+        targets[i * 3 + 2] = positions[i * 3 + 2];
+    }
+
+    float initialDist = distance(positions[0], positions[1], positions[2], positions[3], positions[4], positions[5]);
+    for (int s = 0; s < 20; ++s) step(0.05f);
+    float finalDist = distance(positions[0], positions[1], positions[2], positions[3], positions[4], positions[5]);
+
+    check(finalDist > initialDist,
+          "la grilla espacial encuentra vecinos correctos con cientos de agentes de por medio");
+}
+
+// No es un benchmark estricto (el tiempo real depende del hardware) — es
+// una alarma temprana: si la grilla espacial se rompiera y step() volviera
+// a comparar cada agente contra todos los demás (O(n²)), 10.000 agentes
+// tardarían muchísimo más que el umbral generoso de acá.
+void test_step_scales_to_thousands_of_agents() {
+    const int kTotal = 10000;
+    init(kTotal);
+    setParams(/*cohesion=*/0.8f, /*separation=*/1.5f, /*alignment=*/0.6f, /*maxSpeed=*/4.f, /*seekWeight=*/1.2f);
+
+    const int kSteps = 30;
+    auto start = std::chrono::steady_clock::now();
+    for (int s = 0; s < kSteps; ++s) step(0.016f);
+    auto end = std::chrono::steady_clock::now();
+
+    double totalMs = std::chrono::duration<double, std::milli>(end - start).count();
+    double perStepMs = totalMs / kSteps;
+    std::printf("INFO: step() con %d agentes: %.2f ms/step (%d steps en %.1f ms)\n", kTotal, perStepMs, kSteps,
+                totalMs);
+
+    check(perStepMs < 100.0, "step() con 10.000 agentes corre muy por debajo de 100ms/step (grilla espacial activa)");
+}
+
 }  // namespace
 
 int main() {
@@ -131,6 +188,8 @@ int main() {
     test_separation_pushes_overlapping_agents_apart();
     test_bounds_clamp_keeps_agent_inside_volume();
     test_step_with_zero_agents_does_not_crash();
+    test_grid_neighbor_search_finds_correct_neighbors_among_many_agents();
+    test_step_scales_to_thousands_of_agents();
 
     if (g_failures > 0) {
         std::fprintf(stderr, "\n%d test(s) fallaron.\n", g_failures);

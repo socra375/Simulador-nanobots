@@ -50,7 +50,7 @@ describe("listSupportedNames", () => {
 describe("formShape", () => {
   it("devuelve exactamente count*3 floats para cada forma soportada", () => {
     for (const name of listSupportedNames()) {
-      for (const count of [1, 20, 80, 200]) {
+      for (const count of [1, 20, 80, 200, 10000]) {
         const points = formShape(name, count);
         expect(points).not.toBeNull();
         expect(points!.length).toBe(count * 3);

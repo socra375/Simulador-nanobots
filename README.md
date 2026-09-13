@@ -93,8 +93,8 @@ uvicorn main:app --reload
 
 Abrí `http://127.0.0.1:8000` en el navegador. Vas a ver el enjambre
 agrupado alrededor del núcleo; el panel de control (arriba a la derecha)
-permite ajustar la cantidad de nanobots (20–200), la velocidad máxima y los
-pesos de cohesión/separación/alineación, guardar/cargar esa configuración
+permite ajustar la cantidad de nanobots (20–10.000), la velocidad máxima y
+los pesos de cohesión/separación/alineación, guardar/cargar esa configuración
 (persistida por el backend en `backend/config/swarm_config.json`), y en la
 carpeta "Comandos": escribir el nombre de un objeto, adjuntar una foto de
 confirmación y pedirle al enjambre que lo forme ("Volver al núcleo" para
@@ -180,8 +180,24 @@ npm run test:e2e
 ## Notas de rendimiento
 
 - La física corre en C++ compilado a Wasm (código nativo), no en JS
-  interpretado, lo que permite simular hasta 200 nanobots con fuerzas boid
-  O(n²) sin caída de FPS perceptible.
-- El renderizado usa `THREE.InstancedMesh` (una llamada de dibujo por
-  variante de geometría, no una por nanobot), así el costo de render se
-  mantiene bajo incluso con 200 agentes en pantalla.
+  interpretado.
+- **Búsqueda de vecinos con grilla espacial**: comparar cada nanobot contra
+  todos los demás (O(n²), como en Fase 1/2) deja de ser viable por encima de
+  unos pocos cientos de agentes. `boids.cpp` particiona el volumen en una
+  grilla uniforme (celdas de lado = radio de interacción) y reconstruye un
+  bucket-sort por celda en cada `step()` — cada agente solo compara contra
+  el bloque de 3×3×3 celdas vecinas, no contra todo el enjambre.
+- **Radio de interacción escalado por densidad**: `kNeighborRadius`/
+  `kSeparationRadius` se encogen con `count` (factor `cbrt(200/count)`,
+  hasta 200 agentes es 1:1, igual que antes) para que el número de vecinos
+  reales por agente —lo que efectivamente cuesta CPU— no crezca sin límite
+  aunque miles de nanobots terminen apretados en un cluster chico (reposo
+  junto al núcleo) o una figura.
+- **Tamaño visual escalado por densidad**: cada nanobot se dibuja más chico
+  a medida que `count` sube (factor `cbrt(80/count)`), para que más
+  cantidad se traduzca en más detalle en el contorno de una figura en vez
+  de una superposición sólida.
+- Con estos cambios, 10.000 nanobots corren a ~4ms/step en C++ nativo (muy
+  por debajo del presupuesto de 16.6ms/frame a 60 FPS) — medido en
+  `cpp/test_boids.cpp`. El renderizado usa `THREE.InstancedMesh` (una
+  llamada de dibujo por variante de geometría, no una por nanobot).

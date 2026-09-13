@@ -36,7 +36,7 @@ DEFAULT_CONFIG = {
 
 
 class SwarmConfig(BaseModel):
-    count: int = Field(ge=20, le=200)
+    count: int = Field(ge=20, le=10000)
     cohesion: float = Field(ge=0, le=10)
     separation: float = Field(ge=0, le=10)
     alignment: float = Field(ge=0, le=10)

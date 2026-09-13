@@ -106,6 +106,18 @@ test("Volver al núcleo tras formar una figura actualiza el status", async ({ pa
   await expect.poll(() => readCommandsStatus(page)).toContain("núcleo");
 });
 
+async function setNanobotCount(page: Page, count: number) {
+  await page.evaluate((value) => {
+    const controllers = Array.from(document.querySelectorAll(".lil-gui .controller"));
+    const nanobots = controllers.find((c) => c.querySelector(".name")?.textContent === "Nanobots");
+    const input = nanobots!.querySelector<HTMLInputElement>("input")!;
+    input.value = String(value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }, count);
+  await page.keyboard.press("Tab");
+}
+
 test("cambiar la cantidad de nanobots no rompe la app mientras hay una figura activa", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
@@ -115,16 +127,41 @@ test("cambiar la cantidad de nanobots no rompe la app mientras hay una figura ac
   await clickCommandButton(page, "Formar objeto");
   await page.waitForTimeout(500);
 
-  await page.evaluate(() => {
-    const controllers = Array.from(document.querySelectorAll(".lil-gui .controller"));
-    const nanobots = controllers.find((c) => c.querySelector(".name")?.textContent === "Nanobots");
-    const input = nanobots!.querySelector<HTMLInputElement>("input")!;
-    input.value = "150";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-  await page.keyboard.press("Tab");
+  await setNanobotCount(page, 150);
   await page.waitForTimeout(1000);
 
+  expect(errors).toEqual([]);
+});
+
+test("el límite máximo (10.000 nanobots) no rompe la app ni degrada el frame rate a cero", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await setNanobotCount(page, 10000);
+  await page.waitForTimeout(1500);
+
+  await attachFakePhoto(page);
+  await setObjectName(page, "cubo");
+  await clickCommandButton(page, "Formar objeto");
+  await expect.poll(() => readCommandsStatus(page)).toBe("Formando: cubo");
+  await page.waitForTimeout(1500);
+
+  // No es una aserción de FPS exacta (variaría mucho por hardware/CI) — solo
+  // confirma que el loop de render sigue vivo (avanzan frames) en vez de
+  // trabarse por completo con la cantidad máxima soportada.
+  const framesAdvanced = await page.evaluate(
+    () =>
+      new Promise<number>((resolve) => {
+        let frames = 0;
+        const start = performance.now();
+        function tick() {
+          frames++;
+          if (performance.now() - start < 1000) requestAnimationFrame(tick);
+          else resolve(frames);
+        }
+        requestAnimationFrame(tick);
+      }),
+  );
+  expect(framesAdvanced).toBeGreaterThan(0);
   expect(errors).toEqual([]);
 });
