@@ -10,7 +10,13 @@
 //   Ninguna — el backend Python nunca ve este código, solo sirve los archivos
 //   estáticos (boids.js/boids.wasm) generados por el build de Emscripten.
 
+#ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
+#else
+// Permite compilar boids.cpp nativamente (g++) para test_boids.cpp, sin
+// necesitar el SDK de Emscripten solo para correr los tests unitarios.
+#define EMSCRIPTEN_KEEPALIVE
+#endif
 #include <cmath>
 #include <cstdlib>
 #include <vector>

@@ -1,12 +1,16 @@
-# Simulador de Nanobots 3D — Fase 1
+# Simulador de Nanobots 3D
 
 🔗 **Demo en vivo:** https://socra375.github.io/Simulador-nanobots/
 (solo frontend — sin backend Python; guardar/cargar configuración usa
 `localStorage` del navegador en vez de un archivo en servidor).
 
-Demo de un enjambre de nanobots en 3D que sigue el cursor del mouse con
-movimiento tipo "boid" (cohesión, separación, alineación e inercia),
-construida combinando tres lenguajes, cada uno en el rol donde mejor rinde:
+Enjambre de nanobots en 3D con movimiento tipo "boid" (cohesión, separación,
+alineación e inercia), construido combinando tres lenguajes, cada uno en el
+rol donde mejor rinde. Por defecto el enjambre vive agrupado alrededor de un
+núcleo/reactor en una esquina de la escena; desde la sección "Comandos" del
+panel se le puede pedir que forme un objeto (cubo, esfera, pirámide,
+estrella, anillo, corazón o cruz) — sale del núcleo, arma la figura, y puede
+volver a agruparse en el núcleo cuando se quiera.
 
 | Lenguaje | Rol | Carpeta |
 |---|---|---|
@@ -33,11 +37,13 @@ construida combinando tres lenguajes, cada uno en el rol donde mejor rinde:
                                                       └──────────────────┘
 ```
 
-- **C++ ↔ TypeScript**: el módulo Wasm expone las posiciones de los nanobots
-  como un puntero a memoria lineal. `swarm.ts` construye un `Float32Array`
-  que apunta directamente a esa memoria (`Module.HEAPF32.buffer`), así que
-  cada `step()` en C++ deja los valores ya listos para leer, sin
-  serialización ni copia por frame.
+- **C++ ↔ TypeScript**: el módulo Wasm expone las posiciones (y los targets
+  por-agente) de los nanobots como punteros a memoria lineal. `swarm.ts`
+  construye `Float32Array` que apuntan directamente a esa memoria
+  (`Module.HEAPF32.buffer`), así que cada `step()` en C++ deja los valores
+  ya listos para leer/escribir, sin serialización ni copia por frame. Cada
+  nanobot persigue su propio target — un punto cerca del núcleo en reposo,
+  o un punto de la figura pedida al formar un objeto (ver `shapes.ts`).
 - **TypeScript ↔ Python**: sin relación con la física. El frontend simplemente
   hace `fetch('/api/config')` (GET/POST) para guardar o recuperar la
   configuración del enjambre como JSON plano.
@@ -85,12 +91,16 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-Abrí `http://127.0.0.1:8000` en el navegador. Vas a ver el enjambre de
-nanobots siguiendo el cursor; el panel de control (arriba a la derecha)
+Abrí `http://127.0.0.1:8000` en el navegador. Vas a ver el enjambre
+agrupado alrededor del núcleo; el panel de control (arriba a la derecha)
 permite ajustar la cantidad de nanobots (20–200), la velocidad máxima y los
-pesos de cohesión/separación/alineación, además de botones para guardar y
-cargar la configuración (persistida por el backend en
-`backend/config/swarm_config.json`).
+pesos de cohesión/separación/alineación, guardar/cargar esa configuración
+(persistida por el backend en `backend/config/swarm_config.json`), y en la
+carpeta "Comandos": escribir el nombre de un objeto, adjuntar una foto de
+confirmación y pedirle al enjambre que lo forme ("Volver al núcleo" para
+deshacerlo). La foto no se analiza — no hay backend/IA de visión en
+producción — es solo un paso de confirmación de UX; la figura real sale de
+la biblioteca procedural de `frontend/src/shapes.ts`.
 
 ## Despliegue en GitHub Pages (solo frontend)
 
@@ -119,6 +129,53 @@ quedó con una regla de protección de rama corrupta que seguía rechazando
 deploys desde `main` incluso configurada como "No restriction" en la UI —
 un bug conocido de GitHub Environments. El deploy manual a `gh-pages` evita
 ese problema por completo.)
+
+## Testing
+
+Cada lenguaje tiene su propia suite, sin frameworks pesados innecesarios:
+
+**C++** — tests unitarios nativos (sin Emscripten ni Wasm, compilan con el
+`g++` del sistema; `boids.cpp` guarda `EMSCRIPTEN_KEEPALIVE` detrás de
+`#ifdef __EMSCRIPTEN__` para permitirlo):
+
+```bash
+cd cpp
+./run_tests.sh
+```
+
+**Backend (Python)** — pytest + `TestClient` de FastAPI, sobre
+`/api/config` (aislado del archivo real de config vía un fixture que
+redirige `CONFIG_PATH` a un temporal):
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+pytest
+```
+
+**Frontend (TypeScript)** — Vitest, unitarios sobre la lógica pura de
+`shapes.ts` (resolución de nombres/alias, generadores de figuras, cluster
+de reposo):
+
+```bash
+cd frontend
+npm install
+npm test
+```
+
+**E2E (Playwright)** — contra el build de producción servido por el
+backend real: converge al núcleo, el flujo de "Comandos" completo (pide
+foto, rechaza nombres no reconocidos, resuelve alias, forma la figura,
+vuelve al núcleo), y que cambiar la cantidad de nanobots no rompe nada:
+
+```bash
+cd frontend
+npm run build
+cd ../backend && uvicorn main:app &   # necesita estar corriendo en :8000
+cd ../frontend
+npx playwright install chromium       # una sola vez
+npm run test:e2e
+```
 
 ## Notas de rendimiento
 
