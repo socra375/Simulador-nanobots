@@ -25,10 +25,13 @@ const UNSNAP_DISTANCE_SQ = 1.2 * 1.2;
 // Índice = NANOBOT_ROLE.{STRUCTURE,RELATION,DETAIL}. La viga de RELACION usa
 // un cilindro de altura unitaria (largo 1): se escala en Y al largo real del
 // segmento que conecta, así que su "tamaño de diseño" es solo el radio.
+// DETALLE es más grande que los otros dos a propósito: se solapa más entre
+// sí para tapar huecos/grietas en el relleno en vez de dejar el fondo negro
+// visible entre esfera y esfera.
 const ROLE_GEOMETRIES: THREE.BufferGeometry[] = [
   new THREE.IcosahedronGeometry(0.4, 0), // estructura
   new THREE.CylinderGeometry(0.16, 0.16, 1, 6), // relación
-  new THREE.SphereGeometry(0.4, 8, 6), // detalle
+  new THREE.SphereGeometry(0.55, 8, 6), // detalle
 ];
 
 function buildRoleMaterial(role: number): THREE.Material {

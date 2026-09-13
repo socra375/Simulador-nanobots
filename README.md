@@ -23,9 +23,9 @@ figura en capas.
 
 | Rol | Geometría | Función |
 |---|---|---|
-| **Estructura** | Icosaedro sólido cian | Nodos ancla dispersos de la figura — el "esqueleto"/las juntas de una construcción. |
+| **Estructura** | Icosaedro sólido cian | Nodos ancla de la figura — el "exoesqueleto"/las juntas de una construcción. Se eligen con *farthest-point sampling* (sobre-muestrear y quedarse con las mejor distribuidas) en vez de al azar, para que cubran la silueta de manera pareja sin dejar zonas sin anclas. |
 | **Relación** | Viga (cilindro) sólida magenta | Une cada ancla de Estructura con su vecina más cercana siguiendo un árbol de expansión mínima (garantiza que TODA la figura quede conectada en una sola red, sin zonas sueltas) más algunas conexiones extra para una malla más rica — una barra real entre ambas, no un punto suelto. |
-| **Detalle** | Esfera sólida emissive verde | Relleno denso a resolución completa — da el color y los últimos retoques para una silueta 3D nítida y sólida por encima del esqueleto de las otras dos. |
+| **Detalle** | Esfera sólida emissive verde (más grande que las otras dos, para solaparse y tapar huecos) | Relleno denso — la mayor parte de la cantidad total (~74%) — da el color y los últimos retoques para una silueta 3D nítida y sólida por encima del esqueleto de las otras dos, sin grietas visibles. |
 
 Mientras se arma una figura, la cohesión/separación/alineación entre
 nanobots (los pesos configurables del panel) se atenúan casi del todo: la
