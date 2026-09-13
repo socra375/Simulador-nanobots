@@ -21,12 +21,19 @@ primero Estructura, luego Relación (recién cuando Estructura ya llegó a su
 posición), luego Detalle, y por último Color — así se ve cómo se va
 construyendo y pintando la figura en capas.
 
+**Color es un 75% FIJO e independiente del total** (no se calcula junto
+con las otras 3 ni es "lo que sobra" de un reparto entre 4): al revés,
+Estructura/Relación/Detalle son las que se reparten lo que queda
+DESPUÉS de reservarle su 75% a Color, manteniendo entre sí la misma
+proporción relativa (13:38:24) que tenían antes. Así Color siempre es la
+amplia mayoría del enjambre, sin importar cuánto usen las otras 3.
+
 | Rol | Geometría | Función |
 |---|---|---|
-| **Estructura** | Icosaedro sólido cian | ~10-15% del total. Nodos ancla de la figura — el "exoesqueleto"/las juntas de una construcción. Se eligen con *farthest-point sampling* (sobre-muestrear y quedarse con las mejor distribuidas) en vez de al azar, para que cubran la silueta de manera pareja sin dejar zonas sin anclas. |
-| **Relación** | Viga (cilindro) sólida magenta | ~35-40% del total. Une cada ancla de Estructura con su vecina más cercana siguiendo un árbol de expansión mínima (garantiza que TODA la figura quede conectada en una sola red, sin zonas sueltas) más algunas conexiones extra para una malla más rica — una barra real entre ambas, no un punto suelto. Al ser una fracción grande y fija del total (no "lo que sobre"), siempre hay de sobra para cubrir el árbol completo aunque la figura tenga muchas anclas. |
-| **Detalle** | Esfera sólida emissive verde | ~24% del total. Relleno con el color fijo de su rol — da el volumen que tapa los huecos que dejan Estructura y Relación. |
-| **Color** | Esfera sólida emissive (ligeramente más grande, misma silueta que Detalle) | El resto del total (~25%). No tiene un color de rol fijo: es el color RGB **dominante de la foto** adjuntada en "Comandos" (si la foto es mayormente roja, sale roja) — se calcula 100% en el navegador con un histograma de color simple (`frontend/src/image-color.ts`, sin IA/backend de visión), ignorando fondo blanco/negro/transparente. Al ser la última capa en salir, cubre la silueta completa con el color real del objeto fotografiado, por encima de los colores fijos de las otras 3. |
+| **Estructura** | Icosaedro sólido cian | ~4% del total (13/75 del 25% restante). Nodos ancla de la figura — el "exoesqueleto"/las juntas de una construcción. Se eligen con *farthest-point sampling* (sobre-muestrear y quedarse con las mejor distribuidas) en vez de al azar, para que cubran la silueta de manera pareja sin dejar zonas sin anclas. |
+| **Relación** | Viga (cilindro) sólida magenta | ~13% del total (38/75 del 25% restante — la mayoría de ese resto). Une cada ancla de Estructura con su vecina más cercana siguiendo un árbol de expansión mínima (garantiza que TODA la figura quede conectada en una sola red, sin zonas sueltas) más algunas conexiones extra para una malla más rica. Al mantener siempre la misma proporción frente a Estructura, sigue habiendo de sobra para cubrir el árbol completo. |
+| **Detalle** | Esfera sólida emissive verde | ~8% del total (24/75 del 25% restante). Relleno con el color fijo de su rol — rellena mientras Color todavía no está listo para salir. |
+| **Color** | Esfera sólida emissive (ligeramente más grande, misma silueta que Detalle) | **75% FIJO del total**, independiente de las otras 3. No tiene un color de rol fijo: es el color RGB **dominante de la foto** adjuntada en "Comandos" (si la foto es mayormente roja, sale roja) — se calcula 100% en el navegador con un histograma de color simple (`frontend/src/image-color.ts`, sin IA/backend de visión), ignorando fondo blanco/negro/transparente. Es la última capa en salir: apenas se revela, el verde fijo de Detalle desaparece (se oculta) y Color, al ser tan mayoritario, cubre hasta el hueco más chico que hayan dejado las 3 capas anteriores — la figura queda pintada de un solo color sólido, con Estructura/Relación como esqueleto visible por debajo. |
 
 Mientras se arma una figura, la cohesión/separación/alineación entre
 nanobots (los pesos configurables del panel) se atenúan casi del todo: la

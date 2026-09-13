@@ -254,23 +254,34 @@ export function listSupportedNames(): string[] {
 //   generador, otra muestra), pero coloreado en tiempo real con el color
 //   RGB dominante de la foto adjuntada en "Comandos" (ver
 //   image-color.ts) en vez de un color de rol fijo — es la "capa de
-//   pintura" final: al cubrir toda la silueta con el color real del
-//   objeto fotografiado, reemplaza visualmente los colores fijos
-//   (cian/magenta/verde) de las otras 3 capas.
+//   pintura" final. Es el 75% FIJO del total (no un resto ni una fracción
+//   más del reparto entre las otras 3 — ver ROLE_RATIO_COLOR), así al
+//   revelarse cubre de sobra hasta el hueco más chico que hayan dejado
+//   ESTRUCTURA/RELACION/DETALLE, y reemplaza visualmente sus colores fijos
+//   (cian/magenta/verde).
 export const NANOBOT_ROLE = { STRUCTURE: 0, RELATION: 1, DETAIL: 2, COLOR: 3 } as const;
 export type NanobotRole = (typeof NANOBOT_ROLE)[keyof typeof NANOBOT_ROLE];
 
-// Todas las fracciones son sobre el TOTAL de nanobots pedido (no una sobre
-// el resto de la otra): así, por ejemplo, con 500 nanobots ESTRUCTURA usa
-// ~13% (~65) y RELACION ~38% (~190) sin importar cuánto usen las demás —
-// necesario para que haya SIEMPRE suficientes vigas de RELACION como para
-// cubrir el árbol de expansión mínima completo (ver buildRelationEdges)
-// más conexiones extra, en vez de quedar apenas alcanzando el mínimo.
-const ROLE_RATIO_STRUCTURE = 0.13; // 10-15%: anclas del exoesqueleto
-const ROLE_RATIO_RELATION = 0.38; // 35-40%: vigas que unen las anclas
-const ROLE_RATIO_DETAIL = 0.24; // relleno con el color de rol fijo
-// El resto (~25%) es COLOR — la capa de pintura final con el color
-// dominante de la foto, por encima del esqueleto/relleno de las otras 3.
+// COLOR es una fracción FIJA e INDEPENDIENTE del total (75%) — a
+// propósito NO se calcula junto con/a partir del resto como las otras 3,
+// para que su tamaño no dependa de cuánto usen ESTRUCTURA/RELACION/
+// DETALLE: siempre es la ampla mayoría del enjambre, así al revelarse
+// cubre de sobra hasta el hueco más chico que hayan dejado las 3 capas
+// anteriores (ver formShapeWithRoles).
+const ROLE_RATIO_COLOR = 0.75;
+
+// ESTRUCTURA/RELACION/DETALLE se reparten lo que sobra después de
+// reservarle a COLOR su 75% fijo (~25% del total) — estos 3 números son
+// PESOS RELATIVOS entre sí (no fracciones directas del total): mantienen
+// la misma proporción 13:38:24 que tenían cuando sí lo eran, así
+// RELACION sigue teniendo SIEMPRE margen de sobra sobre el tamaño del
+// árbol de expansión mínima entre anclas de ESTRUCTURA (ver
+// buildRelationEdges) para cubrirlo completo, en vez de quedar apenas
+// alcanzando el mínimo.
+const SKELETON_WEIGHT_STRUCTURE = 13; // ~10-15% de ese 25% restante
+const SKELETON_WEIGHT_RELATION = 38; // ~35-40% de ese 25% restante
+const SKELETON_WEIGHT_DETAIL = 24;
+const SKELETON_WEIGHT_TOTAL = SKELETON_WEIGHT_STRUCTURE + SKELETON_WEIGHT_RELATION + SKELETON_WEIGHT_DETAIL;
 
 export interface ShapeFormation {
   points: Float32Array; // count*3 floats, ya trasladados a `center`
@@ -507,12 +518,26 @@ export function formShapeWithRoles(
   if (!canonical) return null;
   const generator = SHAPE_GENERATORS[canonical];
 
-  const structureCount = count > 0 ? Math.min(count, Math.max(4, Math.round(count * ROLE_RATIO_STRUCTURE))) : 0;
-  const remainingAfterStructure = Math.max(0, count - structureCount);
-  const relationCount = Math.min(remainingAfterStructure, Math.round(count * ROLE_RATIO_RELATION));
-  const remainingAfterRelation = Math.max(0, count - structureCount - relationCount);
-  const detailCount = Math.min(remainingAfterRelation, Math.round(count * ROLE_RATIO_DETAIL));
-  const colorCount = count - structureCount - relationCount - detailCount;
+  // COLOR se calcula PRIMERO y de forma independiente (75% fijo del
+  // total) — ESTRUCTURA/RELACION/DETALLE (el "esqueleto") se reparten
+  // recién lo que sobra, no al revés, para que el 75% de COLOR nunca
+  // dependa de cuánto terminen usando las otras 3.
+  const colorCount = count > 0 ? Math.round(count * ROLE_RATIO_COLOR) : 0;
+  const skeletonBudget = Math.max(0, count - colorCount);
+
+  const structureCount =
+    skeletonBudget > 0
+      ? Math.min(
+          skeletonBudget,
+          Math.max(4, Math.round((skeletonBudget * SKELETON_WEIGHT_STRUCTURE) / SKELETON_WEIGHT_TOTAL)),
+        )
+      : 0;
+  const remainingAfterStructure = Math.max(0, skeletonBudget - structureCount);
+  const relationCount = Math.min(
+    remainingAfterStructure,
+    Math.round((skeletonBudget * SKELETON_WEIGHT_RELATION) / SKELETON_WEIGHT_TOTAL),
+  );
+  const detailCount = Math.max(0, skeletonBudget - structureCount - relationCount);
 
   const structurePts = buildStructureAnchors(generator, structureCount);
   const relationEdges = buildRelationEdges(structurePts, structureCount);
