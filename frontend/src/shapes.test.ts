@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   resolveShapeName,
   listSupportedNames,
@@ -40,15 +40,16 @@ describe("resolveShapeName", () => {
 });
 
 describe("listSupportedNames", () => {
-  it("incluye las 10 formas soportadas", () => {
+  it("incluye las 16 formas soportadas", () => {
     const names = listSupportedNames();
     expect(names).toEqual(
       expect.arrayContaining([
         "cubo", "esfera", "piramide", "estrella", "anillo", "corazon", "cruz",
         "carro", "telefono", "persona",
+        "cabeza", "torso", "brazo", "pierna", "mano", "pie",
       ]),
     );
-    expect(names).toHaveLength(10);
+    expect(names).toHaveLength(16);
   });
 
   it("resuelve alias de las formas nuevas (auto/coche/vehiculo, celular/movil/smartphone, personaje/humano/gente)", () => {
@@ -61,6 +62,14 @@ describe("listSupportedNames", () => {
     expect(resolveShapeName("personaje")).toBe("persona");
     expect(resolveShapeName("humano")).toBe("persona");
     expect(resolveShapeName("gente")).toBe("persona");
+  });
+
+  it("resuelve alias de las partes del cuerpo (Fase 17)", () => {
+    expect(resolveShapeName("brazos")).toBe("brazo");
+    expect(resolveShapeName("piernas")).toBe("pierna");
+    expect(resolveShapeName("pies")).toBe("pie");
+    expect(resolveShapeName("manos")).toBe("mano");
+    expect(resolveShapeName("tronco")).toBe("torso");
   });
 });
 
@@ -218,7 +227,7 @@ describe("idleCluster", () => {
 
 describe("buildExoskeleton", () => {
   it("devuelve exactamente count*3 floats sin NaN, para varios counts y formas, incluyendo counts chicos", () => {
-    for (const name of ["cubo", "esfera", "persona", "carro"]) {
+    for (const name of ["cubo", "esfera", "persona", "carro", "cabeza", "torso", "brazo", "pierna", "mano", "pie"]) {
       for (const count of [0, 1, 2, 3, 50, 500, 5000]) {
         const exo = buildExoskeleton(name, count);
         expect(exo).not.toBeNull();
@@ -232,6 +241,38 @@ describe("buildExoskeleton", () => {
 
   it("devuelve null para un nombre no reconocido", () => {
     expect(buildExoskeleton("no-existe", 50)).toBeNull();
+  });
+
+  it("las formas humanoides (hueso literal) devuelven isBeam todo en 0 (sin vigas, se lee sólido por densidad)", () => {
+    for (const name of ["persona", "cabeza", "torso", "brazo", "pierna", "mano", "pie"]) {
+      const exo = buildExoskeleton(name, 300)!;
+      expect(exo.isBeam.some((v) => v !== 0)).toBe(false);
+      expect(exo.relationSpans.every((v) => v === 0)).toBe(true);
+    }
+  });
+
+  it("las formas humanoides se trasladan a un centro custom (mismo desplazamiento que FORMATION_CENTER)", () => {
+    // Math.random fijo para que ambas llamadas muestreen EXACTAMENTE los
+    // mismos puntos crudos — así cualquier diferencia entre ellas viene
+    // solo de `center`, no del muestreo aleatorio interno de brazo().
+    let seed = 1;
+    const spy = vi.spyOn(Math, "random").mockImplementation(() => {
+      seed = (seed * 16807) % 2147483647;
+      return (seed - 1) / 2147483646;
+    });
+    try {
+      const custom: [number, number, number] = [10, 10, 10];
+      seed = 1;
+      const atDefault = buildExoskeleton("brazo", 60, FORMATION_CENTER)!;
+      seed = 1;
+      const atCustom = buildExoskeleton("brazo", 60, custom)!;
+      for (let i = 0; i < 60 * 3; i++) {
+        const axis = i % 3;
+        expect(atCustom.points[i]).toBeCloseTo(atDefault.points[i] + (custom[axis] - FORMATION_CENTER[axis]), 5);
+      }
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("los nodos (isBeam=0) quedan parejamente distribuidos (farthest-point sampling, sin duplicados pegados)", () => {

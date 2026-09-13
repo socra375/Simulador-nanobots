@@ -308,6 +308,27 @@ function sampleTaperedCylinderSurface(
   return pts;
 }
 
+// Hueso largo literal (fémur, húmero, etc.): dos mitades ahusadas de
+// sampleTaperedCylinderSurface espalda con espalda (angosto en el medio
+// -diáfisis-, ensanchando hacia cada punta) + una esfera en cada extremo
+// (epífisis redondeada) — la silueta clásica de hueso, armada 100% con
+// primitivos ya existentes. `halfLength` es la mitad del largo de la
+// diáfisis (sin contar las esferas de las puntas).
+function sampleLongBoneSurface(
+  shaftRadius: number,
+  endRadius: number,
+  halfLength: number,
+  count: number,
+): Float32Array {
+  const half = halfLength / 2;
+  const [cap1Count, lowerCount, upperCount, cap2Count] = splitCounts(count, [12, 38, 38, 12]);
+  const cap1 = translate(sampleSphereSurface(endRadius, cap1Count), 0, -halfLength, 0);
+  const lower = translate(sampleTaperedCylinderSurface(shaftRadius, endRadius, half, lowerCount), 0, -half, 0);
+  const upper = translate(sampleTaperedCylinderSurface(endRadius, shaftRadius, half, upperCount), 0, half, 0);
+  const cap2 = translate(sampleSphereSurface(endRadius, cap2Count), 0, halfLength, 0);
+  return concatParts([cap1, lower, upper, cap2]);
+}
+
 // "Líneas de acento": reparte `count` puntos a lo largo de una polilínea
 // (los segmentos consecutivos de `points`), proporcional a la longitud de
 // cada segmento, con un jitter uniforme pequeño en las 3 componentes —
@@ -564,12 +585,63 @@ function telefono(count: number): Float32Array {
   return sampleBoxSurface(s * 0.42, s * 0.85, s * 0.09, count);
 }
 
-// Persona/personaje anatómico: cabeza + cuello + pecho/pelvis ahusados (V de
-// torso) + hombros + brazos/piernas en 2 segmentos c/u (más grueso arriba,
-// más angosto abajo, como bíceps/muslo vs. muñeca/tobillo) + manos + pies,
-// más líneas de acento (costillas, clavícula, línea abdominal) imitando el
-// look anatómico de holograma de la referencia.
-function persona(count: number): Float32Array {
+// Medidas y posiciones de la figura humana, compartidas entre el tejido
+// (persona()) y el esqueleto de hueso literal (personaBones(), ver
+// HUMANOID_BONE_GENERATORS más abajo) — así el hueso cae SIEMPRE alineado
+// exacto bajo el tejido/piel, sin importar qué tanto cambien las
+// proporciones de una fase a otra.
+interface PersonaLayout {
+  headR: number;
+  neckR: number;
+  neckHalfH: number;
+  chestTopR: number;
+  chestBottomR: number;
+  chestHalfH: number;
+  pelvisHx: number;
+  pelvisHy: number;
+  pelvisHz: number;
+  shoulderR: number;
+  upperArmTopR: number;
+  upperArmBottomR: number;
+  upperArmHalfH: number;
+  forearmTopR: number;
+  forearmBottomR: number;
+  forearmHalfH: number;
+  handR: number;
+  thighTopR: number;
+  thighBottomR: number;
+  thighHalfH: number;
+  calfTopR: number;
+  calfBottomR: number;
+  calfHalfH: number;
+  footHx: number;
+  footHy: number;
+  footHz: number;
+  waistY: number;
+  pelvisCenterY: number;
+  chestCenterY: number;
+  chestTopY: number;
+  neckCenterY: number;
+  headCenterY: number;
+  shoulderY: number;
+  shoulderX: number;
+  armX: number;
+  upperArmCenterY: number;
+  elbowY: number;
+  forearmCenterY: number;
+  wristY: number;
+  handCenterY: number;
+  hipX: number;
+  hipY: number;
+  thighCenterY: number;
+  kneeY: number;
+  calfCenterY: number;
+  ankleY: number;
+  footCenterY: number;
+  chestFrontZ: number;
+}
+
+function personaLayout(): PersonaLayout {
   const headR = s * 0.2;
   const neckR = s * 0.09;
   const neckHalfH = s * 0.045;
@@ -597,29 +669,6 @@ function persona(count: number): Float32Array {
   const footHy = s * 0.04;
   const footHz = s * 0.14;
 
-  const [
-    headCount,
-    neckCount,
-    chestCount,
-    pelvisCount,
-    shouldersTotal,
-    upperArmsTotal,
-    forearmsTotal,
-    handsTotal,
-    thighsTotal,
-    calvesTotal,
-    feetTotal,
-    accentTotal,
-  ] = splitCounts(count, [8, 2, 16, 10, 2, 10, 8, 4, 14, 10, 6, 10]);
-
-  const [leftShoulderCount, rightShoulderCount] = splitCounts(shouldersTotal, [1, 1]);
-  const [leftUpperArmCount, rightUpperArmCount] = splitCounts(upperArmsTotal, [1, 1]);
-  const [leftForearmCount, rightForearmCount] = splitCounts(forearmsTotal, [1, 1]);
-  const [leftHandCount, rightHandCount] = splitCounts(handsTotal, [1, 1]);
-  const [leftThighCount, rightThighCount] = splitCounts(thighsTotal, [1, 1]);
-  const [leftCalfCount, rightCalfCount] = splitCounts(calvesTotal, [1, 1]);
-  const [leftFootCount, rightFootCount] = splitCounts(feetTotal, [1, 1]);
-
   // Apilado en Y a partir de la línea de cintura (waistY = 0).
   const waistY = 0;
   const pelvisCenterY = waistY - pelvisHy;
@@ -643,6 +692,61 @@ function persona(count: number): Float32Array {
   const ankleY = kneeY - calfHalfH * 2;
   const footCenterY = ankleY - footHy;
   const chestFrontZ = chestTopR * 0.85;
+
+  return {
+    headR, neckR, neckHalfH, chestTopR, chestBottomR, chestHalfH,
+    pelvisHx, pelvisHy, pelvisHz, shoulderR,
+    upperArmTopR, upperArmBottomR, upperArmHalfH,
+    forearmTopR, forearmBottomR, forearmHalfH, handR,
+    thighTopR, thighBottomR, thighHalfH, calfTopR, calfBottomR, calfHalfH,
+    footHx, footHy, footHz,
+    waistY, pelvisCenterY, chestCenterY, chestTopY, neckCenterY, headCenterY,
+    shoulderY, shoulderX, armX, upperArmCenterY, elbowY, forearmCenterY, wristY, handCenterY,
+    hipX, hipY, thighCenterY, kneeY, calfCenterY, ankleY, footCenterY, chestFrontZ,
+  };
+}
+
+// Persona/personaje anatómico: cabeza + cuello + pecho/pelvis ahusados (V de
+// torso) + hombros + brazos/piernas en 2 segmentos c/u (más grueso arriba,
+// más angosto abajo, como bíceps/muslo vs. muñeca/tobillo) + manos + pies,
+// más líneas de acento (costillas, clavícula, línea abdominal) imitando el
+// look anatómico de holograma de la referencia.
+function persona(count: number): Float32Array {
+  const {
+    headR, neckR, neckHalfH, chestTopR, chestBottomR, chestHalfH,
+    pelvisHx, pelvisHy, pelvisHz, shoulderR,
+    upperArmTopR, upperArmBottomR, upperArmHalfH,
+    forearmTopR, forearmBottomR, forearmHalfH, handR,
+    thighTopR, thighBottomR, thighHalfH, calfTopR, calfBottomR, calfHalfH,
+    footHx, footHy, footHz,
+    chestCenterY, chestTopY, neckCenterY, headCenterY,
+    shoulderY, shoulderX, armX, upperArmCenterY, forearmCenterY, handCenterY,
+    hipX, thighCenterY, calfCenterY, footCenterY, chestFrontZ,
+    waistY, pelvisCenterY,
+  } = personaLayout();
+
+  const [
+    headCount,
+    neckCount,
+    chestCount,
+    pelvisCount,
+    shouldersTotal,
+    upperArmsTotal,
+    forearmsTotal,
+    handsTotal,
+    thighsTotal,
+    calvesTotal,
+    feetTotal,
+    accentTotal,
+  ] = splitCounts(count, [8, 2, 16, 10, 2, 10, 8, 4, 14, 10, 6, 10]);
+
+  const [leftShoulderCount, rightShoulderCount] = splitCounts(shouldersTotal, [1, 1]);
+  const [leftUpperArmCount, rightUpperArmCount] = splitCounts(upperArmsTotal, [1, 1]);
+  const [leftForearmCount, rightForearmCount] = splitCounts(forearmsTotal, [1, 1]);
+  const [leftHandCount, rightHandCount] = splitCounts(handsTotal, [1, 1]);
+  const [leftThighCount, rightThighCount] = splitCounts(thighsTotal, [1, 1]);
+  const [leftCalfCount, rightCalfCount] = splitCounts(calvesTotal, [1, 1]);
+  const [leftFootCount, rightFootCount] = splitCounts(feetTotal, [1, 1]);
 
   const head = translate(scaleAxis(sampleSphereSurface(headR, headCount), 2, 0.8), 0, headCenterY, 0);
   const neck = translate(sampleTaperedCylinderSurface(neckR, neckR * 1.1, neckHalfH, neckCount), 0, neckCenterY, 0);
@@ -717,6 +821,198 @@ function persona(count: number): Float32Array {
   ]);
 }
 
+// --- Partes del cuerpo formables por separado (Fase 17) ---
+//
+// Mismo patrón que persona()/carro(): primitivos existentes +
+// translate/concatParts/splitCounts, pero escaladas para verse bien como
+// objeto INDIVIDUAL (más grandes que la fracción interna equivalente
+// dentro de persona()). El tejido/piel (Nanobots) sale de estas — el
+// esqueleto/hueso literal (Microbots) sale de las funciones *Bones más
+// abajo, ver HUMANOID_BONE_GENERATORS.
+
+function cabeza(count: number): Float32Array {
+  const headR = s * 0.5;
+  const neckR = s * 0.24;
+  const neckHalfH = s * 0.16;
+  const headCenterY = neckHalfH + headR * 0.9;
+
+  const [headCount, neckCount] = splitCounts(count, [85, 15]);
+  const head = translate(scaleAxis(sampleSphereSurface(headR, headCount), 2, 0.82), 0, headCenterY, 0);
+  const neck = translate(sampleTaperedCylinderSurface(neckR, neckR * 1.15, neckHalfH, neckCount), 0, 0, 0);
+  return concatParts([head, neck]);
+}
+
+function torso(count: number): Float32Array {
+  const chestTopR = s * 0.62;
+  const chestBottomR = s * 0.42;
+  const chestHalfH = s * 0.55;
+  const pelvisHx = s * 0.48;
+  const pelvisHy = s * 0.26;
+  const pelvisHz = s * 0.34;
+  const shoulderR = s * 0.14;
+
+  const waistY = 0;
+  const pelvisCenterY = waistY - pelvisHy;
+  const chestCenterY = waistY + chestHalfH;
+  const chestTopY = chestCenterY + chestHalfH;
+  const shoulderX = chestTopR * 0.95;
+
+  const [chestCount, pelvisCount, shouldersTotal] = splitCounts(count, [55, 30, 15]);
+  const [leftShoulderCount, rightShoulderCount] = splitCounts(shouldersTotal, [1, 1]);
+
+  const chest = translate(sampleTaperedCylinderSurface(chestTopR, chestBottomR, chestHalfH, chestCount), 0, chestCenterY, 0);
+  const pelvis = translate(sampleBoxSurface(pelvisHx, pelvisHy, pelvisHz, pelvisCount), 0, pelvisCenterY, 0);
+  const shoulders = [
+    translate(sampleSphereSurface(shoulderR, leftShoulderCount), -shoulderX, chestTopY, 0),
+    translate(sampleSphereSurface(shoulderR, rightShoulderCount), shoulderX, chestTopY, 0),
+  ];
+  return concatParts([chest, pelvis, ...shoulders]);
+}
+
+// Brazo: hombro + brazo (bíceps) ahusado + codo + antebrazo ahusado + mano
+// con dedos abanicados (una simple esfera achatada, como en persona(), no
+// alcanza como objeto SOLO).
+function brazo(count: number): Float32Array {
+  const shoulderR = s * 0.22;
+  const upperArmTopR = s * 0.26;
+  const upperArmBottomR = s * 0.19;
+  const upperArmHalfH = s * 0.6;
+  const elbowR = s * 0.16;
+  const forearmTopR = s * 0.18;
+  const forearmBottomR = s * 0.12;
+  const forearmHalfH = s * 0.55;
+  const handHx = s * 0.15;
+  const handHy = s * 0.2;
+  const handHz = s * 0.06;
+  const fingerR = s * 0.035;
+  const fingerHalfH = s * 0.15;
+
+  const shoulderY = 0;
+  const upperArmCenterY = shoulderY - upperArmHalfH;
+  const elbowY = shoulderY - upperArmHalfH * 2;
+  const forearmCenterY = elbowY - forearmHalfH;
+  const wristY = elbowY - forearmHalfH * 2;
+  const palmCenterY = wristY - handHy;
+  const palmBottomY = wristY - handHy * 2;
+  const fingerCenterY = palmBottomY - fingerHalfH;
+
+  const [shoulderCount, upperArmCount, elbowCount, forearmCount, handCount, fingersTotal] =
+    splitCounts(count, [6, 24, 4, 20, 16, 30]);
+  const fingerCounts = splitCounts(fingersTotal, [1, 1, 1, 1, 1]);
+
+  const shoulder = translate(sampleSphereSurface(shoulderR, shoulderCount), 0, shoulderY, 0);
+  const upperArm = translate(sampleTaperedCylinderSurface(upperArmTopR, upperArmBottomR, upperArmHalfH, upperArmCount), 0, upperArmCenterY, 0);
+  const elbow = translate(sampleSphereSurface(elbowR, elbowCount), 0, elbowY, 0);
+  const forearm = translate(sampleTaperedCylinderSurface(forearmTopR, forearmBottomR, forearmHalfH, forearmCount), 0, forearmCenterY, 0);
+  const hand = translate(sampleBoxSurface(handHx, handHy, handHz, handCount), 0, palmCenterY, 0);
+  const fingerOffsets = [-2, -1, 0, 1, 2];
+  const fingers = fingerOffsets.map((off, i) =>
+    translate(sampleTaperedCylinderSurface(fingerR, fingerR * 1.3, fingerHalfH, fingerCounts[i]), off * handHx * 0.4, fingerCenterY, 0),
+  );
+  return concatParts([shoulder, upperArm, elbow, forearm, hand, ...fingers]);
+}
+
+// Pierna: cadera + muslo ahusado + rodilla + pantorrilla ahusada + pie con
+// dedos (cajas chicas, más detalle que la caja simple de persona()).
+function pierna(count: number): Float32Array {
+  const hipR = s * 0.24;
+  const thighTopR = s * 0.3;
+  const thighBottomR = s * 0.2;
+  const thighHalfH = s * 0.65;
+  const kneeR = s * 0.18;
+  const calfTopR = s * 0.2;
+  const calfBottomR = s * 0.13;
+  const calfHalfH = s * 0.62;
+  const footHx = s * 0.16;
+  const footHy = s * 0.09;
+  const footHz = s * 0.36;
+  const toeR = s * 0.04;
+  const toeHalfH = s * 0.09;
+
+  const hipY = 0;
+  const thighCenterY = hipY - thighHalfH;
+  const kneeY = hipY - thighHalfH * 2;
+  const calfCenterY = kneeY - calfHalfH;
+  const ankleY = kneeY - calfHalfH * 2;
+  const footCenterY = ankleY - footHy;
+
+  const [hipCount, thighCount, kneeCount, calfCount, footCount, toesTotal] =
+    splitCounts(count, [6, 26, 4, 22, 22, 20]);
+  const toeCounts = splitCounts(toesTotal, [1, 1, 1, 1, 1]);
+
+  const hip = translate(sampleSphereSurface(hipR, hipCount), 0, hipY, 0);
+  const thigh = translate(sampleTaperedCylinderSurface(thighTopR, thighBottomR, thighHalfH, thighCount), 0, thighCenterY, 0);
+  const knee = translate(sampleSphereSurface(kneeR, kneeCount), 0, kneeY, 0);
+  const calf = translate(sampleTaperedCylinderSurface(calfTopR, calfBottomR, calfHalfH, calfCount), 0, calfCenterY, 0);
+  const foot = translate(sampleBoxSurface(footHx, footHy, footHz, footCount), 0, footCenterY, footHz * 0.5);
+  const toeOffsets = [-0.6, -0.3, 0, 0.3, 0.6];
+  const toes = toeOffsets.map((off, i) =>
+    translate(sampleBoxSurface(toeR, toeR, toeHalfH, toeCounts[i]), off * footHx, footCenterY, footHz + toeHalfH),
+  );
+  return concatParts([hip, thigh, knee, calf, foot, ...toes]);
+}
+
+// Mano: muñeca + palma + 5 dedos ahusados de largo distinto (pulgar más
+// corto y separado, medio el más largo).
+function mano(count: number): Float32Array {
+  const wristR = s * 0.22;
+  const wristHalfH = s * 0.18;
+  const palmHx = s * 0.42;
+  const palmHy = s * 0.5;
+  const palmHz = s * 0.16;
+  const fingerR = s * 0.07;
+  const fingerTipR = s * 0.05;
+  const fingerLengths = [0.55, 0.72, 0.78, 0.7, 0.5]; // pulgar, índice, medio, anular, meñique
+  const fingerOffsetsX = [-0.85, -0.45, 0, 0.45, 0.85];
+
+  const wristCenterY = 0;
+  const palmCenterY = wristCenterY - wristHalfH - palmHy;
+  const palmBottomY = palmCenterY - palmHy;
+
+  const [wristCount, palmCount, fingersTotal] = splitCounts(count, [10, 35, 55]);
+  const fingerCounts = splitCounts(fingersTotal, [0.9, 1, 1.1, 1, 0.8]);
+
+  const wrist = translate(sampleTaperedCylinderSurface(wristR, wristR * 1.1, wristHalfH, wristCount), 0, wristCenterY, 0);
+  const palm = translate(sampleBoxSurface(palmHx, palmHy, palmHz, palmCount), 0, palmCenterY, 0);
+  const fingers = fingerOffsetsX.map((offX, i) => {
+    const halfH = s * fingerLengths[i] * 0.5;
+    return translate(
+      sampleTaperedCylinderSurface(fingerR, fingerTipR, halfH, fingerCounts[i]),
+      offX * palmHx,
+      palmBottomY - halfH,
+      0,
+    );
+  });
+  return concatParts([wrist, palm, ...fingers]);
+}
+
+// Pie: tobillo + empeine + 5 dedos cortos.
+function pie(count: number): Float32Array {
+  const ankleR = s * 0.24;
+  const ankleHalfH = s * 0.2;
+  const footHx = s * 0.34;
+  const footHy = s * 0.22;
+  const footHz = s * 0.75;
+  const toeR = s * 0.09;
+  const toeLengthScale = [0.75, 1, 0.95, 0.85, 0.7];
+  const toeOffsetsX = [-0.65, -0.3, 0, 0.3, 0.65];
+
+  const ankleCenterY = 0;
+  const footCenterY = ankleCenterY - ankleHalfH - footHy;
+  const footFrontZ = footHz * 0.3 + footHz;
+
+  const [ankleCount, footCount, toesTotal] = splitCounts(count, [10, 55, 35]);
+  const toeCounts = splitCounts(toesTotal, [1, 1, 1, 1, 1]);
+
+  const ankle = translate(sampleTaperedCylinderSurface(ankleR, ankleR * 1.1, ankleHalfH, ankleCount), 0, ankleCenterY, 0);
+  const foot = translate(sampleBoxSurface(footHx, footHy, footHz, footCount), 0, footCenterY, footHz * 0.3);
+  const toes = toeOffsetsX.map((offX, i) => {
+    const halfLen = s * 0.16 * toeLengthScale[i];
+    return translate(sampleBoxSurface(toeR, toeR, halfLen, toeCounts[i]), offX * footHx, footCenterY, footFrontZ + halfLen);
+  });
+  return concatParts([ankle, foot, ...toes]);
+}
+
 const SHAPE_GENERATORS: Record<string, (count: number) => Float32Array> = {
   cubo,
   esfera,
@@ -728,6 +1024,12 @@ const SHAPE_GENERATORS: Record<string, (count: number) => Float32Array> = {
   carro,
   telefono,
   persona,
+  cabeza,
+  torso,
+  brazo,
+  pierna,
+  mano,
+  pie,
 };
 
 const SHAPE_ALIASES: Record<string, string> = {
@@ -754,6 +1056,11 @@ const SHAPE_ALIASES: Record<string, string> = {
   personaje: "persona",
   humano: "persona",
   gente: "persona",
+  brazos: "brazo",
+  piernas: "pierna",
+  pies: "pie",
+  manos: "mano",
+  tronco: "torso",
 };
 
 const COMBINING_DIACRITICS = new RegExp("[\\u0300-\\u036f]", "g");
@@ -1056,6 +1363,272 @@ function buildStructureAnchors(generator: (n: number) => Float32Array, count: nu
   return farthestPointSample(oversampled, oversampled.length / 3, count);
 }
 
+// --- Hueso literal (Microbots) para formas humanoides (Fase 17) ---
+//
+// Para persona/cabeza/torso/brazo/pierna/mano/pie, el exoesqueleto de
+// Microbots ya NO es el anclas+MST genérico de abajo — es una nube de
+// puntos densa sobre huesos REALES (sampleLongBoneSurface + esferas para
+// cráneo/vértebras/articulaciones), usando personaLayout() para que caiga
+// exacto alineado bajo el tejido de persona()/brazo()/etc. Se lee sólido
+// por densidad de puntos, igual que ya hace DETALLE/COLOR de Nanobots —
+// no hace falta red de nodos+vigas para esto.
+function personaBones(count: number): Float32Array {
+  const L = personaLayout();
+  const skullR = L.headR * 0.75;
+  const spineR = L.neckR * 0.7;
+  const humerusShaft = L.upperArmBottomR * 0.4;
+  const humerusEnd = L.upperArmTopR * 0.55;
+  const humerusHalf = L.upperArmHalfH * 0.75;
+  const forearmBoneShaft = L.forearmBottomR * 0.4;
+  const forearmBoneEnd = L.forearmTopR * 0.55;
+  const forearmBoneHalf = L.forearmHalfH * 0.75;
+  const femurShaft = L.thighBottomR * 0.4;
+  const femurEnd = L.thighTopR * 0.55;
+  const femurHalf = L.thighHalfH * 0.75;
+  const tibiaShaft = L.calfBottomR * 0.4;
+  const tibiaEnd = L.calfTopR * 0.55;
+  const tibiaHalf = L.calfHalfH * 0.75;
+  const handBoneR = L.handR * 0.5;
+  const footBoneR = L.footHy * 0.7;
+
+  const spineY = [L.chestTopY, L.chestCenterY, L.waistY, L.pelvisCenterY];
+  const ribY = [L.chestCenterY + L.chestHalfH * 0.4, L.chestCenterY, L.chestCenterY - L.chestHalfH * 0.4];
+
+  const [
+    skullCount, spineTotal, ribsTotal,
+    humerusTotal, forearmBoneTotal, handBoneTotal,
+    femurTotal, tibiaBoneTotal, footBoneTotal,
+  ] = splitCounts(count, [10, 10, 10, 14, 12, 4, 16, 14, 4]);
+
+  const spineCounts = splitCounts(spineTotal, spineY.map(() => 1));
+  const ribCounts = splitCounts(ribsTotal, ribY.map(() => 1));
+  const [leftHumerusCount, rightHumerusCount] = splitCounts(humerusTotal, [1, 1]);
+  const [leftForearmBoneCount, rightForearmBoneCount] = splitCounts(forearmBoneTotal, [1, 1]);
+  const [leftHandBoneCount, rightHandBoneCount] = splitCounts(handBoneTotal, [1, 1]);
+  const [leftFemurCount, rightFemurCount] = splitCounts(femurTotal, [1, 1]);
+  const [leftTibiaCount, rightTibiaCount] = splitCounts(tibiaBoneTotal, [1, 1]);
+  const [leftFootBoneCount, rightFootBoneCount] = splitCounts(footBoneTotal, [1, 1]);
+
+  const skull = translate(sampleSphereSurface(skullR, skullCount), 0, L.headCenterY, 0);
+  const spine = spineY.map((y, i) => translate(sampleSphereSurface(spineR, spineCounts[i]), 0, y, 0));
+  const ribs = ribY.map((y, i) =>
+    samplePolyline(
+      [
+        [-L.chestTopR * 0.7, y, L.chestFrontZ * 0.9],
+        [0, y, L.chestFrontZ],
+        [L.chestTopR * 0.7, y, L.chestFrontZ * 0.9],
+      ],
+      ribCounts[i],
+      s * 0.01,
+    ),
+  );
+  const humeri = [
+    translate(sampleLongBoneSurface(humerusShaft, humerusEnd, humerusHalf, leftHumerusCount), -L.armX, L.upperArmCenterY, 0),
+    translate(sampleLongBoneSurface(humerusShaft, humerusEnd, humerusHalf, rightHumerusCount), L.armX, L.upperArmCenterY, 0),
+  ];
+  const forearmBones = [
+    translate(sampleLongBoneSurface(forearmBoneShaft, forearmBoneEnd, forearmBoneHalf, leftForearmBoneCount), -L.armX, L.forearmCenterY, 0),
+    translate(sampleLongBoneSurface(forearmBoneShaft, forearmBoneEnd, forearmBoneHalf, rightForearmBoneCount), L.armX, L.forearmCenterY, 0),
+  ];
+  const handBones = [
+    translate(sampleSphereSurface(handBoneR, leftHandBoneCount), -L.armX, L.handCenterY, 0),
+    translate(sampleSphereSurface(handBoneR, rightHandBoneCount), L.armX, L.handCenterY, 0),
+  ];
+  const femurs = [
+    translate(sampleLongBoneSurface(femurShaft, femurEnd, femurHalf, leftFemurCount), -L.hipX, L.thighCenterY, 0),
+    translate(sampleLongBoneSurface(femurShaft, femurEnd, femurHalf, rightFemurCount), L.hipX, L.thighCenterY, 0),
+  ];
+  const tibiaBones = [
+    translate(sampleLongBoneSurface(tibiaShaft, tibiaEnd, tibiaHalf, leftTibiaCount), -L.hipX, L.calfCenterY, 0),
+    translate(sampleLongBoneSurface(tibiaShaft, tibiaEnd, tibiaHalf, rightTibiaCount), L.hipX, L.calfCenterY, 0),
+  ];
+  const footBones = [
+    translate(sampleSphereSurface(footBoneR, leftFootBoneCount), -L.hipX, L.footCenterY, 0),
+    translate(sampleSphereSurface(footBoneR, rightFootBoneCount), L.hipX, L.footCenterY, 0),
+  ];
+
+  return concatParts([
+    skull, ...spine, ...ribs,
+    ...humeri, ...forearmBones, ...handBones,
+    ...femurs, ...tibiaBones, ...footBones,
+  ]);
+}
+
+function cabezaBones(count: number): Float32Array {
+  const headR = s * 0.5;
+  const neckHalfH = s * 0.16;
+  const skullR = headR * 0.8;
+  const headCenterY = neckHalfH + headR * 0.9;
+  const spineR = s * 0.1;
+  const [skullCount, spineCount] = splitCounts(count, [80, 20]);
+  const skull = translate(sampleSphereSurface(skullR, skullCount), 0, headCenterY, 0);
+  const spine = translate(sampleSphereSurface(spineR, spineCount), 0, 0, 0);
+  return concatParts([skull, spine]);
+}
+
+function torsoBones(count: number): Float32Array {
+  const chestTopR = s * 0.62;
+  const chestHalfH = s * 0.55;
+  const pelvisHy = s * 0.26;
+  const waistY = 0;
+  const chestCenterY = waistY + chestHalfH;
+  const chestTopY = chestCenterY + chestHalfH;
+  const pelvisCenterY = waistY - pelvisHy;
+  const chestFrontZ = chestTopR * 0.85;
+  const shoulderX = chestTopR * 0.95;
+  const spineR = s * 0.09;
+  const shoulderBladeR = s * 0.12;
+
+  const spineY = [chestTopY, chestCenterY, waistY, pelvisCenterY];
+  const ribY = [chestCenterY + chestHalfH * 0.4, chestCenterY, chestCenterY - chestHalfH * 0.4];
+
+  const [spineTotal, ribsTotal, shouldersTotal] = splitCounts(count, [30, 45, 25]);
+  const spineCounts = splitCounts(spineTotal, spineY.map(() => 1));
+  const ribCounts = splitCounts(ribsTotal, ribY.map(() => 1));
+  const [leftShoulderCount, rightShoulderCount] = splitCounts(shouldersTotal, [1, 1]);
+
+  const spine = spineY.map((y, i) => translate(sampleSphereSurface(spineR, spineCounts[i]), 0, y, 0));
+  const ribs = ribY.map((y, i) =>
+    samplePolyline(
+      [
+        [-chestTopR * 0.7, y, chestFrontZ * 0.9],
+        [0, y, chestFrontZ],
+        [chestTopR * 0.7, y, chestFrontZ * 0.9],
+      ],
+      ribCounts[i],
+      s * 0.01,
+    ),
+  );
+  const shoulders = [
+    translate(sampleSphereSurface(shoulderBladeR, leftShoulderCount), -shoulderX, chestTopY, 0),
+    translate(sampleSphereSurface(shoulderBladeR, rightShoulderCount), shoulderX, chestTopY, 0),
+  ];
+  return concatParts([...spine, ...ribs, ...shoulders]);
+}
+
+function brazoBones(count: number): Float32Array {
+  const upperArmHalfH = s * 0.6;
+  const forearmHalfH = s * 0.55;
+  const handHy = s * 0.2;
+  const shoulderY = 0;
+  const upperArmCenterY = shoulderY - upperArmHalfH;
+  const elbowY = shoulderY - upperArmHalfH * 2;
+  const forearmCenterY = elbowY - forearmHalfH;
+  const wristY = elbowY - forearmHalfH * 2;
+  const handCenterY = wristY - handHy;
+
+  const humerusShaft = s * 0.08;
+  const humerusEnd = s * 0.13;
+  const forearmBoneShaft = s * 0.06;
+  const forearmBoneEnd = s * 0.1;
+  const handBoneR = s * 0.09;
+
+  const [humerusCount, forearmBoneCount, handBoneCount] = splitCounts(count, [40, 40, 20]);
+  const humerus = translate(sampleLongBoneSurface(humerusShaft, humerusEnd, upperArmHalfH * 0.8, humerusCount), 0, upperArmCenterY, 0);
+  const forearmBone = translate(sampleLongBoneSurface(forearmBoneShaft, forearmBoneEnd, forearmHalfH * 0.8, forearmBoneCount), 0, forearmCenterY, 0);
+  const handBone = translate(sampleSphereSurface(handBoneR, handBoneCount), 0, handCenterY, 0);
+  return concatParts([humerus, forearmBone, handBone]);
+}
+
+function piernaBones(count: number): Float32Array {
+  const thighHalfH = s * 0.65;
+  const calfHalfH = s * 0.62;
+  const footHy = s * 0.09;
+  const hipY = 0;
+  const thighCenterY = hipY - thighHalfH;
+  const kneeY = hipY - thighHalfH * 2;
+  const calfCenterY = kneeY - calfHalfH;
+  const ankleY = kneeY - calfHalfH * 2;
+  const footCenterY = ankleY - footHy;
+
+  const femurShaft = s * 0.1;
+  const femurEnd = s * 0.16;
+  const tibiaShaft = s * 0.08;
+  const tibiaEnd = s * 0.12;
+  const footBoneR = s * 0.1;
+
+  const [femurCount, tibiaCount, footBoneCount] = splitCounts(count, [42, 40, 18]);
+  const femur = translate(sampleLongBoneSurface(femurShaft, femurEnd, thighHalfH * 0.8, femurCount), 0, thighCenterY, 0);
+  const tibia = translate(sampleLongBoneSurface(tibiaShaft, tibiaEnd, calfHalfH * 0.8, tibiaCount), 0, calfCenterY, 0);
+  const footBone = translate(sampleSphereSurface(footBoneR, footBoneCount), 0, footCenterY, 0);
+  return concatParts([femur, tibia, footBone]);
+}
+
+function manoBones(count: number): Float32Array {
+  const wristHalfH = s * 0.18;
+  const palmHy = s * 0.5;
+  const palmHx = s * 0.42;
+  const fingerLengths = [0.55, 0.72, 0.78, 0.7, 0.5];
+  const fingerOffsetsX = [-0.85, -0.45, 0, 0.45, 0.85];
+
+  const wristCenterY = 0;
+  const palmCenterY = wristCenterY - wristHalfH - palmHy;
+  const palmBottomY = palmCenterY - palmHy;
+
+  const wristR = s * 0.08;
+  const metacarpalR = s * 0.035;
+
+  const [wristCount, fingersTotal] = splitCounts(count, [15, 85]);
+  const fingerCounts = splitCounts(fingersTotal, [0.9, 1, 1.1, 1, 0.8]);
+
+  const wrist = translate(sampleSphereSurface(wristR, wristCount), 0, wristCenterY, 0);
+  const fingers = fingerOffsetsX.map((offX, i) => {
+    const halfH = s * fingerLengths[i] * 0.4;
+    return translate(
+      sampleLongBoneSurface(metacarpalR * 0.7, metacarpalR, halfH, fingerCounts[i]),
+      offX * palmHx,
+      palmBottomY - halfH,
+      0,
+    );
+  });
+  return concatParts([wrist, ...fingers]);
+}
+
+function pieBones(count: number): Float32Array {
+  const ankleHalfH = s * 0.2;
+  const footHy = s * 0.22;
+  const footHz = s * 0.75;
+  const footHx = s * 0.34;
+  const toeLengthScale = [0.75, 1, 0.95, 0.85, 0.7];
+  const toeOffsetsX = [-0.65, -0.3, 0, 0.3, 0.65];
+
+  const ankleCenterY = 0;
+  const footCenterY = ankleCenterY - ankleHalfH - footHy;
+  const footFrontZ = footHz * 0.3 + footHz;
+
+  const ankleR = s * 0.1;
+  const metatarsalR = s * 0.04;
+
+  const [ankleCount, toesTotal] = splitCounts(count, [20, 80]);
+  const toeCounts = splitCounts(toesTotal, [1, 1, 1, 1, 1]);
+
+  const ankle = translate(sampleSphereSurface(ankleR, ankleCount), 0, ankleCenterY, 0);
+  const toes = toeOffsetsX.map((offX, i) => {
+    const halfLen = s * 0.16 * toeLengthScale[i] * 0.7;
+    return translate(
+      sampleLongBoneSurface(metatarsalR * 0.7, metatarsalR, halfLen, toeCounts[i]),
+      offX * footHx,
+      footCenterY,
+      footFrontZ * 0.6,
+    );
+  });
+  return concatParts([ankle, ...toes]);
+}
+
+// Formas humanoides con hueso LITERAL (Fase 17): buildExoskeleton() usa
+// esto en vez del anclas+MST genérico de abajo cuando el nombre matchea —
+// las formas no-humanoides (cubo, carro, etc.) no tienen huesos reales,
+// así que siguen con el exoesqueleto genérico.
+const HUMANOID_BONE_GENERATORS: Record<string, (count: number) => Float32Array> = {
+  persona: personaBones,
+  cabeza: cabezaBones,
+  torso: torsoBones,
+  brazo: brazoBones,
+  pierna: piernaBones,
+  mano: manoBones,
+  pie: pieBones,
+};
+
 // --- Exoesqueleto de Microbots (Fase 15) ---
 //
 // Población aparte de Nanobots: arma un esqueleto/exoesqueleto SOLO de
@@ -1087,6 +1660,19 @@ export function buildExoskeleton(
 ): Exoskeleton | null {
   const canonical = resolveShapeName(name);
   if (!canonical) return null;
+
+  const boneGenerator = HUMANOID_BONE_GENERATORS[canonical];
+  if (boneGenerator) {
+    const pts = boneGenerator(count);
+    const points = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      points[i * 3 + 0] = pts[i * 3 + 0] + center[0];
+      points[i * 3 + 1] = pts[i * 3 + 1] + center[1];
+      points[i * 3 + 2] = pts[i * 3 + 2] + center[2];
+    }
+    return { points, isBeam: new Uint8Array(count), relationSpans: new Float32Array(count * 6) };
+  }
+
   const generator = SHAPE_GENERATORS[canonical];
 
   const anchorCount =

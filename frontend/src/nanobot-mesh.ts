@@ -22,15 +22,13 @@ import { DEFAULT_DOMINANT_COLOR, MAX_COLOR_CLUSTERS, type ColorCluster } from ".
 //   en su propia sub-fase (ver phaseCount dinámico en main.ts) en vez de
 //   mezclarse todas de una — "dejando el espacio que no es de ese color"
 //   para las olas siguientes.
-// Antes 80 (afinado para el default original de Fase 1) — con el nuevo
-// default de Nanobots (3000, ver DEFAULT_STATE en main.ts) y el
-// exoesqueleto de Microbots mucho más rico (Fase 15), un baseline tan
-// bajo encogía las esferas al ~30% de su tamaño de diseño ya con el
-// default, dejando el relleno demasiado disperso. Subirlo retrasa el
-// encogimiento a cantidades más altas — el `Math.min(1, ...)` de abajo ya
-// garantiza que NUNCA queden más grandes que su tamaño de diseño
-// (`ROLE_GEOMETRIES`), solo se encogen menos hasta count más alto.
-const SCALE_BASELINE_COUNT = 1500;
+// Fase 16 había subido esto a 1500 para que el relleno se viera más denso
+// al conteo default más alto, pero el resultado se vio "grueso" contra el
+// exoesqueleto de hueso fino de Microbots (Fase 17) — vuelve a 80 (el
+// valor de Fase 1: esferas finas/chicas, como antes) y el contraste de
+// "mucha cantidad" se logra solo con el default de Nanobots más alto
+// (3000, ver DEFAULT_STATE en main.ts), no agrandando cada esfera.
+const SCALE_BASELINE_COUNT = 80;
 
 // Una vez que un nanobot está lo bastante cerca de su punto final (el
 // residual de físicas — cohesión/separación entre vecinos, aunque atenuado
