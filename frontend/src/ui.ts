@@ -181,6 +181,17 @@ function addScanFolder(gui: GUI, callbacks: UiCallbacks): void {
   const folder = gui.addFolder("Escaneo 3D (4 fotos)");
   const attached: Partial<Record<ScanSlot, File>> = {};
 
+  // Fase 23 (verificación con fotos reales): la reconstrucción falla más
+  // por encuadre inconsistente que por el algoritmo en sí — cada foto
+  // necesita mapear al MISMO objeto a la MISMA escala en la grilla de
+  // vóxeles compartida, así que un recorte/zoom distinto por vista rompe
+  // la reconstrucción aunque el fondo esté perfectamente limpio.
+  const tip = document.createElement("div");
+  tip.style.cssText = "font-size:10px;color:#8fa3ad;padding:2px 6px 6px;line-height:1.4;";
+  tip.textContent =
+    "Consejo: mismo fondo liso y contrastante, objeto centrado y a la MISMA distancia/zoom en las 4 fotos (no recortar cada una por separado).";
+  folder.domElement.appendChild(tip);
+
   const status = document.createElement("div");
   status.style.cssText = "font-size:11px;color:#4be3ff;padding:2px 6px;min-height:14px;";
 
