@@ -10,7 +10,8 @@ rol donde mejor rinde. Por defecto el enjambre está **dentro** de un
 núcleo/reactor en una esquina superior de la escena (los nanobots no se
 dibujan mientras están en reposo); desde la sección "Comandos" del panel se
 le puede pedir que forme un objeto (cubo, esfera, pirámide, estrella,
-anillo, corazón, cruz, carro, teléfono o persona/personaje — ver
+anillo, corazón, cruz, carro, teléfono, persona/personaje, o una parte del
+cuerpo por separado — cabeza, torso, brazo, pierna, mano, pie — ver
 `frontend/src/shapes.ts` para la lista completa de sinónimos aceptados)
 — sale del núcleo, arma la figura, y puede volver a guardarse en el
 núcleo cuando se quiera (con una animación de regreso en espiral, ver
@@ -21,16 +22,21 @@ Al formar una figura hay **dos poblaciones independientes** que trabajan en
 secuencia:
 
 1. **Microbots** (panel "Microbots (exoesqueleto)", conteo propio hasta
-   60.000) arman primero un **exoesqueleto denso y unido** de la figura —
-   nodos ancla (*farthest-point sampling*) conectados por vigas siguiendo
-   un árbol de expansión mínima (garantiza una sola red conectada, sin
-   zonas sueltas) más conexiones extra para una malla más rica. No tienen
-   física boid propia: se animan con un simple *ease-in* desde el reposo
-   hasta su posición final, así soportan MUCHOS más agentes sin frisar
-   (ver "Notas de rendimiento").
+   60.000) arman primero el exoesqueleto de la figura, lanzándose desde el
+   núcleo en un remolino/vórtice propio (ver "Notas de rendimiento") que se
+   repliega igual al pedir "Volver al núcleo". Para las formas humanoides
+   (persona y las partes del cuerpo) el exoesqueleto es **literalmente el
+   hueso** — cráneo, columna/costillas, y huesos largos con forma real
+   (grueso en las puntas/epífisis, angosto en el medio/diáfisis, ver
+   `sampleLongBoneSurface`) en vez de una red genérica de nodos y vigas.
+   Las formas no-humanoides (cubo, carro, etc.) sí usan esa red genérica
+   (nodos ancla por *farthest-point sampling* conectados por un árbol de
+   expansión mínima + conexiones extra), ya que no tienen huesos reales.
+   Microbots no tiene física boid propia ni "Comandos" propio — siempre
+   sigue automáticamente la figura activa de Nanobots.
 2. Recién cuando ese exoesqueleto termina de asentarse, **Nanobots** sale
-   del núcleo y se alinea/rellena encima, en 2 roles (Detalle y Color) que
-   salen de a uno por vez.
+   del núcleo y se alinea/rellena encima (tejido y piel), en 2 roles
+   (Detalle y Color) que salen de a uno por vez.
 
 **Color es un 75% FIJO e independiente del total** de Nanobots (no es "lo
 que sobra" de un reparto entre roles): Detalle se lleva el 25% restante
@@ -85,8 +91,8 @@ como un temblor errático en vez de una convergencia prolija. En reposo esos
 mismos pesos se respetan tal cual los deja el usuario, para el movimiento
 orgánico de enjambre.
 
-El exoesqueleto de Microbots se revela con un tiempo fijo (ease-in de
-~1.6s, sin física que "asentar"). Recién a partir de ahí, cada rol/ola de
+El exoesqueleto de Microbots se revela con un tiempo fijo (lanzamiento en
+vórtice de ~2.2s, sin física que "asentar"). Recién a partir de ahí, cada rol/ola de
 Nanobots suelta al siguiente (Detalle → ola de Color #1 → ola de Color #2
 → ...) cuando el grupo recién salido lleva un segundo entero cerca de su
 posición final — no apenas un instante fugaz. Y una vez que un nanobot
