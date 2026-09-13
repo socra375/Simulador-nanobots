@@ -27,7 +27,7 @@ CONFIG_PATH = BASE_DIR / "config" / "swarm_config.json"
 FRONTEND_DIST = BASE_DIR.parent / "frontend" / "dist"
 
 DEFAULT_CONFIG = {
-    "count": 80,
+    "count": 3000,
     "cohesion": 0.8,
     "separation": 1.5,
     "alignment": 0.6,
@@ -36,7 +36,7 @@ DEFAULT_CONFIG = {
 
 
 class SwarmConfig(BaseModel):
-    count: int = Field(ge=20, le=10000)
+    count: int = Field(ge=20, le=60000)
     cohesion: float = Field(ge=0, le=10)
     separation: float = Field(ge=0, le=10)
     alignment: float = Field(ge=0, le=10)
