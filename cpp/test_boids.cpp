@@ -59,20 +59,22 @@ void test_seek_moves_agent_toward_target() {
     velocities[0] = 0.f; velocities[1] = 0.f; velocities[2] = 0.f;
     targets[0] = 5.f; targets[1] = 0.f; targets[2] = 0.f;
 
-    // Un agente aislado bajo solo fuerza de seek (sin cohesión/alineación de
-    // vecinos, que en el enjambre real aportan amortiguación) es un
-    // oscilador sin amortiguar: no se "asienta" en el target, pasa cerca y
-    // sigue de largo. Por eso medimos la distancia MÍNIMA alcanzada en la
-    // simulación, no la distancia final.
+    // La amortiguación de integrateAgent (derivada de g_seekWeight, ver ahí)
+    // hace que el agente converja sin pasarse de largo — medimos tanto la
+    // distancia mínima alcanzada como la distancia FINAL, que ahora debería
+    // quedar igual de cerca (el agente se asienta, no sigue oscilando).
     float initialDist = distance(positions[0], positions[1], positions[2], targets[0], targets[1], targets[2]);
     float minDist = initialDist;
+    float finalDist = initialDist;
     for (int i = 0; i < 60; ++i) {
         step(0.05f);
-        float d = distance(positions[0], positions[1], positions[2], targets[0], targets[1], targets[2]);
-        if (d < minDist) minDist = d;
+        finalDist = distance(positions[0], positions[1], positions[2], targets[0], targets[1], targets[2]);
+        if (finalDist < minDist) minDist = finalDist;
     }
 
     check(minDist < initialDist * 0.2f, "el agente pasa muy cerca del target (fuerza de seek funciona)");
+    check(finalDist < initialDist * 0.2f,
+          "el agente se queda asentado cerca del target en vez de oscilar para siempre (amortiguación)");
 }
 
 void test_separation_pushes_overlapping_agents_apart() {

@@ -28,13 +28,16 @@ const FORMING_FLOCK_SCALE = 0.12;
 // RELACION, por último DETALLE. En vez de un tiempo fijo (el viaje real
 // desde el núcleo hasta el punto de formación puede tardar varios segundos
 // según la distancia/velocidad), se espera a que el grupo recién revelado
-// esté razonablemente cerca de su posición final (distancia promedio por
-// debajo de PHASE_SETTLE_DISTANCE) antes de soltar al siguiente — con un
-// tope de tiempo (PHASE_MAX_SECONDS) para no quedarse trabado si nunca
-// converge del todo.
+// esté cerca de su posición final (distancia promedio por debajo de
+// PHASE_SETTLE_DISTANCE) y se QUEDE así de forma sostenida —no un instante
+// fugaz— durante PHASE_SETTLE_HOLD_SECONDS antes de soltar al siguiente, así
+// da tiempo real a ver la malla de Relación ya sincronizada/unida con
+// Estructura antes de que aparezca Detalle. Con un tope de tiempo
+// (PHASE_MAX_SECONDS) para no quedarse trabado si nunca converge del todo.
 const PHASE_MIN_HOLD_SECONDS = 0.5;
-const PHASE_SETTLE_DISTANCE = 1.2;
-const PHASE_MAX_SECONDS = 5;
+const PHASE_SETTLE_DISTANCE = 0.6;
+const PHASE_SETTLE_HOLD_SECONDS = 1;
+const PHASE_MAX_SECONDS = 7;
 const PHASE_COUNT = 3;
 
 // Animación de regreso al núcleo: cada nanobot espera su turno (en fila,
@@ -100,6 +103,11 @@ async function main() {
   // enjambre está oculto así que el contenido no importa visualmente.
   let currentRoles: Uint8Array<ArrayBufferLike> = new Uint8Array(state.count).fill(NANOBOT_ROLE.DETAIL);
   let currentRelationSpans: Float32Array = new Float32Array(state.count * 6);
+  // Punto final (fijo) de cada agente si hay una figura formada; en reposo
+  // queda todo en cero. Le permite a nanobot-mesh.ts dibujar cada nanobot
+  // exactamente ahí (sin el micro-temblor residual de la física) una vez
+  // que llega, en vez de perseguir su posición física para siempre.
+  let currentFormationTargets: Float32Array = new Float32Array(state.count * 3);
 
   // Formado por fases: la figura completa ya está calculada, pero solo se
   // "revelan" (se les asigna el target real y se dibujan) los agentes cuyo
@@ -108,6 +116,7 @@ async function main() {
   let idlePointsForFormation: Float32Array = new Float32Array(0);
   let formationPhase = 0; // cuántos roles ya salieron (0..PHASE_COUNT)
   let phaseTimer = 0;
+  let settledStreak = 0; // segundos consecutivos que el grupo revelado lleva asentado
 
   let returnAnimation: ReturnAnimation | null = null;
 
@@ -134,6 +143,7 @@ async function main() {
     swarm.setAgentTargets(idleCluster(state.count, reactorCenter));
     currentRoles = new Uint8Array(state.count).fill(NANOBOT_ROLE.DETAIL);
     currentRelationSpans = new Float32Array(state.count * 6);
+    currentFormationTargets = new Float32Array(state.count * 3);
   }
 
   // Mezcla los targets: los agentes cuyo rol ya fue revelado (role <
@@ -154,8 +164,10 @@ async function main() {
     swarm.setAgentTargets(mixed);
   }
 
-  // ¿El grupo que acaba de salir (rol `formationPhase - 1`) ya llegó lo
-  // bastante cerca de su posición final como para soltar al siguiente?
+  // ¿El grupo que acaba de salir (rol `formationPhase - 1`) está cerca de su
+  // posición final EN ESTE INSTANTE? (el llamador exige que esto se
+  // mantenga cierto por PHASE_SETTLE_HOLD_SECONDS seguidos antes de soltar
+  // al siguiente rol — ver settledStreak en animate()).
   function isPhaseGroupSettled(): boolean {
     if (!currentFormation) return true;
     const roleJustRevealed = formationPhase - 1;
@@ -180,9 +192,11 @@ async function main() {
     currentFormation = formation;
     currentRoles = formation.roles;
     currentRelationSpans = formation.relationSpans;
+    currentFormationTargets = formation.points;
     idlePointsForFormation = idleCluster(state.count, reactorCenter);
     formationPhase = 1; // ESTRUCTURA sale de inmediato
     phaseTimer = 0;
+    settledStreak = 0;
     applyPhaseTargets();
   }
 
@@ -328,11 +342,13 @@ async function main() {
     } else {
       if (mode === "forming" && formationPhase < PHASE_COUNT) {
         phaseTimer += dt;
+        settledStreak = isPhaseGroupSettled() ? settledStreak + dt : 0;
         const readyForNext =
           phaseTimer >= PHASE_MAX_SECONDS ||
-          (phaseTimer >= PHASE_MIN_HOLD_SECONDS && isPhaseGroupSettled());
+          (phaseTimer >= PHASE_MIN_HOLD_SECONDS && settledStreak >= PHASE_SETTLE_HOLD_SECONDS);
         if (readyForNext) {
           phaseTimer = 0;
+          settledStreak = 0;
           formationPhase++;
           applyPhaseTargets();
         }
@@ -344,7 +360,14 @@ async function main() {
     }
 
     const positions = swarm.getPositions();
-    swarmMesh.updateFromPositions(positions, swarm.getCount(), currentRoles, currentRelationSpans, visibleRoles);
+    swarmMesh.updateFromPositions(
+      positions,
+      swarm.getCount(),
+      currentRoles,
+      currentRelationSpans,
+      currentFormationTargets,
+      visibleRoles,
+    );
 
     renderer.render(scene, camera);
   }
