@@ -61,7 +61,7 @@ def test_post_persists_to_disk(client, isolated_config):
     "field,bad_value",
     [
         ("count", 5),  # por debajo del mínimo (20)
-        ("count", 500),  # por encima del máximo (200)
+        ("count", 50000),  # por encima del máximo (10000)
         ("maxSpeed", 0.0),  # por debajo del mínimo (0.1)
         ("cohesion", -1.0),  # por debajo del mínimo (0)
     ],

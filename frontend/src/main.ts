@@ -6,7 +6,7 @@ import { formShape, idleCluster, FORMATION_CENTER } from "./shapes";
 import { createControlPanel, type UiState } from "./ui";
 import { loadConfig, saveConfig, type SwarmConfig } from "./config-client";
 
-const MAX_NANOBOTS = 200;
+const MAX_NANOBOTS = 10000;
 
 // Seek más suave en reposo (cluster orgánico alrededor del núcleo) y más
 // fuerte al formar una figura (para que se vea nítida pese al ruido de
