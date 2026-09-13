@@ -248,21 +248,29 @@ export function listSupportedNames(): string[] {
 //   trazando las conexiones entre los puntos de estructura (como cables
 //   uniendo las vigas).
 // - DETALLE: el relleno denso de la figura a resolución completa (el
-//   grueso de la cantidad) — aporta el color/pulido final, dando la
-//   silueta 3D nítida y sólida por encima del esqueleto de las otras dos.
-export const NANOBOT_ROLE = { STRUCTURE: 0, RELATION: 1, DETAIL: 2 } as const;
+//   grueso de la cantidad) — da la silueta 3D nítida y sólida por encima
+//   del esqueleto de las otras dos, con el color neón fijo de su rol.
+// - COLOR: el mismo relleno a resolución completa que DETALLE (mismo
+//   generador, otra muestra), pero coloreado en tiempo real con el color
+//   RGB dominante de la foto adjuntada en "Comandos" (ver
+//   image-color.ts) en vez de un color de rol fijo — es la "capa de
+//   pintura" final: al cubrir toda la silueta con el color real del
+//   objeto fotografiado, reemplaza visualmente los colores fijos
+//   (cian/magenta/verde) de las otras 3 capas.
+export const NANOBOT_ROLE = { STRUCTURE: 0, RELATION: 1, DETAIL: 2, COLOR: 3 } as const;
 export type NanobotRole = (typeof NANOBOT_ROLE)[keyof typeof NANOBOT_ROLE];
 
-// Ambas fracciones son sobre el TOTAL de nanobots pedido (no una sobre el
-// resto de la otra): así, por ejemplo, con 500 nanobots ESTRUCTURA usa
-// ~13% (~65) y RELACION ~38% (~190) sin importar cuánto use la otra —
+// Todas las fracciones son sobre el TOTAL de nanobots pedido (no una sobre
+// el resto de la otra): así, por ejemplo, con 500 nanobots ESTRUCTURA usa
+// ~13% (~65) y RELACION ~38% (~190) sin importar cuánto usen las demás —
 // necesario para que haya SIEMPRE suficientes vigas de RELACION como para
 // cubrir el árbol de expansión mínima completo (ver buildRelationEdges)
 // más conexiones extra, en vez de quedar apenas alcanzando el mínimo.
 const ROLE_RATIO_STRUCTURE = 0.13; // 10-15%: anclas del exoesqueleto
 const ROLE_RATIO_RELATION = 0.38; // 35-40%: vigas que unen las anclas
-// El resto (~49%) es DETALLE — el relleno que tapa los huecos que dejan
-// ESTRUCTURA y RELACION en vez de dejar grietas visibles.
+const ROLE_RATIO_DETAIL = 0.24; // relleno con el color de rol fijo
+// El resto (~25%) es COLOR — la capa de pintura final con el color
+// dominante de la foto, por encima del esqueleto/relleno de las otras 3.
 
 export interface ShapeFormation {
   points: Float32Array; // count*3 floats, ya trasladados a `center`
@@ -500,8 +508,11 @@ export function formShapeWithRoles(
   const generator = SHAPE_GENERATORS[canonical];
 
   const structureCount = count > 0 ? Math.min(count, Math.max(4, Math.round(count * ROLE_RATIO_STRUCTURE))) : 0;
-  const relationCount = Math.min(Math.max(0, count - structureCount), Math.round(count * ROLE_RATIO_RELATION));
-  const detailCount = count - structureCount - relationCount;
+  const remainingAfterStructure = Math.max(0, count - structureCount);
+  const relationCount = Math.min(remainingAfterStructure, Math.round(count * ROLE_RATIO_RELATION));
+  const remainingAfterRelation = Math.max(0, count - structureCount - relationCount);
+  const detailCount = Math.min(remainingAfterRelation, Math.round(count * ROLE_RATIO_DETAIL));
+  const colorCount = count - structureCount - relationCount - detailCount;
 
   const structurePts = buildStructureAnchors(generator, structureCount);
   const relationEdges = buildRelationEdges(structurePts, structureCount);
@@ -511,6 +522,7 @@ export function formShapeWithRoles(
     relationCount,
   );
   const detailPts = generator(detailCount);
+  const colorPts = generator(colorCount);
 
   const points = new Float32Array(count * 3);
   const roles = new Uint8Array(count);
@@ -544,6 +556,7 @@ export function formShapeWithRoles(
   }
 
   write(detailPts, detailCount, NANOBOT_ROLE.DETAIL);
+  write(colorPts, colorCount, NANOBOT_ROLE.COLOR);
 
   return { points, roles, relationSpans };
 }

@@ -179,17 +179,18 @@ describe("formShapeWithRoles", () => {
     expect(formShapeWithRoles("no-existe", 50)).toBeNull();
   });
 
-  it("reparte los 3 roles aproximadamente 13/38/49 (ESTRUCTURA 10-15%, RELACION 35-40% del TOTAL) y usa solo valores válidos", () => {
+  it("reparte los 4 roles aproximadamente 13/38/24/25 (ESTRUCTURA 10-15%, RELACION 35-40% del TOTAL) y usa solo valores válidos", () => {
     const formation = formShapeWithRoles("esfera", 1000)!;
-    let structure = 0, relation = 0, detail = 0;
+    let structure = 0, relation = 0, detail = 0, color = 0;
     for (const role of formation.roles) {
-      expect([NANOBOT_ROLE.STRUCTURE, NANOBOT_ROLE.RELATION, NANOBOT_ROLE.DETAIL]).toContain(role);
+      expect([NANOBOT_ROLE.STRUCTURE, NANOBOT_ROLE.RELATION, NANOBOT_ROLE.DETAIL, NANOBOT_ROLE.COLOR]).toContain(role);
       if (role === NANOBOT_ROLE.STRUCTURE) structure++;
       else if (role === NANOBOT_ROLE.RELATION) relation++;
-      else detail++;
+      else if (role === NANOBOT_ROLE.DETAIL) detail++;
+      else color++;
     }
-    expect(structure + relation + detail).toBe(1000);
-    // Ambas fracciones son sobre el TOTAL (no una sobre el resto de la
+    expect(structure + relation + detail + color).toBe(1000);
+    // Todas las fracciones son sobre el TOTAL (no una sobre el resto de la
     // otra) para que RELACION siempre tenga margen de sobra sobre el
     // tamaño del árbol de expansión mínima (ver buildRelationEdges) y
     // cubra TODAS las conexiones de ESTRUCTURA, no solo una parte.
@@ -197,7 +198,10 @@ describe("formShapeWithRoles", () => {
     expect(structure).toBeLessThan(160); // <16%
     expect(relation).toBeGreaterThan(330); // >33%
     expect(relation).toBeLessThan(420); // <42%
-    expect(detail).toBeGreaterThan(400);
+    expect(detail).toBeGreaterThan(180); // ~24%
+    expect(detail).toBeLessThan(300);
+    expect(color).toBeGreaterThan(180); // ~25%: cubre la silueta igual que DETALLE
+    expect(color).toBeLessThan(300);
   });
 
   it("con counts muy chicos (< 4) sigue devolviendo roles válidos sin crashear", () => {
