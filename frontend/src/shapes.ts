@@ -871,7 +871,9 @@ function torso(count: number): Float32Array {
 
 // Brazo: hombro + brazo (bíceps) ahusado + codo + antebrazo ahusado + mano
 // con dedos abanicados (una simple esfera achatada, como en persona(), no
-// alcanza como objeto SOLO).
+// alcanza como objeto SOLO). Se arma en vertical (mismo eje que pierna()) y
+// se acuesta a horizontal al final (rotateAxisYtoX) — un brazo extendido
+// hacia el costado es inconfundible con una pierna vertical, incluso disperso.
 function brazo(count: number): Float32Array {
   const shoulderR = s * 0.22;
   const upperArmTopR = s * 0.26;
@@ -909,7 +911,7 @@ function brazo(count: number): Float32Array {
   const fingers = fingerOffsets.map((off, i) =>
     translate(sampleTaperedCylinderSurface(fingerR, fingerR * 1.3, fingerHalfH, fingerCounts[i]), off * handHx * 0.4, fingerCenterY, 0),
   );
-  return concatParts([shoulder, upperArm, elbow, forearm, hand, ...fingers]);
+  return rotateAxisYtoX(concatParts([shoulder, upperArm, elbow, forearm, hand, ...fingers]));
 }
 
 // Pierna: cadera + muslo ahusado + rodilla + pantorrilla ahusada + pie con
@@ -1506,6 +1508,9 @@ function torsoBones(count: number): Float32Array {
   return concatParts([...spine, ...ribs, ...shoulders]);
 }
 
+// Igual que brazo(): se acuesta a horizontal (rotateAxisYtoX) para que el
+// hueso del brazo quede alineado con el tejido de brazo(), ambos rotados
+// desde el mismo eje vertical.
 function brazoBones(count: number): Float32Array {
   const upperArmHalfH = s * 0.6;
   const forearmHalfH = s * 0.55;
@@ -1527,7 +1532,7 @@ function brazoBones(count: number): Float32Array {
   const humerus = translate(sampleLongBoneSurface(humerusShaft, humerusEnd, upperArmHalfH * 0.8, humerusCount), 0, upperArmCenterY, 0);
   const forearmBone = translate(sampleLongBoneSurface(forearmBoneShaft, forearmBoneEnd, forearmHalfH * 0.8, forearmBoneCount), 0, forearmCenterY, 0);
   const handBone = translate(sampleSphereSurface(handBoneR, handBoneCount), 0, handCenterY, 0);
-  return concatParts([humerus, forearmBone, handBone]);
+  return rotateAxisYtoX(concatParts([humerus, forearmBone, handBone]));
 }
 
 function piernaBones(count: number): Float32Array {

@@ -165,11 +165,13 @@ test("cambiar la cantidad de nanobots no rompe la app mientras hay una figura ac
   expect(errors).toEqual([]);
 });
 
-test("el límite máximo (10.000 nanobots) no rompe la app ni degrada el frame rate a cero", async ({ page }) => {
+test("el límite máximo (60.000 nanobots) no rompe la app ni degrada el frame rate a cero", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
 
-  await setNanobotCount(page, 10000);
+  // Fase 18: techo subido de 10.000 a 60.000 (mismo que Microbots) al pasar
+  // a escritura directa de instanceMatrix + física boid solo en reposo.
+  await setNanobotCount(page, 60000);
   await page.waitForTimeout(1500);
 
   await attachFakePhoto(page);
