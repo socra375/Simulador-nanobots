@@ -24,10 +24,21 @@ const MAX_NANOBOTS = 10000;
 // Nanobots como punto de partida conservador (ver plan de Fase 15),
 // ajustable acá si la verificación visual real sugiere subir/bajar.
 const MAX_MICROBOTS = 60000;
-// Duración fija del ease-in del exoesqueleto de Microbots: no depende de
-// física (no hay nada que "asentar"), así que es un tiempo fijo en vez del
-// mecanismo de asentamiento sostenido que usa el resto de las fases.
-const MICROBOT_EXO_DURATION = 1.6;
+// Duración fija del lanzamiento/repliegue del exoesqueleto de Microbots
+// (Fase 16): no depende de física (no hay nada que "asentar"), así que es
+// un tiempo fijo en vez del mecanismo de asentamiento sostenido que usa el
+// resto de las fases. Usada en ambos sentidos: subiendo durante el
+// lanzamiento, bajando durante el repliegue (ver animate()).
+const MICROBOT_EXO_DURATION = 2.2;
+// Animación de "lanzamiento en vórtice" de Microbots (Fase 16): en vez de
+// aparecer ya dispersos cerca del núcleo y volar en línea recta, cada
+// microbot arranca EXACTO en el núcleo y viaja a su punto final con un
+// remolino que se abre y se vuelve a cerrar por el camino (ver
+// microbotSwirlOffset/renderMicrobotsAt) — único (distinto a la física de
+// Nanobots) y notoriamente "sale del núcleo" en vez de solo materializarse.
+const MICROBOT_SWIRL_TURNS = 1.5;
+const MICROBOT_SWIRL_MAX_RADIUS = 1.4;
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
 // Seek más suave en reposo (cluster orgánico alrededor del núcleo) y más
 // fuerte al formar una figura (para que se vea nítida pese al ruido de
@@ -69,7 +80,11 @@ const RETURN_QUEUE_SPAN = 2.2;
 const RETURN_SPIRAL_TURNS = 2.5;
 
 const DEFAULT_STATE: UiState = {
-  count: 80,
+  // Antes 80 (sin cambios desde la Fase 1) — con el exoesqueleto de
+  // Microbots ahora mucho más rico (Fase 15), ese relleno por defecto se
+  // veía pobre en comparación; ver también SCALE_BASELINE_COUNT en
+  // nanobot-mesh.ts.
+  count: 3000,
   microbotCount: 4000,
   cohesion: 0.8,
   separation: 1.5,
@@ -109,6 +124,33 @@ async function main() {
   const reactor = createReactor();
   scene.add(reactor.group);
   const reactorCenter = reactor.position.toArray() as [number, number, number];
+
+  // Eje del "vórtice" de lanzamiento de Microbots (Fase 16): fijo para
+  // TODA la animación (dirección núcleo -> centro de formación, con una
+  // base ortonormal perpendicular armada a mano) — se calcula UNA sola vez
+  // acá en vez de por agente/frame, así el costo por agente en animate()
+  // se reduce a un lerp + 1 coseno + 1 seno (nada de raíces cuadradas ni
+  // productos cruzados repetidos).
+  let axisUx = 0, axisUy = 1, axisUz = 0;
+  let axisVx = 0, axisVy = 0, axisVz = 1;
+  {
+    const dx = FORMATION_CENTER[0] - reactorCenter[0];
+    const dy = FORMATION_CENTER[1] - reactorCenter[1];
+    const dz = FORMATION_CENTER[2] - reactorCenter[2];
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
+    const ux = dx / len, uy = dy / len, uz = dz / len;
+    const arbX = Math.abs(uy) > 0.99 ? 1 : 0;
+    const arbY = Math.abs(uy) > 0.99 ? 0 : 1;
+    let rx = arbY * uz;
+    let ry = -arbX * uz;
+    let rz = arbX * uy - arbY * ux;
+    const rlen = Math.sqrt(rx * rx + ry * ry + rz * rz) || 1;
+    rx /= rlen; ry /= rlen; rz /= rlen;
+    axisUx = rx; axisUy = ry; axisUz = rz;
+    axisVx = uy * rz - uz * ry;
+    axisVy = uz * rx - ux * rz;
+    axisVz = ux * ry - uy * rx;
+  }
 
   // Núcleo de física: carga el módulo Wasm compilado desde /cpp/boids.cpp.
   const swarm = new Swarm();
@@ -155,28 +197,72 @@ async function main() {
 
   let returnAnimation: ReturnAnimation | null = null;
 
-  // Microbots (Fase 15): exoesqueleto denso e independiente de la física
-  // Wasm — se anima con un simple ease-in (posición inicial de reposo ->
-  // posición final del exoesqueleto) en vez de simularse. Los Nanobots
-  // esperan a que este ease-in termine (`pendingFormation`) antes de
+  // Microbots (Fase 15/16): exoesqueleto denso e independiente de la
+  // física Wasm — se anima con un lanzamiento en vórtice propio (ver
+  // constantes MICROBOT_SWIRL_*/renderMicrobotsAt) en vez de simularse.
+  // Los Nanobots esperan a que termine (`pendingFormation`) antes de
   // empezar a moverse, para que el exoesqueleto ya esté sólido cuando
   // Nanobots llegue a alinearse/rellenar encima.
+  type MicrobotPhase = "hidden" | "launching" | "settled" | "retracting";
+  let microbotPhase: MicrobotPhase = "hidden";
   let microbotCount = Math.min(state.microbotCount, MAX_MICROBOTS);
   let microbotExo: Exoskeleton | null = null;
-  let microbotIdlePoints: Float32Array = new Float32Array(0);
   let microbotElapsed = 0;
-  // Buffer reusado cuadro a cuadro para la posición interpolada — evita
-  // asignar un Float32Array nuevo por frame con decenas de miles de
-  // elementos (ver animate()).
+  // Buffers reusados cuadro a cuadro (nodos y vigas) — evita asignar
+  // Float32Array nuevos por frame con decenas de miles de elementos.
   const microbotRenderPoints = new Float32Array(MAX_MICROBOTS * 3);
+  const microbotRenderRelationSpans = new Float32Array(MAX_MICROBOTS * 6);
+  // Scratch reusado para el offset del remolino de un agente (ver
+  // microbotSwirlOffset) — evita asignar un array nuevo por agente/frame.
+  const swirlScratch: [number, number, number] = [0, 0, 0];
   // Formación de Nanobots que espera a que el exoesqueleto de Microbots
   // termine de asentarse antes de arrancar (ver setMode/animate()).
   let pendingFormation: { shapeName: string; colorClusters: ColorCluster[] } | null = null;
 
   function computeMicrobotTargets(): void {
     microbotExo = buildExoskeleton(currentShapeName ?? "", microbotCount, FORMATION_CENTER);
-    microbotIdlePoints = idleCluster(microbotCount, reactorCenter);
-    microbotElapsed = 0;
+  }
+
+  // Offset del remolino de un agente en el progreso `eased` (0..1): cero en
+  // los extremos (arranca y termina exacto en su punto, sin importar el
+  // remolino — `Math.sin(eased*PI)`) y máximo a mitad de camino. `i *
+  // GOLDEN_ANGLE` da a cada agente su propia fase, para que no giren todos
+  // sincronizados (mismo truco de ángulo dorado que sampleSphereSurface en
+  // shapes.ts).
+  function microbotSwirlOffset(eased: number, i: number, out: [number, number, number]): void {
+    const amplitude = MICROBOT_SWIRL_MAX_RADIUS * Math.sin(eased * Math.PI);
+    const angle = eased * MICROBOT_SWIRL_TURNS * Math.PI * 2 + i * GOLDEN_ANGLE;
+    const c = Math.cos(angle) * amplitude;
+    const s = Math.sin(angle) * amplitude;
+    out[0] = axisUx * c + axisVx * s;
+    out[1] = axisUy * c + axisVy * s;
+    out[2] = axisUz * c + axisVz * s;
+  }
+
+  // Dibuja el exoesqueleto de Microbots en el progreso `eased` (0=núcleo,
+  // 1=posición final): nodos van a `microbotRenderPoints`, vigas a
+  // `microbotRenderRelationSpans` — AMBOS extremos de una viga usan el
+  // MISMO offset de remolino (mismo `i`), así viaja como una pieza rígida
+  // que además "crece" desde longitud ~0 en el núcleo hasta su largo real.
+  function renderMicrobotsAt(eased: number): void {
+    if (!microbotExo) return;
+    const { points, relationSpans, isBeam } = microbotExo;
+    for (let i = 0; i < microbotCount; i++) {
+      microbotSwirlOffset(eased, i, swirlScratch);
+      if (!isBeam[i]) {
+        microbotRenderPoints[i * 3 + 0] = reactorCenter[0] + (points[i * 3 + 0] - reactorCenter[0]) * eased + swirlScratch[0];
+        microbotRenderPoints[i * 3 + 1] = reactorCenter[1] + (points[i * 3 + 1] - reactorCenter[1]) * eased + swirlScratch[1];
+        microbotRenderPoints[i * 3 + 2] = reactorCenter[2] + (points[i * 3 + 2] - reactorCenter[2]) * eased + swirlScratch[2];
+      } else {
+        microbotRenderRelationSpans[i * 6 + 0] = reactorCenter[0] + (relationSpans[i * 6 + 0] - reactorCenter[0]) * eased + swirlScratch[0];
+        microbotRenderRelationSpans[i * 6 + 1] = reactorCenter[1] + (relationSpans[i * 6 + 1] - reactorCenter[1]) * eased + swirlScratch[1];
+        microbotRenderRelationSpans[i * 6 + 2] = reactorCenter[2] + (relationSpans[i * 6 + 2] - reactorCenter[2]) * eased + swirlScratch[2];
+        microbotRenderRelationSpans[i * 6 + 3] = reactorCenter[0] + (relationSpans[i * 6 + 3] - reactorCenter[0]) * eased + swirlScratch[0];
+        microbotRenderRelationSpans[i * 6 + 4] = reactorCenter[1] + (relationSpans[i * 6 + 4] - reactorCenter[1]) * eased + swirlScratch[1];
+        microbotRenderRelationSpans[i * 6 + 5] = reactorCenter[2] + (relationSpans[i * 6 + 5] - reactorCenter[2]) * eased + swirlScratch[2];
+      }
+    }
+    microbotMesh.updateFromPositions(microbotRenderPoints, microbotCount, isBeam, microbotRenderRelationSpans);
   }
 
   function applyParams() {
@@ -290,10 +376,14 @@ async function main() {
       currentColorClusters = colorClusters ?? DEFAULT_COLOR_CLUSTERS;
       pendingFormation = { shapeName, colorClusters: currentColorClusters };
       computeMicrobotTargets();
+      microbotPhase = "launching";
+      microbotElapsed = 0;
       microbotMesh.setVisible(true);
     } else {
       currentShapeName = null;
       microbotExo = null;
+      microbotPhase = "hidden";
+      microbotElapsed = 0;
       microbotMesh.setVisible(false);
     }
     applyParams();
@@ -360,8 +450,13 @@ async function main() {
     currentFormation = null;
     formationPhase = 0;
     pendingFormation = null;
-    microbotExo = null;
-    microbotMesh.setVisible(false);
+    // Repliega el exoesqueleto de Microbots con el mismo remolino pero al
+    // revés (ver animate()) en vez de ocultarlo de golpe — si se pide
+    // volver al núcleo a mitad del lanzamiento, se revierte suave desde
+    // el progreso actual en vez de saltar.
+    if (microbotPhase === "launching" || microbotPhase === "settled") {
+      microbotPhase = "retracting";
+    }
     beginReturnAnimation();
   }
 
@@ -382,17 +477,17 @@ async function main() {
     }
   }
 
-  // Cambia la cantidad de Microbots: si hay una figura en curso y el
-  // exoesqueleto ya terminó su ease-in (Nanobots ya está rellenando), el
-  // exoesqueleto se recalcula y se muestra directo en su posición final
-  // (sin repetir la suspenso del ease-in); si todavía está pendiente, el
-  // nuevo conteo simplemente sigue su ease-in normal.
+  // Cambia la cantidad de Microbots: si el exoesqueleto ya está asentado
+  // (Nanobots ya está rellenando), se recalcula y se dibuja directo en su
+  // posición final (sin repetir el lanzamiento en vórtice); si todavía
+  // está en pleno lanzamiento, sigue animando normalmente con el nuevo
+  // conteo desde el progreso actual.
   function applyMicrobotCount(count: number): void {
     microbotCount = Math.min(count, MAX_MICROBOTS);
     state.microbotCount = microbotCount;
-    if (mode !== "forming") return;
+    if (microbotPhase !== "launching" && microbotPhase !== "settled") return;
     computeMicrobotTargets();
-    if (!pendingFormation) microbotElapsed = MICROBOT_EXO_DURATION;
+    if (microbotPhase === "settled") renderMicrobotsAt(1);
   }
 
   applyCount(state.count);
@@ -429,23 +524,30 @@ async function main() {
     reactor.update(dt);
     controls.update(); // necesario por el damping de OrbitControls
 
-    // Microbots: ease-in propio (sin física Wasm) del cluster de reposo al
-    // exoesqueleto de la figura. Nanobots espera a que termine
-    // (`pendingFormation`) antes de arrancar su propio revelado — así el
-    // esqueleto ya está sólido cuando Nanobots empieza a alinearse encima.
-    if (mode === "forming" && microbotExo) {
-      microbotElapsed = Math.min(microbotElapsed + dt, MICROBOT_EXO_DURATION);
-      const eased = easeInOutCubic(microbotElapsed / MICROBOT_EXO_DURATION);
-      const exoPoints = microbotExo.points;
-      for (let i = 0; i < microbotCount * 3; i++) {
-        microbotRenderPoints[i] = microbotIdlePoints[i] + (exoPoints[i] - microbotIdlePoints[i]) * eased;
-      }
-      microbotMesh.updateFromPositions(microbotRenderPoints, microbotCount, microbotExo.isBeam, microbotExo.relationSpans);
-      if (microbotElapsed >= MICROBOT_EXO_DURATION && pendingFormation) {
-        const { shapeName, colorClusters } = pendingFormation;
-        pendingFormation = null;
-        startFormation(shapeName, colorClusters);
-        swarmMesh.setVisible(true);
+    // Microbots: lanzamiento/repliegue en vórtice (sin física Wasm, ver
+    // renderMicrobotsAt) — sube durante el lanzamiento, baja durante el
+    // repliegue, misma duración en ambos sentidos. Nanobots espera a que
+    // el lanzamiento termine (`pendingFormation`) antes de arrancar su
+    // propio revelado, así el exoesqueleto ya está sólido cuando Nanobots
+    // empieza a alinearse/rellenar encima. Una vez "settled" no hace falta
+    // recalcular nada cuadro a cuadro — el buffer de instancias ya quedó
+    // en su posición final.
+    if (microbotPhase === "launching" || microbotPhase === "retracting") {
+      const direction = microbotPhase === "launching" ? 1 : -1;
+      microbotElapsed = Math.min(Math.max(microbotElapsed + direction * dt, 0), MICROBOT_EXO_DURATION);
+      renderMicrobotsAt(easeInOutCubic(microbotElapsed / MICROBOT_EXO_DURATION));
+      if (microbotPhase === "launching" && microbotElapsed >= MICROBOT_EXO_DURATION) {
+        microbotPhase = "settled";
+        if (pendingFormation) {
+          const { shapeName, colorClusters } = pendingFormation;
+          pendingFormation = null;
+          startFormation(shapeName, colorClusters);
+          swarmMesh.setVisible(true);
+        }
+      } else if (microbotPhase === "retracting" && microbotElapsed <= 0) {
+        microbotPhase = "hidden";
+        microbotExo = null;
+        microbotMesh.setVisible(false);
       }
     }
 
