@@ -363,7 +363,14 @@ async function main() {
         }
       }
       if (mode === "forming") {
-        visibleRoles = [0 < formationPhase, 1 < formationPhase, 2 < formationPhase, 3 < formationPhase];
+        // Apenas COLOR se revela, el verde fijo de DETALLE "desaparece": ya
+        // cumplió su función (rellenar antes de que COLOR, el 75% del
+        // enjambre, esté listo para tapar hasta el hueco más chico) y
+        // seguir mostrándolo de fondo mezclaría su verde con el color
+        // dominante real de la foto en vez de una figura pintada de un
+        // solo color sólido.
+        const colorRevealed = 3 < formationPhase;
+        visibleRoles = [0 < formationPhase, 1 < formationPhase, 2 < formationPhase && !colorRevealed, colorRevealed];
       }
       swarm.step(dt);
     }

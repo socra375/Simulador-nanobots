@@ -179,7 +179,7 @@ describe("formShapeWithRoles", () => {
     expect(formShapeWithRoles("no-existe", 50)).toBeNull();
   });
 
-  it("reparte los 4 roles aproximadamente 13/38/24/25 (ESTRUCTURA 10-15%, RELACION 35-40% del TOTAL) y usa solo valores válidos", () => {
+  it("COLOR es un 75% FIJO e independiente del total, y ESTRUCTURA/RELACION/DETALLE se reparten el 25% restante (13:38:24 entre sí)", () => {
     const formation = formShapeWithRoles("esfera", 1000)!;
     let structure = 0, relation = 0, detail = 0, color = 0;
     for (const role of formation.roles) {
@@ -190,18 +190,22 @@ describe("formShapeWithRoles", () => {
       else color++;
     }
     expect(structure + relation + detail + color).toBe(1000);
-    // Todas las fracciones son sobre el TOTAL (no una sobre el resto de la
-    // otra) para que RELACION siempre tenga margen de sobra sobre el
-    // tamaño del árbol de expansión mínima (ver buildRelationEdges) y
-    // cubra TODAS las conexiones de ESTRUCTURA, no solo una parte.
-    expect(structure).toBeGreaterThan(90); // >9%
-    expect(structure).toBeLessThan(160); // <16%
-    expect(relation).toBeGreaterThan(330); // >33%
-    expect(relation).toBeLessThan(420); // <42%
-    expect(detail).toBeGreaterThan(180); // ~24%
-    expect(detail).toBeLessThan(300);
-    expect(color).toBeGreaterThan(180); // ~25%: cubre la silueta igual que DETALLE
-    expect(color).toBeLessThan(300);
+    // COLOR: 75% FIJO del total, sin importar cuánto usen las otras 3 (no
+    // es "lo que sobra" de un reparto de 4 — es al revés: las otras 3 se
+    // reparten lo que sobra DESPUÉS de reservarle su 75% a COLOR).
+    expect(color).toBe(750);
+    // Las otras 3 comparten el 25% restante (250 agentes) manteniendo la
+    // proporción relativa 13:38:24 que tenían como fracciones directas del
+    // total en la fase anterior — RELACION sigue con margen de sobra sobre
+    // el árbol de expansión mínima entre anclas de ESTRUCTURA (ver
+    // buildRelationEdges), para cubrirlo completo.
+    expect(structure + relation + detail).toBe(250);
+    expect(structure).toBeGreaterThan(30); // ~13% de 250
+    expect(structure).toBeLessThan(60);
+    expect(relation).toBeGreaterThan(100); // ~38% de 250, mayoría del resto
+    expect(relation).toBeLessThan(150);
+    expect(detail).toBeGreaterThan(60); // ~24% de 250
+    expect(detail).toBeLessThan(100);
   });
 
   it("con counts muy chicos (< 4) sigue devolviendo roles válidos sin crashear", () => {
