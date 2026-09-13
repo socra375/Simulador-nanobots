@@ -14,10 +14,15 @@ import * as THREE from "three";
 
 const NODE_RADIUS = 0.07;
 const BEAM_RADIUS = 0.03;
-const NODE_COLOR = 0x2fb8ff;
-const NODE_EMISSIVE = 0x6fd8ff;
-const BEAM_COLOR = 0x1a6f99;
-const BEAM_EMISSIVE = 0x3fb0e0;
+// Blanco hueso, con muy poco brillo (Fase 21): antes cian/azul saturado —
+// el pedido explícito es que el exoesqueleto se vea como hueso real y no
+// compita visualmente con la capa de tejido que se posa encima (ver
+// nanobot-mesh.ts). emissiveIntensity baja de 0.9/0.75 a un valor apenas
+// perceptible, solo para que no se vea plano bajo la luz ambiental.
+const NODE_COLOR = 0xe8e2d4;
+const NODE_EMISSIVE = 0x2a2820;
+const BEAM_COLOR = 0xdcd5c4;
+const BEAM_EMISSIVE = 0x241f18;
 
 export interface MicrobotSwarmMesh {
   group: THREE.Group;
@@ -40,16 +45,16 @@ export function createMicrobotSwarmMesh(maxCount: number): MicrobotSwarmMesh {
   const nodeMaterial = new THREE.MeshStandardMaterial({
     color: NODE_COLOR,
     emissive: NODE_EMISSIVE,
-    emissiveIntensity: 0.9,
-    roughness: 0.4,
-    metalness: 0.2,
+    emissiveIntensity: 0.3,
+    roughness: 0.55,
+    metalness: 0.05,
   });
   const beamMaterial = new THREE.MeshStandardMaterial({
     color: BEAM_COLOR,
     emissive: BEAM_EMISSIVE,
-    emissiveIntensity: 0.75,
-    roughness: 0.45,
-    metalness: 0.2,
+    emissiveIntensity: 0.25,
+    roughness: 0.6,
+    metalness: 0.05,
   });
 
   const nodeMesh = new THREE.InstancedMesh(nodeGeometry, nodeMaterial, maxCount);

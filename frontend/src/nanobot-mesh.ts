@@ -166,7 +166,13 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   const instancedMeshes = ROLE_GEOMETRIES.map((geometry, role) => {
     const mesh = new THREE.InstancedMesh(geometry, buildRoleMaterial(role), maxCount);
     mesh.count = 0;
-    mesh.castShadow = true;
+    // Fase 21: los Nanobots dejan de proyectar sombra (perf — el pase de
+    // sombras de miles de instancias con mapa 2048px+PCF es un costo real
+    // de GPU independiente del fix de buffer de Fase 20; el reactor sigue
+    // proyectando/recibiendo la suya). Microbots ya no proyectaban sombra
+    // (nunca se activó ahí), así que este cambio alcanza para bajar el
+    // costo del pase de sombras de todo el enjambre.
+    mesh.castShadow = false;
     mesh.receiveShadow = true;
     group.add(mesh);
     return mesh;
@@ -184,7 +190,13 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
       maxCount,
     );
     mesh.count = 0;
-    mesh.castShadow = true;
+    // Fase 21: los Nanobots dejan de proyectar sombra (perf — el pase de
+    // sombras de miles de instancias con mapa 2048px+PCF es un costo real
+    // de GPU independiente del fix de buffer de Fase 20; el reactor sigue
+    // proyectando/recibiendo la suya). Microbots ya no proyectaban sombra
+    // (nunca se activó ahí), así que este cambio alcanza para bajar el
+    // costo del pase de sombras de todo el enjambre.
+    mesh.castShadow = false;
     mesh.receiveShadow = true;
     group.add(mesh);
     colorWaveMeshes.push(mesh);
