@@ -56,6 +56,42 @@ describe("formShapeWithRoles", () => {
         expect(formation).not.toBeNull();
         expect(formation!.points.length).toBe(count * 3);
         expect(formation!.roles.length).toBe(count);
+        expect(formation!.relationSpans.length).toBe(count * 6);
+      }
+    }
+  });
+
+  it("cada agente RELACION trae 2 anclas distintas y no colapsadas en el mismo punto", () => {
+    const formation = formShapeWithRoles("cubo", 500)!;
+    let checked = 0;
+    for (let i = 0; i < 500; i++) {
+      if (formation.roles[i] !== NANOBOT_ROLE.RELATION) continue;
+      const ax = formation.relationSpans[i * 6 + 0];
+      const ay = formation.relationSpans[i * 6 + 1];
+      const az = formation.relationSpans[i * 6 + 2];
+      const bx = formation.relationSpans[i * 6 + 3];
+      const by = formation.relationSpans[i * 6 + 4];
+      const bz = formation.relationSpans[i * 6 + 5];
+      const dist = Math.hypot(ax - bx, ay - by, az - bz);
+      expect(dist).toBeGreaterThan(0);
+      // el punto físico (target) del agente debe ser el punto medio del segmento
+      const midX = (ax + bx) / 2;
+      const midY = (ay + by) / 2;
+      const midZ = (az + bz) / 2;
+      expect(formation.points[i * 3 + 0]).toBeCloseTo(midX, 5);
+      expect(formation.points[i * 3 + 1]).toBeCloseTo(midY, 5);
+      expect(formation.points[i * 3 + 2]).toBeCloseTo(midZ, 5);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0);
+  });
+
+  it("los agentes ESTRUCTURA/DETALLE no traen relationSpans (quedan en 0)", () => {
+    const formation = formShapeWithRoles("esfera", 300)!;
+    for (let i = 0; i < 300; i++) {
+      if (formation.roles[i] === NANOBOT_ROLE.RELATION) continue;
+      for (let k = 0; k < 6; k++) {
+        expect(formation.relationSpans[i * 6 + k]).toBe(0);
       }
     }
   });
