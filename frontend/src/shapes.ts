@@ -1258,6 +1258,51 @@ export function listSupportedNames(): string[] {
   return Object.keys(SHAPE_GENERATORS);
 }
 
+// Fase 23 — enchufa una nube de puntos externa (p.ej. la reconstrucción
+// por "visual hull" de visual-hull.ts, a partir de 4 fotos) al mismo
+// pipeline que ya usa cualquier forma con nombre. `source` es una
+// cantidad FIJA de puntos (los vóxeles de superficie del escaneo); el
+// adaptador la envuelve en un generador `(count) => Float32Array` que
+// resamplea con reemplazo hasta `count` — mismo contrato que ya cumple
+// cualquier entrada de SHAPE_GENERATORS, así que formShapeWithRoles/
+// buildExoskeleton no necesitan ningún caso especial: al no tener
+// entrada en HUMANOID_BONE_GENERATORS, el exoesqueleto de Microbots ya
+// usa la rama genérica (anclas + MST) sin cambios.
+const CUSTOM_SCAN_NAME = "escaneo";
+
+function makeGeneratorFromPointCloud(source: Float32Array): (count: number) => Float32Array {
+  const available = Math.floor(source.length / 3);
+  // Jitter chico para los puntos que se repiten más allá de la primera
+  // pasada (cuando se pide más `count` que vóxeles de superficie hay) —
+  // evita esferas perfectamente apiladas en la misma posición.
+  const jitter = SHAPE_HALF_EXTENT * 0.02;
+  return (count: number) => {
+    const out = new Float32Array(count * 3);
+    if (available === 0) return out;
+    for (let i = 0; i < count; i++) {
+      const reused = i >= available;
+      const srcIdx = reused ? Math.floor(Math.random() * available) : i;
+      const jx = reused ? (Math.random() * 2 - 1) * jitter : 0;
+      const jy = reused ? (Math.random() * 2 - 1) * jitter : 0;
+      const jz = reused ? (Math.random() * 2 - 1) * jitter : 0;
+      out[i * 3 + 0] = source[srcIdx * 3 + 0] + jx;
+      out[i * 3 + 1] = source[srcIdx * 3 + 1] + jy;
+      out[i * 3 + 2] = source[srcIdx * 3 + 2] + jz;
+    }
+    return out;
+  };
+}
+
+// Registra la nube de puntos escaneada bajo el nombre reservado
+// "escaneo" y devuelve ese nombre — llamar a formShapeWithRoles/
+// buildExoskeleton con él funciona exactamente igual que con cualquier
+// otra forma.
+export function registerCustomScan(points: Float32Array): string {
+  SHAPE_GENERATORS[CUSTOM_SCAN_NAME] = makeGeneratorFromPointCloud(points);
+  return CUSTOM_SCAN_NAME;
+}
+
+
 // --- Los 3 roles de nanobots que participan al formar una figura ---
 //
 // - ESTRUCTURA: un subconjunto de "puntos ancla" de la propia figura (el

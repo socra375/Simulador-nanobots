@@ -9,6 +9,7 @@ import {
   IDLE_RADIUS,
   NANOBOT_ROLE,
   CABEZA_PARTS,
+  registerCustomScan,
 } from "./shapes";
 
 describe("resolveShapeName", () => {
@@ -394,5 +395,38 @@ describe("buildExoskeleton", () => {
       expect(Math.abs(exo.points[i * 3 + 1] - custom[1])).toBeLessThanOrEqual(6);
       expect(Math.abs(exo.points[i * 3 + 2] - custom[2])).toBeLessThanOrEqual(6);
     }
+  });
+});
+
+describe("registerCustomScan", () => {
+  it("enchufa una nube de puntos externa como una forma más, resolvible por nombre", () => {
+    const scanned = new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9]); // 3 puntos
+    const name = registerCustomScan(scanned);
+    expect(resolveShapeName(name)).toBe(name);
+
+    const formation = formShapeWithRoles(name, 500)!;
+    expect(formation.points.length).toBe(1500);
+    expect(formation.points.some((v) => Number.isNaN(v))).toBe(false);
+
+    // Sin entrada en HUMANOID_BONE_GENERATORS -> exoesqueleto genérico
+    // (anclas + MST), no revienta y no tiene vigas de más.
+    const exo = buildExoskeleton(name, 300)!;
+    expect(exo.points.length).toBe(900);
+    expect(exo.points.some((v) => Number.isNaN(v))).toBe(false);
+  });
+
+  it("con count menor a los puntos escaneados, sigue devolviendo exactamente count*3 sin NaN", () => {
+    const scanned = new Float32Array(30); // 10 puntos, todos en el origen
+    const name = registerCustomScan(scanned);
+    const formation = formShapeWithRoles(name, 4)!;
+    expect(formation.points.length).toBe(12);
+    expect(formation.points.some((v) => Number.isNaN(v))).toBe(false);
+  });
+
+  it("con una nube de puntos vacía, no crashea y no produce NaN", () => {
+    const name = registerCustomScan(new Float32Array(0));
+    const formation = formShapeWithRoles(name, 20)!;
+    expect(formation.points.length).toBe(60);
+    expect(formation.points.some((v) => Number.isNaN(v))).toBe(false);
   });
 });
