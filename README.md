@@ -35,6 +35,15 @@ como un temblor errático en vez de una convergencia prolija. En reposo esos
 mismos pesos se respetan tal cual los deja el usuario, para el movimiento
 orgánico de enjambre.
 
+Cada rol solo suelta al siguiente (Estructura → Relación → Detalle) cuando
+el grupo recién salido lleva un segundo entero cerca de su posición final —
+no apenas un instante fugaz — para que se vea a Relación terminar de
+sincronizarse/unirse con Estructura antes de que aparezca Detalle. Y una vez
+que un nanobot llega a su punto, `boids.cpp` lo frena con amortiguación real
+(antes el "seek" era un resorte sin fricción: pasaba cerca del target y
+seguía oscilando para siempre) y el render lo fija exactamente ahí — la
+figura completa queda sólida y sin ningún temblor residual, no solo "cerca".
+
 Al pedir "Volver al núcleo" con una figura formada, el enjambre no salta
 directo al reposo: cada nanobot espera su turno **en fila** (por orden) y
 recorre una **espiral** (radio decreciente + giro) convergiendo al núcleo,

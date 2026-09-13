@@ -211,9 +211,27 @@ Vec3 computeForce(int i) {
     return force;
 }
 
+// Frenado exponencial de la velocidad, aplicado en cada integración: sin
+// esto, el seek (una fuerza tipo resorte hacia el target, sin fricción) no
+// converge nunca — pasa cerca del target y sigue de largo, oscilando para
+// siempre alrededor de él en vez de asentarse. Con esta amortiguación, una
+// vez que un agente está cerca de su target la velocidad se disipa y queda
+// realmente quieto (necesario para que una figura formada se vea sólida y
+// estática, no temblando sin parar).
+//
+// El coeficiente se deriva de g_seekWeight en vez de ser un valor fijo: para
+// un oscilador masa-resorte-amortiguador (m=1, rigidez=seekWeight), el
+// amortiguamiento crítico es 2*sqrt(seekWeight) — el punto justo donde
+// converge lo más rápido posible sin pasarse de largo. kDampingRatio > 1 lo
+// deja levemente sobre-amortiguado (aún más quieto, a costa de un pelo de
+// velocidad de acercamiento) en vez de oscilar buscando ese punto exacto.
+// Así el freno se ajusta solo tanto en reposo (seek suave) como al formar
+// una figura (seek fuerte), sin necesitar dos constantes separadas.
+constexpr float kDampingRatio = 1.15f;
+
 // Integra velocidad/posición del agente `i` a partir de la fuerza ya
-// calculada en g_acceleration[i], con inercia, clamp de velocidad máxima,
-// y rebote suave en los bordes del volumen.
+// calculada en g_acceleration[i], con inercia, amortiguación, clamp de
+// velocidad máxima, y rebote suave en los bordes del volumen.
 void integrateAgent(int i, float dt) {
     float* vel = &g_velocities[i * 3];
     float* pos = &g_positions[i * 3];
@@ -223,6 +241,12 @@ void integrateAgent(int i, float dt) {
     vel[0] += g_acceleration[i].x * dt;
     vel[1] += g_acceleration[i].y * dt;
     vel[2] += g_acceleration[i].z * dt;
+
+    const float dampingCoeff = kDampingRatio * 2.0f * std::sqrt(std::max(g_seekWeight, 0.01f));
+    const float damping = std::exp(-dampingCoeff * dt);
+    vel[0] *= damping;
+    vel[1] *= damping;
+    vel[2] *= damping;
 
     float speed = std::sqrt(vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]);
     if (speed > g_maxSpeed) {

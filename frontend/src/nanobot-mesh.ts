@@ -10,6 +10,18 @@ import { NANOBOT_ROLE } from "./shapes";
 //   final a la silueta, encima del esqueleto de las otras dos.
 const SCALE_BASELINE_COUNT = 80;
 
+// Una vez que un nanobot está lo bastante cerca de su punto final (el
+// residual de físicas — cohesión/separación entre vecinos, aunque atenuado
+// al formar, ver FORMING_FLOCK_SCALE en main.ts — nunca llega a ser
+// exactamente cero), se dibuja EXACTO en ese punto (posición y rotación
+// fijas) en vez de en su posición física con micro-temblor. Así la figura
+// queda sólida y sin vibración una vez armada, no solo "cerca". Se usan dos
+// umbrales (histéresis: entra más estricto de lo que sale) para que un
+// nanobot justo en el borde no titile entre estático y físico cuadro a
+// cuadro.
+const SNAP_DISTANCE_SQ = 0.6 * 0.6;
+const UNSNAP_DISTANCE_SQ = 1.2 * 1.2;
+
 // Índice = NANOBOT_ROLE.{STRUCTURE,RELATION,DETAIL}. La viga de RELACION usa
 // un cilindro de altura unitaria (largo 1): se escala en Y al largo real del
 // segmento que conecta, así que su "tamaño de diseño" es solo el radio.
@@ -55,6 +67,7 @@ export interface NanobotSwarmMesh {
     count: number,
     roles: Uint8Array<ArrayBufferLike>,
     relationSpans: Float32Array,
+    formationTargets: Float32Array,
     visibleRoles: readonly [boolean, boolean, boolean],
   ) => void;
   setVisible: (visible: boolean) => void;
@@ -79,6 +92,11 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     return mesh;
   });
 
+  // Estado de histéresis por agente (1 = ya "encajado" en su target fijo).
+  // Se reinicia en setCount porque los índices pueden pasar a representar
+  // otro agente distinto tras un cambio de cantidad.
+  const snapped = new Uint8Array(maxCount);
+
   function setCount(count: number) {
     // Reparto aproximado solo para el estado inicial (antes de la primera
     // updateFromPositions con roles reales) — evita instancias fantasma.
@@ -88,6 +106,7 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
       const end = Math.min(count, start + perRole);
       mesh.count = Math.max(0, end - start);
     });
+    snapped.fill(0);
   }
 
   function updateFromPositions(
@@ -95,6 +114,7 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     count: number,
     roles: Uint8Array<ArrayBufferLike>,
     relationSpans: Float32Array,
+    formationTargets: Float32Array,
     visibleRoles: readonly [boolean, boolean, boolean],
   ) {
     // Con miles de nanobots en el mismo volumen, el tamaño fijo (afinado
@@ -112,11 +132,38 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
       const mesh = instancedMeshes[role];
       const localIndex = localCounters[role]++;
 
+      const liveX = positions[i * 3 + 0];
+      const liveY = positions[i * 3 + 1];
+      const liveZ = positions[i * 3 + 2];
+      const tx = formationTargets[i * 3 + 0];
+      const ty = formationTargets[i * 3 + 1];
+      const tz = formationTargets[i * 3 + 2];
+      // (0,0,0) exacto solo ocurre en reposo (sin figura activa) — target
+      // real de una figura formada nunca cae justo en el origen.
+      const hasTarget = tx !== 0 || ty !== 0 || tz !== 0;
+      if (!hasTarget) {
+        snapped[i] = 0;
+      } else {
+        const dx = liveX - tx;
+        const dy = liveY - ty;
+        const dz = liveZ - tz;
+        const distSq = dx * dx + dy * dy + dz * dz;
+        if (snapped[i]) {
+          if (distSq > UNSNAP_DISTANCE_SQ) snapped[i] = 0;
+        } else if (distSq < SNAP_DISTANCE_SQ) {
+          snapped[i] = 1;
+        }
+      }
+      const isSnapped = hasTarget && snapped[i] === 1;
+      const px = isSnapped ? tx : liveX;
+      const py = isSnapped ? ty : liveY;
+      const pz = isSnapped ? tz : liveZ;
+
       if (role === NANOBOT_ROLE.RELATION) {
         // Viga sólida entre las 2 anclas de ESTRUCTURA que este nanobot
-        // conecta: se posiciona en su punto físico real (cerca del punto
-        // medio del segmento) y se orienta/estira para cubrir el largo
-        // real de la conexión.
+        // conecta: se posiciona en su punto (físico mientras viaja, fijo
+        // una vez asentado — ver arriba) y se orienta/estira para cubrir
+        // el largo real de la conexión (siempre fijo, ya sale de spans).
         relationA.set(
           relationSpans[i * 6 + 0],
           relationSpans[i * 6 + 1],
@@ -130,12 +177,12 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
         relationDir.subVectors(relationB, relationA);
         const length = Math.max(relationDir.length(), 0.001);
         relationDir.normalize();
-        dummy.position.set(positions[i * 3 + 0], positions[i * 3 + 1], positions[i * 3 + 2]);
+        dummy.position.set(px, py, pz);
         dummy.quaternion.setFromUnitVectors(UP, relationDir);
         dummy.scale.set(scale, length, scale);
       } else {
-        dummy.position.set(positions[i * 3 + 0], positions[i * 3 + 1], positions[i * 3 + 2]);
-        dummy.rotation.set(positions[i * 3 + 1] * 0.15, positions[i * 3 + 0] * 0.15, 0);
+        dummy.position.set(px, py, pz);
+        dummy.rotation.set(py * 0.15, px * 0.15, 0);
         dummy.scale.setScalar(scale);
       }
       dummy.updateMatrix();

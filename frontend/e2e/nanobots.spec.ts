@@ -115,7 +115,37 @@ async function setNanobotCount(page: Page, count: number) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }, count);
+  // El slider de lil-gui solo confirma el valor (dispara onFinishChange, que
+  // llama a swarm.init() con la nueva cantidad) al perder el foco — sin este
+  // Tab, `state.count` en JS queda desincronizado del buffer real de Wasm.
   await page.keyboard.press("Tab");
+}
+
+async function dragRotateCamera(page: Page, dx = 150, dy = -80): Promise<void> {
+  const box = await page.locator("canvas").boundingBox();
+  if (!box) throw new Error("No se encontró el <canvas> de la escena");
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.move(cx + dx, cy + dy, { steps: 12 });
+  await page.mouse.up();
+}
+
+async function countRenderedFramesOverOneSecond(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      new Promise<number>((resolve) => {
+        let frames = 0;
+        const start = performance.now();
+        function tick() {
+          frames++;
+          if (performance.now() - start < 1000) requestAnimationFrame(tick);
+          else resolve(frames);
+        }
+        requestAnimationFrame(tick);
+      }),
+  );
 }
 
 test("cambiar la cantidad de nanobots no rompe la app mientras hay una figura activa", async ({ page }) => {
@@ -149,19 +179,93 @@ test("el límite máximo (10.000 nanobots) no rompe la app ni degrada el frame r
   // No es una aserción de FPS exacta (variaría mucho por hardware/CI) — solo
   // confirma que el loop de render sigue vivo (avanzan frames) en vez de
   // trabarse por completo con la cantidad máxima soportada.
-  const framesAdvanced = await page.evaluate(
-    () =>
-      new Promise<number>((resolve) => {
-        let frames = 0;
-        const start = performance.now();
-        function tick() {
-          frames++;
-          if (performance.now() - start < 1000) requestAnimationFrame(tick);
-          else resolve(frames);
-        }
-        requestAnimationFrame(tick);
-      }),
-  );
+  const framesAdvanced = await countRenderedFramesOverOneSecond(page);
   expect(framesAdvanced).toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});
+
+test("cambiar la cantidad de nanobots en reposo (sin figura activa) no rompe la app", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await page.waitForTimeout(1000);
+  await setNanobotCount(page, 500);
+  await page.waitForTimeout(1000);
+  await setNanobotCount(page, 30);
+  await page.waitForTimeout(1000);
+
+  expect(errors).toEqual([]);
+});
+
+test("formar dos figuras distintas seguidas (sin volver al núcleo entremedio) actualiza el status cada vez", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await attachFakePhoto(page);
+  await setObjectName(page, "esfera");
+  await clickCommandButton(page, "Formar objeto");
+  await expect.poll(() => readCommandsStatus(page)).toBe("Formando: esfera");
+
+  // Sin pasar por "Volver al núcleo": pide otra figura directamente mientras
+  // la anterior todavía puede estar revelándose por fases (ver
+  // formationPhase en main.ts) — no debería quedar en un estado inconsistente.
+  await page.waitForTimeout(300);
+  await setObjectName(page, "estrella");
+  await clickCommandButton(page, "Formar objeto");
+  await expect.poll(() => readCommandsStatus(page)).toBe("Formando: estrella");
+
+  await page.waitForTimeout(1500);
+  expect(errors).toEqual([]);
+});
+
+test("rotar la cámara (arrastrar) y hacer zoom (rueda) no generan errores y el render sigue vivo", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await attachFakePhoto(page);
+  await setObjectName(page, "corazon");
+  await clickCommandButton(page, "Formar objeto");
+  await page.waitForTimeout(500);
+
+  await dragRotateCamera(page, 200, -100);
+  await page.waitForTimeout(200);
+  await dragRotateCamera(page, -120, 60);
+
+  const canvas = page.locator("canvas");
+  await canvas.hover();
+  await page.mouse.wheel(0, -400); // zoom in
+  await page.waitForTimeout(200);
+  await page.mouse.wheel(0, 400); // zoom out
+
+  const framesAdvanced = await countRenderedFramesOverOneSecond(page);
+  expect(framesAdvanced).toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});
+
+test("pedir otra figura durante la animación de regreso al núcleo (espiral) no rompe la app", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await attachFakePhoto(page);
+  await setObjectName(page, "cubo");
+  await clickCommandButton(page, "Formar objeto");
+  await expect.poll(() => readCommandsStatus(page)).toBe("Formando: cubo");
+  await page.waitForTimeout(800);
+
+  // Dispara la espiral de regreso y, antes de que termine (dura varios
+  // segundos, ver RETURN_SPIRAL_DURATION/RETURN_QUEUE_SPAN en main.ts), pide
+  // formar otra figura — el nuevo modo debe cancelar la animación en curso
+  // en vez de pelear con ella.
+  await clickCommandButton(page, "Volver al núcleo");
+  await page.waitForTimeout(300);
+  await setObjectName(page, "anillo");
+  await clickCommandButton(page, "Formar objeto");
+  await expect.poll(() => readCommandsStatus(page)).toBe("Formando: anillo");
+
+  await page.waitForTimeout(1500);
   expect(errors).toEqual([]);
 });
