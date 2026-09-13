@@ -86,6 +86,49 @@ describe("formShapeWithRoles", () => {
     expect(checked).toBeGreaterThan(0);
   });
 
+  it("las conexiones de RELACION dejan TODAS las anclas de ESTRUCTURA en una sola red conectada", () => {
+    for (const count of [80, 500, 2000]) {
+      const formation = formShapeWithRoles("estrella", count)!;
+      const structurePoints: string[] = [];
+      const pointKey = (x: number, y: number, z: number) => `${x.toFixed(4)},${y.toFixed(4)},${z.toFixed(4)}`;
+      const indexByKey = new Map<string, number>();
+      for (let i = 0; i < count; i++) {
+        if (formation.roles[i] !== NANOBOT_ROLE.STRUCTURE) continue;
+        const key = pointKey(formation.points[i * 3], formation.points[i * 3 + 1], formation.points[i * 3 + 2]);
+        indexByKey.set(key, structurePoints.length);
+        structurePoints.push(key);
+      }
+      // Union-Find sobre los índices de anclas, uniendo cada arista de RELACION.
+      const parent = structurePoints.map((_, i) => i);
+      const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+      const union = (a: number, b: number) => {
+        const ra = find(a);
+        const rb = find(b);
+        if (ra !== rb) parent[ra] = rb;
+      };
+      for (let i = 0; i < count; i++) {
+        if (formation.roles[i] !== NANOBOT_ROLE.RELATION) continue;
+        const aKey = pointKey(
+          formation.relationSpans[i * 6 + 0],
+          formation.relationSpans[i * 6 + 1],
+          formation.relationSpans[i * 6 + 2],
+        );
+        const bKey = pointKey(
+          formation.relationSpans[i * 6 + 3],
+          formation.relationSpans[i * 6 + 4],
+          formation.relationSpans[i * 6 + 5],
+        );
+        const a = indexByKey.get(aKey);
+        const b = indexByKey.get(bKey);
+        expect(a).not.toBeUndefined();
+        expect(b).not.toBeUndefined();
+        union(a!, b!);
+      }
+      const roots = new Set(parent.map((_, i) => find(i)));
+      expect(roots.size).toBe(1);
+    }
+  });
+
   it("los agentes ESTRUCTURA/DETALLE no traen relationSpans (quedan en 0)", () => {
     const formation = formShapeWithRoles("esfera", 300)!;
     for (let i = 0; i < 300; i++) {

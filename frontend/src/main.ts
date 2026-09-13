@@ -19,6 +19,10 @@ const MAX_NANOBOTS = 10000;
 // cohesión/separación entre agentes).
 const IDLE_SEEK_WEIGHT = 0.5;
 const FORMING_SEEK_WEIGHT = 3.5;
+// Cuánto se atenúan cohesión/separación/alineación mientras se forma una
+// figura (ver applyParams) — casi apagadas, para que cada nanobot converja
+// derecho a su target en vez de pelear con sus vecinos por el camino.
+const FORMING_FLOCK_SCALE = 0.12;
 
 // Revelado por fases al formar una figura: primero ESTRUCTURA, luego
 // RELACION, por último DETALLE. En vez de un tiempo fijo (el viaje real
@@ -108,12 +112,21 @@ async function main() {
   let returnAnimation: ReturnAnimation | null = null;
 
   function applyParams() {
+    const forming = mode === "forming";
+    // Al formar una figura, la nube de puntos (shapes.ts) ya define la
+    // forma completa — la cohesión/separación/alineación entre vecinos deja
+    // de aportar y, a full potencia, compite contra el seek fuerte hacia el
+    // target propio, generando un temblor errático en vez de una
+    // convergencia prolija y coordinada. Se atenúan mucho (no se apagan del
+    // todo, para conservar algo de evasión de colisiones) mientras se está
+    // formando; en reposo se dejan tal cual las controla el usuario.
+    const flock = forming ? FORMING_FLOCK_SCALE : 1;
     swarm.setParams({
-      cohesion: state.cohesion,
-      separation: state.separation,
-      alignment: state.alignment,
+      cohesion: state.cohesion * flock,
+      separation: state.separation * flock,
+      alignment: state.alignment * flock,
       maxSpeed: state.maxSpeed,
-      seekWeight: mode === "forming" ? FORMING_SEEK_WEIGHT : IDLE_SEEK_WEIGHT,
+      seekWeight: forming ? FORMING_SEEK_WEIGHT : IDLE_SEEK_WEIGHT,
     });
   }
 
