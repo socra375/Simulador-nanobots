@@ -203,6 +203,7 @@ async function main() {
     idlePointsForFormation = idleCluster(state.count, reactorCenter);
     currentDominantColor = dominantColor;
     swarmMesh.setDominantColor(dominantColor);
+    swarmMesh.setSkeletonGrayscale(false); // por si quedó gris de una figura anterior
     formationPhase = 1; // ESTRUCTURA sale de inmediato
     phaseTimer = 0;
     settledStreak = 0;
@@ -363,14 +364,14 @@ async function main() {
         }
       }
       if (mode === "forming") {
-        // Apenas COLOR se revela, el verde fijo de DETALLE "desaparece": ya
-        // cumplió su función (rellenar antes de que COLOR, el 75% del
-        // enjambre, esté listo para tapar hasta el hueco más chico) y
-        // seguir mostrándolo de fondo mezclaría su verde con el color
-        // dominante real de la foto en vez de una figura pintada de un
-        // solo color sólido.
-        const colorRevealed = 3 < formationPhase;
-        visibleRoles = [0 < formationPhase, 1 < formationPhase, 2 < formationPhase && !colorRevealed, colorRevealed];
+        visibleRoles = [0 < formationPhase, 1 < formationPhase, 2 < formationPhase, 3 < formationPhase];
+        // Apenas COLOR se revela (ya viajando desde el núcleo hacia su
+        // posición), las otras 3 capas pierden su color de rol fijo y
+        // pasan a gris: no desaparecen (DETALLE, recién bien asentado,
+        // sigue ahí dando volumen), pero dejan de competir visualmente con
+        // el color dominante real de la foto, que termina predominando
+        // apenas COLOR llega y cubre hasta el hueco más chico.
+        swarmMesh.setSkeletonGrayscale(3 < formationPhase);
       }
       swarm.step(dt);
     }

@@ -29,6 +29,22 @@ const SCALE_BASELINE_COUNT = 80;
 const SNAP_DISTANCE_SQ = 0.6 * 0.6;
 const UNSNAP_DISTANCE_SQ = 1.2 * 1.2;
 
+// Colores de rol fijos de ESTRUCTURA/RELACION/DETALLE (COLOR no tiene uno
+// propio — se pisa en caliente vía setDominantColor). Guardados como
+// constantes (no solo inline en buildRoleMaterial) porque
+// setSkeletonGrayscale() necesita poder RESTAURARLOS: mientras la 4ta capa
+// viaja desde el núcleo, las otras 3 pierden su color (pasan a gris) para
+// que el color dominante de la foto termine predominando al llegar; ver
+// abajo.
+const STRUCTURE_COLOR = 0x1f5c8a;
+const STRUCTURE_EMISSIVE = 0x4be3ff;
+const RELATION_COLOR = 0x8a1f6e;
+const RELATION_EMISSIVE = 0xff5fd6;
+const DETAIL_COLOR = 0x1c8f5a;
+const DETAIL_EMISSIVE = 0x7dffb3;
+const SKELETON_GRAYSCALE_COLOR = 0x555555;
+const SKELETON_GRAYSCALE_EMISSIVE = 0x2a2a2a;
+
 // Índice = NANOBOT_ROLE.{STRUCTURE,RELATION,DETAIL}. La viga de RELACION usa
 // un cilindro de altura unitaria (largo 1): se escala en Y al largo real del
 // segmento que conecta, así que su "tamaño de diseño" es solo el radio.
@@ -45,8 +61,8 @@ const ROLE_GEOMETRIES: THREE.BufferGeometry[] = [
 function buildRoleMaterial(role: number): THREE.Material {
   if (role === NANOBOT_ROLE.DETAIL) {
     return new THREE.MeshStandardMaterial({
-      color: 0x1c8f5a,
-      emissive: 0x7dffb3,
+      color: DETAIL_COLOR,
+      emissive: DETAIL_EMISSIVE,
       emissiveIntensity: 0.9,
       roughness: 0.35,
       metalness: 0.1,
@@ -54,8 +70,8 @@ function buildRoleMaterial(role: number): THREE.Material {
   }
   if (role === NANOBOT_ROLE.RELATION) {
     return new THREE.MeshStandardMaterial({
-      color: 0x8a1f6e,
-      emissive: 0xff5fd6,
+      color: RELATION_COLOR,
+      emissive: RELATION_EMISSIVE,
       emissiveIntensity: 0.8,
       roughness: 0.4,
       metalness: 0.2,
@@ -74,8 +90,8 @@ function buildRoleMaterial(role: number): THREE.Material {
     });
   }
   return new THREE.MeshStandardMaterial({
-    color: 0x1f5c8a,
-    emissive: 0x4be3ff,
+    color: STRUCTURE_COLOR,
+    emissive: STRUCTURE_EMISSIVE,
     emissiveIntensity: 0.8,
     roughness: 0.4,
     metalness: 0.2,
@@ -98,6 +114,11 @@ export interface NanobotSwarmMesh {
   // dominante (0xRRGGBB) extraído de la foto adjuntada — llamado una vez
   // por "Formar objeto", antes de que ese rol se revele.
   setDominantColor: (hex: number) => void;
+  // true: ESTRUCTURA/RELACION/DETALLE pierden su color de rol fijo y pasan
+  // a un gris apagado (mientras COLOR viaja hacia su posición, para que su
+  // color termine predominando al llegar). false: los restaura a su color
+  // de rol original. No afecta a COLOR (su color siempre es el dominante).
+  setSkeletonGrayscale: (active: boolean) => void;
 }
 
 // Un InstancedMesh por rol (estructura/relación/detalle) para soportar
@@ -234,7 +255,21 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     material.emissive.setHex(hex);
   }
 
+  const SKELETON_ROLE_COLORS: Array<{ role: number; color: number; emissive: number }> = [
+    { role: NANOBOT_ROLE.STRUCTURE, color: STRUCTURE_COLOR, emissive: STRUCTURE_EMISSIVE },
+    { role: NANOBOT_ROLE.RELATION, color: RELATION_COLOR, emissive: RELATION_EMISSIVE },
+    { role: NANOBOT_ROLE.DETAIL, color: DETAIL_COLOR, emissive: DETAIL_EMISSIVE },
+  ];
+
+  function setSkeletonGrayscale(active: boolean) {
+    for (const { role, color, emissive } of SKELETON_ROLE_COLORS) {
+      const material = instancedMeshes[role].material as THREE.MeshStandardMaterial;
+      material.color.setHex(active ? SKELETON_GRAYSCALE_COLOR : color);
+      material.emissive.setHex(active ? SKELETON_GRAYSCALE_EMISSIVE : emissive);
+    }
+  }
+
   setCount(maxCount);
 
-  return { group, setCount, updateFromPositions, setVisible, setDominantColor };
+  return { group, setCount, updateFromPositions, setVisible, setDominantColor, setSkeletonGrayscale };
 }

@@ -33,7 +33,16 @@ amplia mayoría del enjambre, sin importar cuánto usen las otras 3.
 | **Estructura** | Icosaedro sólido cian | ~4% del total (13/75 del 25% restante). Nodos ancla de la figura — el "exoesqueleto"/las juntas de una construcción. Se eligen con *farthest-point sampling* (sobre-muestrear y quedarse con las mejor distribuidas) en vez de al azar, para que cubran la silueta de manera pareja sin dejar zonas sin anclas. |
 | **Relación** | Viga (cilindro) sólida magenta | ~13% del total (38/75 del 25% restante — la mayoría de ese resto). Une cada ancla de Estructura con su vecina más cercana siguiendo un árbol de expansión mínima (garantiza que TODA la figura quede conectada en una sola red, sin zonas sueltas) más algunas conexiones extra para una malla más rica. Al mantener siempre la misma proporción frente a Estructura, sigue habiendo de sobra para cubrir el árbol completo. |
 | **Detalle** | Esfera sólida emissive verde | ~8% del total (24/75 del 25% restante). Relleno con el color fijo de su rol — rellena mientras Color todavía no está listo para salir. |
-| **Color** | Esfera sólida emissive (ligeramente más grande, misma silueta que Detalle) | **75% FIJO del total**, independiente de las otras 3. No tiene un color de rol fijo: es el color RGB **dominante de la foto** adjuntada en "Comandos" (si la foto es mayormente roja, sale roja) — se calcula 100% en el navegador con un histograma de color simple (`frontend/src/image-color.ts`, sin IA/backend de visión), ignorando fondo blanco/negro/transparente. Es la última capa en salir: apenas se revela, el verde fijo de Detalle desaparece (se oculta) y Color, al ser tan mayoritario, cubre hasta el hueco más chico que hayan dejado las 3 capas anteriores — la figura queda pintada de un solo color sólido, con Estructura/Relación como esqueleto visible por debajo. |
+| **Color** | Esfera sólida emissive (ligeramente más grande, misma silueta que Detalle) | **75% FIJO del total**, independiente de las otras 3. No tiene un color de rol fijo: es el color RGB **dominante de la foto** adjuntada en "Comandos" (si la foto es mayormente roja, sale roja) — se calcula 100% en el navegador con un histograma de color simple (`frontend/src/image-color.ts`, sin IA/backend de visión), ignorando fondo blanco/negro/transparente. Es la última capa en salir. |
+
+Estructura/Relación/Detalle NO desaparecen cuando Color sale del núcleo —
+Detalle recién terminó de asentarse bien y sigue ahí dando volumen. En vez
+de eso, **pierden su color de rol fijo y pasan a un gris apagado** apenas
+Color inicia su viaje desde el núcleo, así no compiten visualmente con el
+color dominante real de la foto mientras viaja; cuando Color llega y,
+al ser tan mayoritario, cubre hasta el hueco más chico que hayan dejado
+las 3 capas anteriores, ese color termina predominando en toda la figura
+(con el esqueleto en gris apenas asomando entre las esferas).
 
 Mientras se arma una figura, la cohesión/separación/alineación entre
 nanobots (los pesos configurables del panel) se atenúan casi del todo: la
