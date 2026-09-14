@@ -15,6 +15,7 @@ import {
 import { createControlPanel, type UiState } from "./ui";
 import { loadConfig, saveConfig, type SwarmConfig } from "./config-client";
 import { DEFAULT_COLOR_CLUSTERS, type ColorCluster } from "./image-color";
+import { createMetrics } from "./core/metrics";
 
 // Fase 18: los Nanobots pasan a comportarse como Microbots por dentro —
 // escritura directa a instanceMatrix (nanobot-mesh.ts) en vez de
@@ -104,6 +105,10 @@ const DEFAULT_STATE: UiState = {
 type Mode = "idle" | "forming";
 type RoleVisibility = readonly [boolean, boolean, boolean, boolean];
 const ALL_ROLES_VISIBLE: RoleVisibility = [true, true, true, true];
+// Mutable y reusada cuadro a cuadro mientras se forma/repliega: solo
+// cambia el último elemento (si la 1ra ola de Color ya está revelada), y
+// el literal equivalente asignaba un array nuevo en cada cuadro.
+const formingRoleVisibility: [boolean, boolean, boolean, boolean] = [false, false, true, false];
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
@@ -111,7 +116,19 @@ function easeInOutCubic(t: number): number {
 
 async function main() {
   const container = document.getElementById("app")!;
-  const { scene, composer, controls } = createScene(container);
+  const { scene, renderer, composer, controls } = createScene(container);
+
+  // Fase 26a: el brief exige medir antes de optimizar, y el informe final
+  // necesita números de "antes". Se expone en `window` para poder leerlo
+  // desde el script de benchmark headless (bench/frame-bench.mjs).
+  const metrics = createMetrics();
+  (window as unknown as { __nanobotMetrics: typeof metrics }).__nanobotMetrics = metrics;
+  // Por defecto three.js resetea `renderer.info` en cada render. Con
+  // EffectComposer eso significa que al terminar el frame el contador solo
+  // refleja el ÚLTIMO pase (el quad de bloom, 1 draw call) en vez de la
+  // escena entera. Con autoReset apagado, el reset lo hacemos nosotros al
+  // principio del frame y el conteo queda acumulado sobre todos los pases.
+  renderer.info.autoReset = false;
 
   const swarmMesh = createNanobotSwarmMesh(MAX_NANOBOTS);
   scene.add(swarmMesh.group);
@@ -242,6 +259,12 @@ async function main() {
   // Formación de Nanobots que espera a que el exoesqueleto de Microbots
   // termine de asentarse antes de arrancar (ver setMode/animate()).
   let pendingFormation: { shapeName: string; colorClusters: ColorCluster[] } | null = null;
+  // Instante del click en "Formar objeto", para medir el tiempo total de
+  // construcción (ver metrics.mark("formacionMs") en animate()).
+  let formationStartedAt: number | null = null;
+  // Cantidad de Nanobots pedida mientras había un repliegue en curso: se
+  // aplica al terminar, no en el medio (ver applyCount).
+  let pendingCount: number | null = null;
 
   function computeMicrobotTargets(): void {
     microbotExo = buildExoskeleton(currentShapeName ?? "", microbotCount, FORMATION_CENTER);
@@ -443,6 +466,7 @@ async function main() {
   // Nanobots quedan pendientes (`pendingFormation`) hasta que el
   // exoesqueleto de Microbots termine su ease-in (ver animate()).
   function setMode(next: Mode, shapeName?: string, colorClusters?: ColorCluster[]) {
+    formationStartedAt = next === "forming" && shapeName ? performance.now() : null;
     mode = next;
     pendingFormation = null;
     currentFormation = null;
@@ -456,8 +480,14 @@ async function main() {
       currentColorClusters = colorClusters ?? DEFAULT_COLOR_CLUSTERS;
       pendingFormation = { shapeName, colorClusters: currentColorClusters };
       computeMicrobotTargets();
+      // Si veníamos de un repliegue EN CURSO, se retoma el lanzamiento
+      // desde donde quedó en vez de reiniciar en 0: resetear acá hacía que
+      // todo el exoesqueleto saltara de golpe al núcleo (teletransporte
+      // visible) en vez de seguir hacia afuera. El morphing completo entre
+      // dos figuras (interpolar desde las posiciones actuales hacia los
+      // nuevos destinos) es la Fase 7 del brief; esto solo saca el salto.
+      if (microbotPhase !== "retracting") microbotElapsed = 0;
       microbotPhase = "launching";
-      microbotElapsed = 0;
       microbotMesh.setVisible(true);
     } else {
       currentShapeName = null;
@@ -499,10 +529,21 @@ async function main() {
   // — `currentFormation`/`nanobotAnimCount` siguen siendo los del repliegue
   // en curso; se resetean solos al llegar al núcleo (ver animate()).
   function applyCount(count: number) {
+    // Antes se hacía `swarm.init` + `setCount` y RECIÉN DESPUÉS se salía
+    // si había un repliegue en curso: eso dejaba el buffer de Wasm en la
+    // cantidad nueva mientras `nanobotAnimCount`/`currentRoles`/
+    // `currentFormationTargets` seguían en la vieja, y `mesh.count` ya
+    // apuntaba a la nueva (dibujando instancias con matrices viejas si el
+    // conteo subía). Ahora el cambio se DIFIERE entero hasta que el
+    // repliegue termina solo (ver animate()), que es el único momento en
+    // que todos esos buffers se pueden reemplazar de forma consistente.
+    if (nanobotPhase === "retracting") {
+      pendingCount = count;
+      return;
+    }
     state.count = count;
     swarm.init(count);
     swarmMesh.setCount(count);
-    if (nanobotPhase === "retracting") return;
     if (mode === "forming" && currentShapeName && !pendingFormation) {
       const wasSettled = nanobotPhase === "settled";
       startFormation(currentShapeName, currentColorClusters);
@@ -566,12 +607,29 @@ async function main() {
 
   let lastTime = performance.now();
 
-  function animate() {
-    requestAnimationFrame(animate);
+  // El re-agendado va al FINAL y dentro de try/finally. Antes era la
+  // primera sentencia del cuerpo: si algo tiraba, el siguiente cuadro ya
+  // estaba agendado y la excepción se repetía 60 veces por segundo,
+  // inundando la consola y tapando el error original. Ahora un fallo
+  // detiene el loop y se reporta una sola vez.
+  let loopRunning = true;
 
+  function animate() {
+    try {
+      renderFrame();
+    } catch (err) {
+      loopRunning = false;
+      console.error("Error en el loop de animación; se detiene el render:", err);
+    } finally {
+      if (loopRunning) requestAnimationFrame(animate);
+    }
+  }
+
+  function renderFrame() {
     const now = performance.now();
     const dt = Math.min((now - lastTime) / 1000, 0.05);
     lastTime = now;
+    renderer.info.reset();
 
     reactor.update(dt);
     controls.update(); // necesario por el damping de OrbitControls
@@ -620,24 +678,41 @@ async function main() {
       // (capa 1), para que el color real de la foto termine predominando
       // en vez de competir con el verde fijo del rol.
       swarmMesh.setSkeletonGrayscale(layerIndex >= 1);
+      formingRoleVisibility[3] = layerIndex >= 1;
       swarmMesh.updateFromPositions(
         nanobotRenderPositions,
         nanobotAnimCount,
         currentRoles,
         currentRelationSpans,
         currentFormationTargets,
-        [false, false, true, layerIndex >= 1],
+        formingRoleVisibility,
         currentColorWave,
         layerIndex,
       );
       if (nanobotPhase === "forming" && nanobotElapsed >= nanobotTotalDuration) {
         nanobotPhase = "settled";
+        // "Tiempo de construcción" del brief: desde el click en "Formar
+        // objeto" hasta que la última ola de color termina de asentarse
+        // (incluye el lanzamiento del exoesqueleto de Microbots).
+        if (formationStartedAt !== null) {
+          metrics.mark("formacionMs", performance.now() - formationStartedAt);
+          formationStartedAt = null;
+        }
       } else if (nanobotPhase === "retracting" && nanobotElapsed <= 0) {
         nanobotPhase = "idle";
         currentFormation = null;
-        applyIdleTargets();
-        applyParams();
         swarmMesh.setVisible(false);
+        // Un cambio de cantidad pedido durante el repliegue se aplica
+        // recién acá, con todos los buffers ya libres (ver applyCount).
+        // applyCount() rehace los targets de reposo por su cuenta.
+        if (pendingCount !== null) {
+          const next = pendingCount;
+          pendingCount = null;
+          applyCount(next);
+        } else {
+          applyIdleTargets();
+        }
+        applyParams();
       }
     } else if (nanobotPhase === "idle") {
       swarm.step(dt);
@@ -656,6 +731,16 @@ async function main() {
     // dejó el buffer de instancias en su posición final.
 
     composer.render();
+
+    // Se mide el trabajo real del cuadro (JS + envío de dibujado), no el
+    // intervalo entre cuadros: ese intervalo lo fija el vsync y taparía
+    // cualquier mejora mientras sobre presupuesto.
+    metrics.sampleFrame(performance.now() - now);
+    metrics.setAgentCounts(
+      nanobotPhase === "idle" ? swarm.getCount() : nanobotAnimCount,
+      microbotPhase === "hidden" ? 0 : microbotCount,
+    );
+    metrics.setRenderInfo(renderer.info.render.calls, renderer.info.render.triangles);
   }
 
   requestAnimationFrame(animate);
