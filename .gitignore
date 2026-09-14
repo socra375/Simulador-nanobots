@@ -26,3 +26,6 @@ frontend/test-results/
 
 # Editor/OS
 .DS_Store
+
+# Scripts de verificación visual de usar y tirar (ver fases 28-31).
+*.tmp.mjs
