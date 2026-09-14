@@ -354,16 +354,22 @@ test("la cola de tareas refleja el avance real de la formación", async ({ page 
   await setObjectName(page, "cubo");
   await clickCommandButton(page, "Formar objeto");
 
-  // Primero sólo el exoesqueleto: las olas de color todavía no se conocen.
-  await expect.poll(() => readTaskQueuePanel(page), { timeout: 20000 }).toMatch(/^exoesqueleto: (pending|running)$/);
+  // Primero sólo el exoesqueleto, en sus dos grupos (Fase 37: "cubo"
+  // tiene vigas, así que los nodos y las uniones salen por separado). Las
+  // olas de color todavía no se conocen.
+  await expect
+    .poll(() => readTaskQueuePanel(page), { timeout: 20000 })
+    .toMatch(/^exoesqueleto: (pending|running)\nuniones: (pending|running)$/);
 
   // Cumplido el exoesqueleto aparecen el relleno y las olas.
-  await expect.poll(() => readTaskQueuePanel(page), { timeout: 60000 }).toMatch(/exoesqueleto: done[\s\S]*relleno:/);
+  await expect
+    .poll(() => readTaskQueuePanel(page), { timeout: 60000 })
+    .toMatch(/exoesqueleto: done\nuniones: done[\s\S]*relleno:/);
 
   // Y al final TODO queda cumplido, sin ninguna tarea colgada.
   await expect
     .poll(() => readTaskQueuePanel(page), { timeout: 180000 })
-    .toMatch(/^(?:(?:exoesqueleto|relleno|color \d+): done\n?)+$/);
+    .toMatch(/^(?:(?:exoesqueleto|uniones|relleno|color \d+): done\n?)+$/);
 
   await clickCommandButton(page, "Volver al núcleo");
   await expect.poll(() => readTaskQueuePanel(page), { timeout: 60000 }).toMatch(/repliegue:/);

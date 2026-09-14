@@ -24,18 +24,25 @@
 //
 // QUÉ TIPOS DE TAREA EXISTEN Y POR QUÉ SÓLO ESOS:
 //
-// Están los cuatro que tienen un handler real hoy. `REPAIR`, `TRANSFORM`,
+// Están los cinco que tienen un handler real hoy. `REPAIR`, `TRANSFORM`,
 // `DISASSEMBLE` y `APPLY_MATERIAL` NO están declarados: un tipo de tarea
 // sin nada que lo ejecute es una lista de enums que finge un sistema. Los
 // cuatro entran sin reescribir esto cuando lleguen sus consumidores,
 // porque la ventana sobre el reloj compartido y el `cancel` ya son
 // generales.
+//
+// `CONNECT_STRUCTURE` entró en la Fase 37, cuando la salida del
+// exoesqueleto dejó de ser un bulto único: las vigas (Union Bots) salen en
+// su propia ventana, después de los nodos (Microbots), así que ahora hay
+// algo real que ejecuta esa tarea.
 
 import { BOT_TYPE, type BotType } from "./bot-types";
 
 export const TASK_TYPE = {
-  /** Exoesqueleto de Microbots saliendo del núcleo. Reloj: microbot. */
+  /** Nodos del exoesqueleto saliendo del núcleo. Reloj: microbot. */
   CREATE_STRUCTURE: "CREATE_STRUCTURE",
+  /** Vigas que unen esos nodos, en su propia ventana. Reloj: microbot. */
+  CONNECT_STRUCTURE: "CONNECT_STRUCTURE",
   /** Capa de DETALLE de Nanobots (la "carne" sobre el hueso). Reloj: nanobot. */
   FILL_STRUCTURE: "FILL_STRUCTURE",
   /** Una ola de color. Hay una tarea por ola. Reloj: nanobot. */
@@ -70,6 +77,24 @@ export interface Task {
   status: TaskStatus;
 }
 
+export interface StructurePlanInput {
+  /** Duración total de la salida del exoesqueleto, sobre el reloj de Microbots. */
+  exoDuration: number;
+  /**
+   * Segundo en que los nodos ya están puestos. Sale de `groupWindow` en la
+   * cinemática, no se recalcula acá: si el director inventara su propio
+   * reparto, la cola de tareas diría una cosa y la pantalla otra.
+   */
+  nodeEnd: number;
+  /**
+   * Segundo en que empiezan a salir las vigas, o null si esta figura no
+   * tiene (las humanoides usan hueso macizo, sin vigas). Con null el
+   * exoesqueleto es una sola tarea: encolar una tarea de uniones que
+   * ningún agente ejecuta sería justo el enum decorativo que no queremos.
+   */
+  beamStart: number | null;
+}
+
 export interface LayerPlanInput {
   /** Capas de Nanobots: 1 (DETALLE) + una por ola de color. */
   layerCount: number;
@@ -83,10 +108,11 @@ export interface SwarmDirector {
   readonly active: Task | null;
   /**
    * Arranca una formación nueva: descarta la cola anterior y encola el
-   * exoesqueleto. Se llama apenas el usuario pide la figura — en ese
-   * momento todavía no se sabe cuántas olas de color va a tener.
+   * exoesqueleto (nodos y, si esta figura tiene, uniones). Se llama apenas
+   * el usuario pide la figura — en ese momento todavía no se sabe cuántas
+   * olas de color va a tener.
    */
-  planStructure(exoDuration: number): void;
+  planStructure(plan: StructurePlanInput): void;
   /**
    * Encola el relleno y una tarea por ola de color. Se llama cuando la
    * forma ya se resolvió y recién ahí se conoce `layerCount`. Reemplaza
@@ -126,12 +152,13 @@ export interface SwarmDirector {
  * un tipo de tarea sea una línea, y para que la relación tarea->tipo se
  * pueda leer de un vistazo en vez de reconstruirla leyendo handlers.
  *
- * Sólo están las cuatro tareas que existen. CONNECT_STRUCTURE, REPAIR,
- * TRANSFORM y APPLY_MATERIAL como tareas propias entran cuando entren sus
- * handlers; el tipo de bot ya está declarado esperándolas.
+ * Sólo están las cinco tareas que existen. REPAIR, TRANSFORM y
+ * APPLY_MATERIAL como tareas propias entran cuando entren sus handlers; el
+ * tipo de bot ya está declarado esperándolas.
  */
 export const TASK_EXECUTOR: Record<TaskType, BotType> = {
   [TASK_TYPE.CREATE_STRUCTURE]: BOT_TYPE.MICROBOT,
+  [TASK_TYPE.CONNECT_STRUCTURE]: BOT_TYPE.UNION,
   [TASK_TYPE.FILL_STRUCTURE]: BOT_TYPE.NANOBOT,
   [TASK_TYPE.APPLY_COLOR]: BOT_TYPE.MATERIAL,
   // El repliegue lo hace el enjambre entero, no un tipo especializado.
@@ -147,6 +174,7 @@ export function taskExecutor(type: TaskType): BotType {
 
 const TASK_LABELS: Record<TaskType, string> = {
   CREATE_STRUCTURE: "exoesqueleto",
+  CONNECT_STRUCTURE: "uniones",
   FILL_STRUCTURE: "relleno",
   APPLY_COLOR: "color",
   RETURN_TO_CORE: "repliegue",
@@ -173,9 +201,19 @@ export function createSwarmDirector(): SwarmDirector {
       return null;
     },
 
-    planStructure(exoDuration): void {
+    planStructure(plan): void {
       retracting = false;
-      tasks = [make(TASK_TYPE.CREATE_STRUCTURE, "microbot", 0, exoDuration)];
+      if (plan.beamStart === null) {
+        tasks = [make(TASK_TYPE.CREATE_STRUCTURE, "microbot", 0, plan.exoDuration)];
+        return;
+      }
+      tasks = [
+        make(TASK_TYPE.CREATE_STRUCTURE, "microbot", 0, plan.nodeEnd),
+        // Llega hasta el final del lanzamiento, no hasta el final del vuelo
+        // de las vigas: la cola en la que ya está todo puesto es parte de
+        // esta tarea, y es lo que separa el exoesqueleto del relleno.
+        make(TASK_TYPE.CONNECT_STRUCTURE, "microbot", plan.beamStart, plan.exoDuration),
+      ];
     },
 
     planLayers(plan): void {
@@ -242,10 +280,16 @@ export function createSwarmDirector(): SwarmDirector {
     },
 
     isStructureDone(): boolean {
+      // TODAS las tareas del exoesqueleto, no sólo la primera: con las
+      // uniones en su propia ventana, mirar sólo CREATE_STRUCTURE daría el
+      // relleno por habilitado a mitad de la salida de las vigas.
+      let found = false;
       for (const t of tasks) {
-        if (t.type === TASK_TYPE.CREATE_STRUCTURE) return t.status === TASK_STATUS.DONE;
+        if (t.type !== TASK_TYPE.CREATE_STRUCTURE && t.type !== TASK_TYPE.CONNECT_STRUCTURE) continue;
+        found = true;
+        if (t.status !== TASK_STATUS.DONE) return false;
       }
-      return false;
+      return found;
     },
 
     describe(): string[] {
