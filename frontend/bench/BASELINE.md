@@ -125,3 +125,36 @@ peso muerto puro.
 Lo que queda por atacar del heap es la reserva fija de las 5 mallas
 restantes: con 3.000 agentes se sigue reservando capacidad para 60.000.
 Eso es la capacidad adaptativa, pendiente.
+
+---
+
+# Después de la Fase 27f (capacidad adaptativa)
+
+**Heap: 54,2 MB → 33,5 MB.** Contra la línea base original (61,0 MB), es
+un **45% menos**.
+
+Cada `InstancedMesh` reservaba siempre `maxCount` (60.000) sin importar
+cuántos agentes hubiera. Ahora arrancan en 4.096 (cubre el default de
+3.000 sin recrear nada) y crecen duplicando, solo cuando el usuario sube
+el conteo por encima de lo reservado.
+
+Medido subiendo el conteo a 20.000 con una figura ya formada — o sea
+forzando la recreación de mallas en caliente: sin errores, y las olas de
+color se mantienen (los materiales se crean una vez y sobreviven a la
+recreación; recrearlos habría perdido el color que `setColorClusters`
+les puso en caliente).
+
+## Resumen del programa hasta acá
+
+| momento | heap | qué lo movió |
+|---|---:|---|
+| línea base (Fase 26) | 61,0 MB | — |
+| Fase 26 (6 bugs + medición) | 61,0 MB | nada: los arreglos eran de corrección |
+| Fase 27e (roles muertos) | 54,2 MB | borrar código que no se ejecutaba |
+| Fase 27f (capacidad adaptativa) | 33,5 MB | dejar de reservar para agentes inexistentes |
+
+La lectura honesta: **ninguna de las optimizaciones "de rendimiento" que
+parecían obvias sirvió de nada; las dos mejoras reales salieron de sacar
+cosas.** Los tiempos de cuadro siguen sin moverse — el costo de reposo
+sigue siendo la física boid en Wasm, que es lo único que valdría la pena
+optimizar si alguna vez hace falta.

@@ -28,6 +28,10 @@ import { DEFAULT_DOMINANT_COLOR, MAX_COLOR_CLUSTERS, type ColorCluster } from ".
 // (3000, ver DEFAULT_STATE en main.ts), no agrandando cada esfera.
 const SCALE_BASELINE_COUNT = 80;
 
+// Capacidad inicial de cada InstancedMesh: cubre el conteo por defecto
+// (3.000, ver DEFAULT_STATE en main.ts) sin tener que recrear nada.
+const INITIAL_CAPACITY = 4096;
+
 // Una vez que un nanobot está lo bastante cerca de su punto final (el
 // residual de físicas — cohesión/separación entre vecinos, aunque atenuado
 // al formar, ver FORMING_FLOCK_SCALE en main.ts — nunca llega a ser
@@ -70,15 +74,15 @@ function buildRoleMaterial(role: number): THREE.Material {
     });
   }
   // Color placeholder hasta el primer setColorClusters() real (ver
-    // startFormation en main.ts, que lo llama ANTES de que este rol se
-    // revele) — nunca se ve así en pantalla en la práctica. Cada ola tiene
-    // su PROPIA instancia de este material (ver colorWaveMeshes abajo), no
-    // una compartida.
-    return new THREE.MeshStandardMaterial({
-      color: DEFAULT_DOMINANT_COLOR,
-      emissive: DEFAULT_DOMINANT_COLOR,
-      emissiveIntensity: 0.85,
-      roughness: 0.35,
+  // startFormation en main.ts, que lo llama ANTES de que este rol se
+  // revele) — nunca se ve así en pantalla en la práctica. Cada ola tiene
+  // su PROPIA instancia de este material (ver waveMaterials abajo), no una
+  // compartida.
+  return new THREE.MeshStandardMaterial({
+    color: DEFAULT_DOMINANT_COLOR,
+    emissive: DEFAULT_DOMINANT_COLOR,
+    emissiveIntensity: 0.85,
+    roughness: 0.35,
     metalness: 0.1,
   });
 }
@@ -108,9 +112,10 @@ export interface NanobotSwarmMesh {
 }
 
 // Un InstancedMesh por rol (detalle/color) más uno por ola de color extra,
-// para soportar miles de nanobots con muy pocos draw calls. Cada uno
-// reserva capacidad para `maxCount` completo: como la proporción entre
-// roles no es pareja (25/75), sería frágil repartirla de antemano.
+// para soportar miles de nanobots con muy pocos draw calls. Todos comparten
+// la MISMA capacidad (ver ensureCapacity): como la proporción entre roles
+// no es pareja (25/75) y varía por foto, repartirla de antemano sería
+// frágil. `maxCount` es solo el techo duro, ya no lo que se reserva.
 export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   const group = new THREE.Group();
   // Escritura directa al buffer de instanceMatrix (Fase 18): con hasta
@@ -121,60 +126,83 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   // esférica, así que no hace falta rotación por instancia (una esfera se
   // ve igual rotada).
 
-  const instancedMeshes = ROLE_GEOMETRIES.map((geometry, role) => {
-    const mesh = new THREE.InstancedMesh(geometry, buildRoleMaterial(role), maxCount);
+  // Los materiales se crean UNA sola vez y SOBREVIVEN a las recreaciones
+  // de mallas de ensureCapacity(): setColorClusters()/setSkeletonGrayscale()
+  // mutan su color en caliente, así que recrearlos perdería el estado
+  // visual actual (la figura cambiaría de color sola al subir el conteo).
+  const roleMaterials = ROLE_GEOMETRIES.map((_, role) => buildRoleMaterial(role));
+  const waveMaterials: THREE.Material[] = [roleMaterials[NANOBOT_ROLE.COLOR]];
+  for (let w = 1; w < MAX_COLOR_CLUSTERS; w++) waveMaterials.push(buildRoleMaterial(NANOBOT_ROLE.COLOR));
+
+  let capacity = 0;
+  let instancedMeshes: THREE.InstancedMesh[] = [];
+  // La ola 0 REUTILIZA el mesh del rol COLOR (misma referencia); las olas
+  // 1..N-1 son meshes propios con su propio material recoloreable.
+  let colorWaveMeshes: THREE.InstancedMesh[] = [];
+  let meshArrays: Float32Array[] = [];
+  let waveArrays: Float32Array[] = [];
+  // Estado de histéresis por agente (1 = ya "encajado" en su target fijo).
+  // Se reinicia en setCount porque los índices pueden pasar a representar
+  // otro agente distinto tras un cambio de cantidad.
+  let snapped = new Uint8Array(0);
+
+  function makeMesh(geometry: THREE.BufferGeometry, material: THREE.Material, cap: number): THREE.InstancedMesh {
+    const mesh = new THREE.InstancedMesh(geometry, material, cap);
     mesh.count = 0;
-    // Fase 21: los Nanobots dejan de proyectar sombra (perf — el pase de
-    // sombras de miles de instancias con mapa 2048px+PCF es un costo real
-    // de GPU independiente del fix de buffer de Fase 20; el reactor sigue
-    // proyectando/recibiendo la suya). Microbots ya no proyectaban sombra
-    // (nunca se activó ahí), así que este cambio alcanza para bajar el
-    // costo del pase de sombras de todo el enjambre.
+    // Fase 21: los Nanobots no proyectan sombra (el pase de sombras de
+    // miles de instancias con mapa 2048px+PCF es un costo real de GPU; el
+    // reactor sigue proyectando la suya).
     mesh.castShadow = false;
     mesh.receiveShadow = true;
     group.add(mesh);
     return mesh;
-  });
-
-  // Un InstancedMesh dedicado por ola de color (ver arriba) — la ola 0
-  // reutiliza el mesh de rol COLOR ya creado arriba; las olas 1..N-1 son
-  // meshes adicionales con la misma geometría, cada uno con su propio
-  // material (recoloreable en caliente vía setColorClusters).
-  const colorWaveMeshes: THREE.InstancedMesh[] = [instancedMeshes[NANOBOT_ROLE.COLOR]];
-  for (let w = 1; w < MAX_COLOR_CLUSTERS; w++) {
-    const mesh = new THREE.InstancedMesh(
-      ROLE_GEOMETRIES[NANOBOT_ROLE.COLOR],
-      buildRoleMaterial(NANOBOT_ROLE.COLOR),
-      maxCount,
-    );
-    mesh.count = 0;
-    // Fase 21: los Nanobots dejan de proyectar sombra (perf — el pase de
-    // sombras de miles de instancias con mapa 2048px+PCF es un costo real
-    // de GPU independiente del fix de buffer de Fase 20; el reactor sigue
-    // proyectando/recibiendo la suya). Microbots ya no proyectaban sombra
-    // (nunca se activó ahí), así que este cambio alcanza para bajar el
-    // costo del pase de sombras de todo el enjambre.
-    mesh.castShadow = false;
-    mesh.receiveShadow = true;
-    group.add(mesh);
-    colorWaveMeshes.push(mesh);
   }
 
-  // Estado de histéresis por agente (1 = ya "encajado" en su target fijo).
-  // Se reinicia en setCount porque los índices pueden pasar a representar
-  // otro agente distinto tras un cambio de cantidad.
-  const snapped = new Uint8Array(maxCount);
+  // Antes cada InstancedMesh reservaba SIEMPRE `maxCount` (60.000) sin
+  // importar cuántos agentes hubiera de verdad: con el default de 3.000
+  // eran ~19 MB de instanceMatrix reservados para instancias inexistentes
+  // (medido en bench/BASELINE.md: el heap no dependía del conteo). Ahora
+  // se arranca chico y se crece duplicando, solo cuando el usuario sube el
+  // conteo por encima de lo reservado. Crecer implica recrear las mallas
+  // (el tamaño de instanceMatrix es fijo al construirlas), pero pasa como
+  // mucho un puñado de veces por sesión, nunca por cuadro.
+  function ensureCapacity(needed: number): void {
+    // `capacity > 0` en la guarda: la PRIMERA llamada siempre construye,
+    // aunque pidan 0 agentes. Si no, arrancar con setCount(0) dejaría los
+    // arrays de mallas vacíos y updateFromPositions leería undefined.
+    if (capacity > 0 && needed <= capacity) return;
+    let next = Math.max(capacity, INITIAL_CAPACITY);
+    while (next < needed) next *= 2;
+    capacity = Math.min(next, maxCount);
 
-  // Buffers reusados cuadro a cuadro por updateFromPositions (se llama
-  // TODOS los frames, incluso en reposo) — evita asignar arrays nuevos por
-  // frame (antes: `new Array(...)`/`.map(...)` en cada llamada), mismo
-  // patrón que los scratch de Vector3/Matrix4 de microbot-mesh.ts.
-  const localCounters = new Array<number>(instancedMeshes.length).fill(0);
-  const waveLocalCounters = new Array<number>(colorWaveMeshes.length).fill(0);
-  const meshArrays = instancedMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
-  const waveArrays = colorWaveMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
+    for (const mesh of instancedMeshes) {
+      group.remove(mesh);
+      mesh.dispose(); // libera el buffer de instanceMatrix; geometría y material son compartidos
+    }
+    // Arranca en 1: la ola 0 es el mismo objeto que instancedMeshes[COLOR],
+    // ya liberado arriba.
+    for (let w = 1; w < colorWaveMeshes.length; w++) {
+      group.remove(colorWaveMeshes[w]);
+      colorWaveMeshes[w].dispose();
+    }
+
+    instancedMeshes = ROLE_GEOMETRIES.map((geometry, role) => makeMesh(geometry, roleMaterials[role], capacity));
+    colorWaveMeshes = [instancedMeshes[NANOBOT_ROLE.COLOR]];
+    for (let w = 1; w < MAX_COLOR_CLUSTERS; w++) {
+      colorWaveMeshes.push(makeMesh(ROLE_GEOMETRIES[NANOBOT_ROLE.COLOR], waveMaterials[w], capacity));
+    }
+    meshArrays = instancedMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
+    waveArrays = colorWaveMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
+    snapped = new Uint8Array(capacity);
+  }
+
+  // Buffers reusados cuadro a cuadro por updateFromPositions — su largo
+  // depende de la CANTIDAD DE MALLAS (fija), no de la capacidad.
+  const localCounters = new Array<number>(ROLE_GEOMETRIES.length).fill(0);
+  const waveLocalCounters = new Array<number>(MAX_COLOR_CLUSTERS).fill(0);
 
   function setCount(count: number) {
+    ensureCapacity(count);
     // Reparto aproximado solo para el estado inicial (antes de la primera
     // updateFromPositions con roles reales) — evita instancias fantasma.
     const perRole = Math.ceil(count / instancedMeshes.length);
@@ -338,7 +366,7 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     }
   }
 
-  setCount(maxCount);
+  setCount(0);
 
   return { group, setCount, updateFromPositions, setVisible, setColorClusters, setSkeletonGrayscale };
 }
