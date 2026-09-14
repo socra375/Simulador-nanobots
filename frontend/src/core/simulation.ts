@@ -19,6 +19,7 @@ import {
   type Vec3,
 } from "./kinematics";
 import { DEFAULT_COLOR_CLUSTERS, type ColorCluster } from "../image-color";
+import { AGENT_STATE, createAgentStore, type AgentStore } from "../swarm/agent-store";
 
 // Simulación del enjambre (Fase 27c).
 //
@@ -129,6 +130,11 @@ export interface SimState {
   readonly microbotCount: number;
   readonly currentShapeName: string | null;
   /**
+   * Cuántos agentes hay en cada estado (índice = AGENT_STATE), para el
+   * panel. Se rellena un array reusado, sin asignar por consulta.
+   */
+  readonly stateCounts: Uint32Array;
+  /**
    * Derivado, NO almacenado. Antes existía un `mode` aparte que se seteaba
    * en paralelo con `currentShapeName` y podía quedar desfasado: por
    * ejemplo `returnToCore()` ponía `mode = "idle"` mientras las otras dos
@@ -140,6 +146,8 @@ export interface SimState {
 
 export interface Simulation {
   readonly state: SimState;
+  /** Estado por agente (SoA). Lo lee el panel y, más adelante, la reparación. */
+  readonly agents: AgentStore;
   /** Avanza un cuadro. Es el cuerpo del viejo animate(), sin render. */
   step(dt: number): void;
   formShape(shapeName: string, colorClusters: ColorCluster[]): void;
@@ -176,6 +184,11 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     wave0Landing: [...FORMATION_CENTER],
   };
   const nanobotRenderPositions = new Float32Array(deps.maxNanobots * 3);
+  // Estado por agente en Structure-of-Arrays. Se escribe dentro del mismo
+  // recorrido que calcula las posiciones (ver writeNanobotFrame), así que
+  // no cuesta un segundo pase.
+  const agents = createAgentStore();
+  const stateCountsScratch = new Uint32Array(8);
 
   let microbotPhase: MicrobotPhase = "hidden";
   let microbotCount = Math.min(settings.microbotCount, deps.maxMicrobots);
@@ -219,7 +232,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     return layerIndexAt(elapsed, nanobotPlan.layerCount, NANOBOT_LAYER_DURATION);
   }
 
-  function renderNanobotsAt(elapsed: number): void {
+  function renderNanobotsAt(elapsed: number, retracting = false): void {
     if (!currentFormation) return;
     writeNanobotFrame(
       nanobotRenderPositions,
@@ -229,6 +242,9 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       reactorCenter,
       swirlAxes,
       elapsed,
+      DEFAULT_NANOBOT_TIMINGS,
+      agents.state,
+      retracting ? AGENT_STATE.RETURNING : AGENT_STATE.TRAVELING,
     );
   }
 
@@ -246,6 +262,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     swarm.setAgentTargets(idleCluster(settings.count, reactorCenter as [number, number, number]));
     currentRoles = new Uint8Array(settings.count).fill(NANOBOT_ROLE.DETAIL);
     currentFormationTargets = new Float32Array(settings.count * 3);
+    agents.reset(settings.count, currentRoles, currentFormationTargets);
   }
 
   function startFormation(name: string, colorClusters: ColorCluster[]): void {
@@ -276,6 +293,17 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       NANOBOT_LAYER_DURATION,
       FORMATION_CENTER,
     );
+    // El store apunta a los arrays de ESTA formación (no los copia, igual
+    // que currentRoles/currentFormationTargets arriba).
+    agents.adoptFormation({
+      count: settings.count,
+      role: formation.roles,
+      colorWave: formation.colorWave,
+      layer: nanobotPlan.layerOf,
+      delayFraction: nanobotPlan.delayFraction,
+      target: formation.points,
+    });
+
     // Para casi todas las formas es un eco de `colorClusters` (derivados de
     // la foto); para "cabeza" son los tonos fijos por parte anatómica.
     // shapes decide cuál corresponde, acá sólo se lee el resultado.
@@ -409,7 +437,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     if (nanobotPhase === "forming" || nanobotPhase === "retracting") {
       const direction = nanobotPhase === "forming" ? 1 : -1;
       nanobotElapsed = Math.min(Math.max(nanobotElapsed + direction * dt, 0), nanobotPlan.totalDuration);
-      renderNanobotsAt(nanobotElapsed);
+      renderNanobotsAt(nanobotElapsed, nanobotPhase === "retracting");
       const layerIndex = nanobotLayerIndexAt(nanobotElapsed);
       // Detalle pasa a gris apenas arranca la primera ola de Color, para
       // que el color real de la foto termine predominando.
@@ -469,6 +497,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     get nanobotAnimCount() { return nanobotAnimCount; },
     get microbotCount() { return microbotCount; },
     get currentShapeName() { return currentShapeName; },
+    get stateCounts() { return agents.countByState(stateCountsScratch); },
     get forming() { return currentShapeName !== null; },
   };
 
@@ -477,6 +506,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
 
   return {
     state,
+    agents,
     step,
     formShape,
     returnToCore,

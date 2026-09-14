@@ -13,6 +13,8 @@
 // contra un fixture grabado de la app en ejecución antes de mover nada
 // (ver core/__fixtures__/nanobot-frames.json y kinematics.test.ts).
 
+import { AGENT_STATE } from "../swarm/agent-store";
+
 export type Vec3 = readonly [number, number, number];
 
 /** Fase por agente, para que no giren todos sincronizados. */
@@ -192,6 +194,17 @@ export function planLayers(
 // el buffer es seguro y evita asignar por agente y por cuadro.
 const swirlScratch: [number, number, number] = [0, 0, 0];
 
+// Umbral del tramo final del vuelo: a partir de acá el agente se está
+// acomodando en su destino en vez de viajando hacia él.
+const ASSEMBLING_FROM = 0.85;
+
+function progressState(eased: number, movingState: number): number {
+  if (eased >= 1) return AGENT_STATE.ATTACHED;
+  if (eased <= 0) return AGENT_STATE.CORE;
+  if (eased >= ASSEMBLING_FROM && movingState === AGENT_STATE.TRAVELING) return AGENT_STATE.ASSEMBLING;
+  return movingState;
+}
+
 /**
  * Escribe en `out` la posición de cada Nanobot en el progreso `elapsed`.
  *
@@ -212,6 +225,15 @@ export function writeNanobotFrame(
   axes: SwirlAxes,
   elapsed: number,
   timings: NanobotTimings = DEFAULT_NANOBOT_TIMINGS,
+  /**
+   * Opcional: estado por agente (ver AGENT_STATE). Se escribe DENTRO del
+   * mismo recorrido que ya calcula las posiciones — un byte por agente,
+   * sin un segundo pase. Es la única dependencia de dominio de este
+   * módulo, y es un enum de números sin comportamiento.
+   */
+  outState?: Uint8Array,
+  /** Qué estado usar para "en movimiento": TRAVELING al formar, RETURNING al replegar. */
+  movingState: number = AGENT_STATE.TRAVELING,
 ): void {
   const { layerOf, delayFraction, layerCount, wave0Landing } = plan;
   const layerIndex = layerIndexAt(elapsed, layerCount, timings.layerDuration);
@@ -224,16 +246,20 @@ export function writeNanobotFrame(
       out[i * 3 + 0] = points[i * 3 + 0];
       out[i * 3 + 1] = points[i * 3 + 1];
       out[i * 3 + 2] = points[i * 3 + 2];
+      if (outState) outState[i] = AGENT_STATE.ATTACHED;
     } else if (layer > layerIndex) {
       out[i * 3 + 0] = core[0];
       out[i * 3 + 1] = core[1];
       out[i * 3 + 2] = core[2];
+      if (outState) outState[i] = AGENT_STATE.CORE;
     } else if (isFirstColorWave && layerElapsed < timings.packetDuration) {
       const eased = easeInOutCubic(Math.min(Math.max(layerElapsed / timings.packetDuration, 0), 1));
       swirlOffset(eased, i, timings.packetSwirlTurns, timings.packetSwirlMaxRadius, axes, swirlScratch);
       out[i * 3 + 0] = core[0] + (wave0Landing[0] - core[0]) * eased + swirlScratch[0];
       out[i * 3 + 1] = core[1] + (wave0Landing[1] - core[1]) * eased + swirlScratch[1];
       out[i * 3 + 2] = core[2] + (wave0Landing[2] - core[2]) * eased + swirlScratch[2];
+      // La "bola" viaja entera: todos sus agentes están en movimiento.
+      if (outState) outState[i] = movingState;
     } else if (isFirstColorWave) {
       const burstElapsed = layerElapsed - timings.packetDuration;
       const localT = (burstElapsed - delayFraction[i] * timings.burstStaggerSpan) / timings.burstTravelDuration;
@@ -242,6 +268,7 @@ export function writeNanobotFrame(
       out[i * 3 + 0] = wave0Landing[0] + (points[i * 3 + 0] - wave0Landing[0]) * eased + swirlScratch[0];
       out[i * 3 + 1] = wave0Landing[1] + (points[i * 3 + 1] - wave0Landing[1]) * eased + swirlScratch[1];
       out[i * 3 + 2] = wave0Landing[2] + (points[i * 3 + 2] - wave0Landing[2]) * eased + swirlScratch[2];
+      if (outState) outState[i] = progressState(eased, movingState);
     } else {
       const localT = (layerElapsed - delayFraction[i] * timings.layerStaggerSpan) / timings.travelDuration;
       const eased = easeInOutCubic(Math.min(Math.max(localT, 0), 1));
@@ -249,6 +276,7 @@ export function writeNanobotFrame(
       out[i * 3 + 0] = core[0] + (points[i * 3 + 0] - core[0]) * eased + swirlScratch[0];
       out[i * 3 + 1] = core[1] + (points[i * 3 + 1] - core[1]) * eased + swirlScratch[1];
       out[i * 3 + 2] = core[2] + (points[i * 3 + 2] - core[2]) * eased + swirlScratch[2];
+      if (outState) outState[i] = progressState(eased, movingState);
     }
   }
 }

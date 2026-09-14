@@ -4,6 +4,7 @@ import type { SwarmConfig } from "./config-client";
 import { resolveShapeName, listSupportedNames, registerCustomScan } from "./shapes";
 import { extractColorClustersFromFile, type ColorCluster } from "./image-color";
 import { buildVisualHullPoints, type ScanPhotos } from "./visual-hull";
+import { AGENT_STATE_NAMES } from "./swarm/agent-store";
 
 export interface UiState extends SwarmParams {
   count: number;
@@ -89,6 +90,51 @@ export function createControlPanel(state: UiState, callbacks: UiCallbacks): GUI 
   addScanFolder(gui, callbacks);
 
   return gui;
+}
+
+// Cada cuánto se repinta el desglose de estados. A 60fps repintar el DOM
+// en cada cuadro es puro desperdicio: el ojo no distingue más de unas
+// pocas actualizaciones por segundo, y el conteo en sí recorre todos los
+// agentes (ver AgentStore.countByState), así que tampoco conviene pedirlo
+// 60 veces por segundo con 60.000 agentes.
+const STATE_PANEL_INTERVAL_MS = 200;
+
+/**
+ * Desglose en vivo de en qué estado está cada agente (Fase 28). Recibe un
+ * lector en vez del array ya contado a propósito: así el recorrido por
+ * agente sólo ocurre cuando de verdad se va a repintar.
+ */
+export function addAgentStatePanel(gui: GUI): (readCounts: () => Uint32Array) => void {
+  const folder = gui.addFolder("Estado de los agentes");
+  const list = document.createElement("div");
+  list.style.padding = "6px 10px";
+  list.style.fontSize = "11px";
+  list.style.lineHeight = "1.6";
+  list.style.whiteSpace = "pre";
+  list.style.opacity = "0.85";
+  list.textContent = "sin agentes";
+  folder.domElement.appendChild(list);
+
+  let lastPaint = -Infinity;
+  let lastText = "";
+
+  return (readCounts) => {
+    const now = performance.now();
+    if (now - lastPaint < STATE_PANEL_INTERVAL_MS) return;
+    lastPaint = now;
+
+    const counts = readCounts();
+    let text = "";
+    for (let i = 0; i < AGENT_STATE_NAMES.length; i++) {
+      if (counts[i] === 0) continue;
+      text += `${AGENT_STATE_NAMES[i]}: ${counts[i]}\n`;
+    }
+    const next = text === "" ? "sin agentes" : text.trimEnd();
+    // Escribir el mismo texto igual ensucia el layout del navegador.
+    if (next === lastText) return;
+    lastText = next;
+    list.textContent = next;
+  };
 }
 
 // Carpeta "Comandos": el usuario escribe el nombre de un objeto, adjunta
