@@ -28,10 +28,12 @@ interface Recorded {
     revealedColorWaves: number;
   } | null;
   formationSettledMs: number[];
+  /** Copia de las posiciones del último cuadro (el buffer real se reusa). */
+  lastPositions: Float32Array | null;
 }
 
 function makeSim(settings?: Partial<SimSettings>) {
-  const rec: Recorded = { calls: [], lastUpdate: null, formationSettledMs: [] };
+  const rec: Recorded = { calls: [], lastUpdate: null, formationSettledMs: [], lastPositions: null };
   let swarmCount = 0;
   const positions = new Float32Array(60000 * 3);
 
@@ -46,9 +48,10 @@ function makeSim(settings?: Partial<SimSettings>) {
 
   const swarmMesh: NanobotMeshApi = {
     setCount(count) { rec.calls.push(`mesh.setCount(${count})`); },
-    updateFromPositions(_p, count, roles, _t, visibleRoles, _w, revealedColorWaves) {
+    updateFromPositions(p, count, roles, _t, visibleRoles, _w, revealedColorWaves) {
       rec.calls.push(`mesh.update(${count},${revealedColorWaves})`);
       rec.lastUpdate = { count, roles, visibleRoles, revealedColorWaves };
+      rec.lastPositions = p.slice(0, count * 3);
     },
     setVisible(v) { rec.calls.push(`mesh.setVisible(${v})`); },
     setColorClusters() { rec.calls.push("mesh.setColorClusters"); },
@@ -557,5 +560,90 @@ describe("cobertura de la figura (VoxelGrid)", () => {
     sim.formShape("no-existe-123", [{ color: 0xff0000, weight: 1 }]);
     expect(() => advance(sim, FULL_LAUNCH + 5)).not.toThrow();
     expect(sim.state.coverage).toBeNull();
+  });
+});
+
+// Fase 30b: morph directo. El usuario lo eligió como comportamiento por
+// defecto: al pedir otra figura, los agentes viajan desde donde están en
+// vez de volver al reactor y rearrancar.
+describe("morph directo", () => {
+  const CORE: readonly [number, number, number] = [-8, 8, -8];
+
+  function enElNucleo(pos: Float32Array, count: number): number {
+    let n = 0;
+    for (let i = 0; i < count; i++) {
+      if (pos[i * 3] === CORE[0] && pos[i * 3 + 1] === CORE[1] && pos[i * 3 + 2] === CORE[2]) n++;
+    }
+    return n;
+  }
+
+  it("desde el REPOSO los agentes salen del núcleo (comportamiento de siempre)", () => {
+    const { sim, rec, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.1);
+    // Las capas que todavía no fueron reveladas esperan dentro del núcleo.
+    expect(enElNucleo(rec.lastPositions!, settings.count)).toBeGreaterThan(0);
+  });
+
+  it("pedir otra figura SIN volver al núcleo no manda a nadie de vuelta al reactor", () => {
+    const { sim, rec, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    expect(sim.state.nanobotPhase).toBe("settled");
+
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.1);
+    // Antes del morph, las capas no reveladas se teletransportaban al
+    // reactor y la figura anterior desaparecía de golpe.
+    expect(enElNucleo(rec.lastPositions!, settings.count)).toBe(0);
+  });
+
+  it("los agentes arrancan CERCA de donde estaban, no en cualquier lado", () => {
+    const { sim, rec, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    const antes = rec.lastPositions!.slice();
+
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.05);
+    const despues = rec.lastPositions!;
+
+    // Cada posición nueva tiene que coincidir con ALGUNA vieja (recién
+    // arrancado el morph casi nadie se movió todavía). Se compara contra
+    // el conjunto, no índice a índice: la correspondencia por vóxel
+    // reasigna qué agente va a qué destino.
+    const viejas = new Set<string>();
+    for (let i = 0; i < settings.count; i++) {
+      viejas.add(`${antes[i * 3].toFixed(2)},${antes[i * 3 + 1].toFixed(2)},${antes[i * 3 + 2].toFixed(2)}`);
+    }
+    let coinciden = 0;
+    for (let i = 0; i < settings.count; i++) {
+      const k = `${despues[i * 3].toFixed(2)},${despues[i * 3 + 1].toFixed(2)},${despues[i * 3 + 2].toFixed(2)}`;
+      if (viejas.has(k)) coinciden++;
+    }
+    expect(coinciden / settings.count).toBeGreaterThan(0.8);
+  });
+
+  it("tras volver al núcleo, la figura siguiente vuelve a salir del reactor", () => {
+    const { sim, rec, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    sim.returnToCore();
+    advance(sim, 20);
+    expect(sim.state.nanobotPhase).toBe("idle");
+
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.1);
+    expect(enElNucleo(rec.lastPositions!, settings.count)).toBeGreaterThan(0);
+  });
+
+  it("el morph termina igual: todos asentados en la figura nueva", () => {
+    const { sim, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    expect(sim.state.nanobotPhase).toBe("settled");
+    expect(sim.state.stateCounts[AGENT_STATE.ATTACHED]).toBe(settings.count);
   });
 });

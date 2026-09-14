@@ -22,6 +22,7 @@ import { AGENT_STATE, createAgentStore, type AgentStore } from "../swarm/agent-s
 import { createSwarmDirector, type SwarmDirector } from "../swarm/director";
 import { getShape, shapeRevision } from "../shapes/registry";
 import { validateCoverage, voxelizePoints, type VoxelGrid } from "../voxel/grid";
+import { buildMorphSource } from "../voxel/correspondence";
 
 // Simulación del enjambre (Fase 27c).
 //
@@ -238,6 +239,9 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   // línea temporal.
   const director = createSwarmDirector();
   let coverage: CoverageInfo | null = null;
+  // Morph directo (Fase 30b): de dónde arranca cada agente. null = del
+  // núcleo, que es una formación normal desde el reposo.
+  let morphFrom: Float32Array | null = null;
 
   let microbotPhase: MicrobotPhase = "hidden";
   let microbotCount = Math.min(settings.microbotCount, deps.maxMicrobots);
@@ -248,7 +252,13 @@ export function createSimulation(deps: SimulationDeps): Simulation {
 
   // Formación que espera a que el exoesqueleto de Microbots termine de
   // asentarse antes de arrancar (ver step()).
-  let pendingFormation: { shapeName: string; colorClusters: ColorCluster[] } | null = null;
+  let pendingFormation: {
+    shapeName: string;
+    colorClusters: ColorCluster[];
+    /** Posiciones congeladas de la figura anterior, para el morph. */
+    morphPrevious: Float32Array | null;
+    morphPreviousCount: number;
+  } | null = null;
   let formationStartedAt: number | null = null;
   // Cantidad pedida durante un repliegue: se aplica al terminar, no en el
   // medio (ver setNanobotCount).
@@ -290,6 +300,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       DEFAULT_NANOBOT_TIMINGS,
       agents.state,
       retracting ? AGENT_STATE.RETURNING : AGENT_STATE.TRAVELING,
+      morphFrom,
     );
   }
 
@@ -340,7 +351,12 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     return { fraction: report.coverage, covered: report.covered, total: report.target };
   }
 
-  function startFormation(name: string, colorClusters: ColorCluster[]): void {
+  function startFormation(
+    name: string,
+    colorClusters: ColorCluster[],
+    morphPrevious: Float32Array | null = null,
+    morphPreviousCount = 0,
+  ): void {
     const formation = formShapeWithRoles(
       name,
       settings.count,
@@ -379,6 +395,19 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       target: formation.points,
     });
 
+    // Cada destino se empareja con el agente viejo más cercano (por
+    // celda de vóxel) para que nadie cruce la figura de punta a punta.
+    morphFrom =
+      morphPrevious && morphPreviousCount > 0
+        ? buildMorphSource(
+            formation.points,
+            settings.count,
+            morphPrevious,
+            morphPreviousCount,
+            reactorCenter as [number, number, number],
+          ).from
+        : null;
+
     coverage = measureCoverage(name, formation.points, settings.count);
 
     // Recién acá se sabe cuántas olas de color tiene la figura, así que
@@ -410,11 +439,23 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     microbotMesh.setVisible(false);
     director.clear();
     coverage = null;
+    morphFrom = null;
     applyParams();
   }
 
   function formShape(shapeName: string, colorClusters: ColorCluster[]): void {
     formationStartedAt = now();
+    // MORPH DIRECTO: si ya hay una figura en pantalla, los agentes tienen
+    // que viajar desde donde están, no desaparecer y rearrancar del
+    // reactor. Se congelan sus posiciones ACÁ, antes de que el reseteo de
+    // abajo las pise. Desde el reposo no hay nada que congelar: salen del
+    // núcleo como siempre.
+    const morphPrevious =
+      currentShapeName !== null && currentFormation !== null
+        ? nanobotRenderPositions.slice(0, nanobotAnimCount * 3)
+        : null;
+    const morphPreviousCount = morphPrevious ? nanobotAnimCount : 0;
+
     pendingFormation = null;
     currentFormation = null;
     nanobotPhase = "idle";
@@ -425,7 +466,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
 
     currentShapeName = shapeName;
     currentColorClusters = colorClusters ?? DEFAULT_COLOR_CLUSTERS;
-    pendingFormation = { shapeName, colorClusters: currentColorClusters };
+    pendingFormation = { shapeName, colorClusters: currentColorClusters, morphPrevious, morphPreviousCount };
     computeMicrobotTargets();
     // Si veníamos de un repliegue EN CURSO se retoma desde donde quedó:
     // reiniciar en 0 hacía que el exoesqueleto saltara de golpe al núcleo
@@ -513,9 +554,9 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       if (microbotPhase === "launching" && director.isStructureDone()) {
         microbotPhase = "settled";
         if (pendingFormation) {
-          const { shapeName, colorClusters } = pendingFormation;
+          const { shapeName, colorClusters, morphPrevious, morphPreviousCount } = pendingFormation;
           pendingFormation = null;
-          startFormation(shapeName, colorClusters);
+          startFormation(shapeName, colorClusters, morphPrevious, morphPreviousCount);
           nanobotPhase = "forming";
           nanobotElapsed = 0;
           swarmMesh.setVisible(true);
@@ -564,6 +605,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
         // Ya no hay figura: mostrar la cobertura de la anterior sería
         // informar sobre algo que no está en pantalla.
         coverage = null;
+        morphFrom = null;
         swarmMesh.setVisible(false);
         // Un cambio de cantidad pedido durante el repliegue se aplica
         // recién acá, con todos los buffers ya libres.
