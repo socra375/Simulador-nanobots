@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { BOT_TYPE } from "./swarm/bot-types";
 import { botVisual } from "./swarm/bot-config";
+import { createBotGeometries, LOD_LEVEL } from "./rendering/bot-models";
 
 // Render de la población de Microbots (Fase 15): exoesqueleto denso
 // (nodos + vigas) a conteos MUCHO más altos que Nanobots (decenas de
@@ -51,7 +52,11 @@ export function createMicrobotSwarmMesh(maxCount: number): MicrobotSwarmMesh {
 
   // Geometría bajo-poly a propósito (nodos/vigas son diminutos y hay
   // muchísimos): más segmentos no se notarían y sí costarían vértices.
-  const nodeGeometry = new THREE.IcosahedronGeometry(NODE_RADIUS, 0);
+  // Fase 32: los nodos son Microbots, así que también son hexagonales.
+  // Se usa el nivel MEDIO fijo: estos nodos son muy chicos (radio 0.07) y
+  // el nivel detallado no se distinguiría ni pegando la cámara, así que
+  // pagar por él sería gasto sin nada a cambio.
+  const nodeGeometry = createBotGeometries(NODE_RADIUS, NODE_RADIUS * 0.8).byLevel[LOD_LEVEL.MID];
   const beamGeometry = new THREE.CylinderGeometry(BEAM_RADIUS, BEAM_RADIUS, 1, 5);
 
   const nodeMaterial = new THREE.MeshStandardMaterial({

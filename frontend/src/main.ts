@@ -18,6 +18,7 @@ import { createMetrics } from "./core/metrics";
 import { makeSwirlAxes } from "./core/kinematics";
 import { createSimulation, IDLE_SEEK_WEIGHT } from "./core/simulation";
 import { createFrameLoop } from "./core/loop";
+import { createLodSelector } from "./rendering/bot-lod";
 
 // Punto de entrada: SOLO cableado. La simulación del enjambre vive en
 // core/simulation.ts y el loop en core/loop.ts — hasta la Fase 27 todo
@@ -138,6 +139,13 @@ async function main() {
   const paintBotTypes = addBotTypePanel(gui);
   const readTypeCounts = () => sim.state.typeCounts;
 
+  // Fase 32: nivel de detalle por distancia de cámara. Un nivel para toda
+  // la población, no uno por agente — eso es lo que mantiene UNA malla
+  // instanciada por rol en vez de partirla en tres y reordenar instancias
+  // cada vez que la cámara se mueve.
+  const lod = createLodSelector();
+  swarmMesh.setLodLevel(lod.level);
+
   const loop = createFrameLoop(
     (dt) => {
       const frameStart = performance.now();
@@ -145,6 +153,9 @@ async function main() {
 
       reactor.update(dt);
       controls.update(); // necesario por el damping de OrbitControls
+      // `update` devuelve true sólo cuando el nivel CAMBIÓ, así que en un
+      // paneo normal esto es una resta y una comparación por cuadro.
+      if (lod.update(controls.getDistance())) swarmMesh.setLodLevel(lod.level);
       sim.step(dt);
       composer.render();
 
