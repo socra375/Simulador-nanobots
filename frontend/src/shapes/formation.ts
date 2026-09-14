@@ -66,6 +66,8 @@ export function buildExoskeleton(
 
   const points = new Float32Array(count * 3);
   const isBeam = new Uint8Array(count);
+  // Las vigas de Microbots SÍ se escriben y se dibujan (a diferencia de
+  // las que tenían los Nanobots, eliminadas en la Fase 27).
   const relationSpans = new Float32Array(count * 6);
   let cursor = 0;
 
@@ -140,7 +142,6 @@ export function formShapeWithRoles(
 
   const points = new Float32Array(count * 3);
   const roles = new Uint8Array(count);
-  const relationSpans = new Float32Array(count * 6);
   const colorWave = new Uint8Array(count);
   let cursor = 0;
 
@@ -168,7 +169,7 @@ export function formShapeWithRoles(
     }
   }
 
-  return { points, roles, relationSpans, colorWave, colorWaveCount: clusters.length, colorClusters: clusters };
+  return { points, roles, colorWave, colorWaveCount: clusters.length, colorClusters: clusters };
 }
 
 // Cluster de reposo: cáscara esférica aleatoria alrededor del núcleo.

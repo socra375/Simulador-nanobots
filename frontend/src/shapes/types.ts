@@ -24,7 +24,14 @@
 //   revelarse cubre de sobra hasta el hueco más chico que hayan dejado
 //   ESTRUCTURA/RELACION/DETALLE, y reemplaza visualmente sus colores fijos
 //   (cian/magenta/verde).
-export const NANOBOT_ROLE = { STRUCTURE: 0, RELATION: 1, DETAIL: 2, COLOR: 3 } as const;
+// Fase 27: ESTRUCTURA y RELACION se eliminaron. Desde la Fase 15 el
+// exoesqueleto (nodos + vigas) lo arma la población de Microbots por
+// separado, así que a esos dos roles se les asignaban SIEMPRE 0 agentes:
+// su rama de render en nanobot-mesh.ts era inalcanzable por construcción
+// y `relationSpans` se reservaba (count*6 floats, 1,44 MB a 60.000) para
+// no escribirse nunca. Los Nanobots son hoy exactamente dos cosas:
+// relleno (DETALLE) y pintura (COLOR).
+export const NANOBOT_ROLE = { DETAIL: 0, COLOR: 1 } as const;
 export type NanobotRole = (typeof NANOBOT_ROLE)[keyof typeof NANOBOT_ROLE];
 
 // COLOR es una fracción FIJA e INDEPENDIENTE del total (75%) — a
@@ -55,11 +62,6 @@ export interface ColorClusterInput {
 export interface ShapeFormation {
   points: Float32Array; // count*3 floats, ya trasladados a `center`
   roles: Uint8Array<ArrayBufferLike>; // largo count, uno de NANOBOT_ROLE por agente
-  // Para agentes RELACION: las 2 anclas de ESTRUCTURA que ese nanobot une,
-  // ya trasladadas a `center`, como [ax,ay,az,bx,by,bz] — permite dibujarlo
-  // como una viga sólida entre ambas en vez de un punto flotante suelto
-  // (ver nanobot-mesh.ts). Sin uso para ESTRUCTURA/DETALLE (queda en 0).
-  relationSpans: Float32Array; // count*6 floats
   // Para agentes COLOR: a qué ola (índice dentro del array de clusters
   // pasado a formShapeWithRoles) pertenece — 0 para el resto de los roles.
   colorWave: Uint8Array<ArrayBufferLike>; // largo count

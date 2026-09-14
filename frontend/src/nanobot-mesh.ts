@@ -2,13 +2,11 @@ import * as THREE from "three";
 import { NANOBOT_ROLE } from "./shapes";
 import { DEFAULT_DOMINANT_COLOR, MAX_COLOR_CLUSTERS, type ColorCluster } from "./image-color";
 
-// Geometría y material por ROL de nanobot (ver shapes.ts):
-// - ESTRUCTURA: icosaedro SÓLIDO — los "nodos"/anclas soldados del esqueleto.
-// - RELACION: viga (cilindro) SÓLIDA, orientada y estirada entre las 2
-//   anclas de ESTRUCTURA que conecta (ver relationSpans) — así se ve
-//   literalmente "unida" a la estructura en vez de flotar suelta.
-// - DETALLE: esfera SÓLIDA emissive — el relleno que le da color y pulido
-//   final a la silueta, encima del esqueleto de las otras dos.
+// Geometría y material por ROL de nanobot (ver shapes/types.ts). Desde la
+// Fase 27 hay exactamente dos: el exoesqueleto lo arma la población de
+// Microbots, así que los Nanobots solo rellenan y pintan.
+// - DETALLE: esfera SÓLIDA emissive — el relleno que le da cuerpo a la
+//   silueta, encima del exoesqueleto de Microbots.
 // - COLOR: esfera SÓLIDA idéntica a DETALLE, pero SIN un color de rol
 //   fijo — un InstancedMesh DEDICADO por cada "ola" de color (cluster de
 //   color de la foto, ver image-color.ts pickColorClusters), hasta
@@ -42,31 +40,21 @@ const SCALE_BASELINE_COUNT = 80;
 const SNAP_DISTANCE_SQ = 0.6 * 0.6;
 const UNSNAP_DISTANCE_SQ = 1.2 * 1.2;
 
-// Colores de rol fijos de ESTRUCTURA/RELACION/DETALLE (COLOR no tiene uno
-// propio — se pisa en caliente vía setDominantColor). Guardados como
-// constantes (no solo inline en buildRoleMaterial) porque
-// setSkeletonGrayscale() necesita poder RESTAURARLOS: mientras la 4ta capa
-// viaja desde el núcleo, las otras 3 pierden su color (pasan a gris) para
-// que el color dominante de la foto termine predominando al llegar; ver
-// abajo.
-const STRUCTURE_COLOR = 0x1f5c8a;
-const STRUCTURE_EMISSIVE = 0x4be3ff;
-const RELATION_COLOR = 0x8a1f6e;
-const RELATION_EMISSIVE = 0xff5fd6;
+// Color de rol fijo de DETALLE (COLOR no tiene uno propio — se pisa en
+// caliente vía setColorClusters). Guardado como constante (no solo inline
+// en buildRoleMaterial) porque setSkeletonGrayscale() necesita poder
+// RESTAURARLO: mientras la capa de COLOR viaja desde el núcleo, DETALLE
+// pierde su color (pasa a gris) para que el color de la foto termine
+// predominando al llegar.
 const DETAIL_COLOR = 0x1c8f5a;
 const DETAIL_EMISSIVE = 0x7dffb3;
 const SKELETON_GRAYSCALE_COLOR = 0x555555;
 const SKELETON_GRAYSCALE_EMISSIVE = 0x2a2a2a;
 
-// Índice = NANOBOT_ROLE.{STRUCTURE,RELATION,DETAIL}. La viga de RELACION usa
-// un cilindro de altura unitaria (largo 1): se escala en Y al largo real del
-// segmento que conecta, así que su "tamaño de diseño" es solo el radio.
-// DETALLE es más grande que los otros dos a propósito: se solapa más entre
-// sí para tapar huecos/grietas en el relleno en vez de dejar el fondo negro
-// visible entre esfera y esfera.
+// Índice = NANOBOT_ROLE.{DETAIL,COLOR}. COLOR es levemente más grande que
+// DETALLE a propósito: se solapa más entre sí para tapar huecos/grietas en
+// vez de dejar el fondo negro visible entre esfera y esfera.
 const ROLE_GEOMETRIES: THREE.BufferGeometry[] = [
-  new THREE.IcosahedronGeometry(0.4, 1), // estructura
-  new THREE.CylinderGeometry(0.16, 0.16, 1, 10), // relación
   new THREE.SphereGeometry(0.55, 16, 12), // detalle
   new THREE.SphereGeometry(0.6, 16, 12), // color (capa de pintura final)
 ];
@@ -81,17 +69,7 @@ function buildRoleMaterial(role: number): THREE.Material {
       metalness: 0.1,
     });
   }
-  if (role === NANOBOT_ROLE.RELATION) {
-    return new THREE.MeshStandardMaterial({
-      color: RELATION_COLOR,
-      emissive: RELATION_EMISSIVE,
-      emissiveIntensity: 0.8,
-      roughness: 0.4,
-      metalness: 0.2,
-    });
-  }
-  if (role === NANOBOT_ROLE.COLOR) {
-    // Color placeholder hasta el primer setColorClusters() real (ver
+  // Color placeholder hasta el primer setColorClusters() real (ver
     // startFormation en main.ts, que lo llama ANTES de que este rol se
     // revele) — nunca se ve así en pantalla en la práctica. Cada ola tiene
     // su PROPIA instancia de este material (ver colorWaveMeshes abajo), no
@@ -101,15 +79,7 @@ function buildRoleMaterial(role: number): THREE.Material {
       emissive: DEFAULT_DOMINANT_COLOR,
       emissiveIntensity: 0.85,
       roughness: 0.35,
-      metalness: 0.1,
-    });
-  }
-  return new THREE.MeshStandardMaterial({
-    color: STRUCTURE_COLOR,
-    emissive: STRUCTURE_EMISSIVE,
-    emissiveIntensity: 0.8,
-    roughness: 0.4,
-    metalness: 0.2,
+    metalness: 0.1,
   });
 }
 
@@ -120,9 +90,8 @@ export interface NanobotSwarmMesh {
     positions: Float32Array,
     count: number,
     roles: Uint8Array<ArrayBufferLike>,
-    relationSpans: Float32Array,
     formationTargets: Float32Array,
-    visibleRoles: readonly [boolean, boolean, boolean, boolean],
+    visibleRoles: readonly [boolean, boolean],
     colorWave: Uint8Array<ArrayBufferLike>,
     revealedColorWaves: number,
   ) => void;
@@ -132,36 +101,25 @@ export interface NanobotSwarmMesh {
   // el rol COLOR se revele. El color real de cada agente se aplica por
   // instancia en updateFromPositions según su colorWave.
   setColorClusters: (clusters: ColorCluster[]) => void;
-  // true: ESTRUCTURA/RELACION/DETALLE pierden su color de rol fijo y pasan
-  // a un gris apagado (mientras COLOR viaja hacia su posición, para que su
-  // color termine predominando al llegar). false: los restaura a su color
-  // de rol original. No afecta a COLOR (su color siempre es el dominante).
+  // true: DETALLE pierde su color de rol fijo y pasa a un gris apagado
+  // (mientras COLOR viaja hacia su posición, para que su color termine
+  // predominando al llegar). false: lo restaura. No afecta a COLOR.
   setSkeletonGrayscale: (active: boolean) => void;
 }
 
-// Un InstancedMesh por rol (estructura/relación/detalle) para soportar
-// miles de nanobots con muy pocos draw calls. Cada uno reserva capacidad
-// para `maxCount` completo: como la proporción entre roles no es pareja
-// (15/25/60), sería frágil intentar repartir la capacidad de antemano.
+// Un InstancedMesh por rol (detalle/color) más uno por ola de color extra,
+// para soportar miles de nanobots con muy pocos draw calls. Cada uno
+// reserva capacidad para `maxCount` completo: como la proporción entre
+// roles no es pareja (25/75), sería frágil repartirla de antemano.
 export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   const group = new THREE.Group();
   // Escritura directa al buffer de instanceMatrix (Fase 18): con hasta
   // 60.000 instancias, el costo por-agente de THREE.Object3D/updateMatrix()
   // (compone posición+rotación+escala vía Matrix4.compose) es el cuello de
   // botella real del render — mismo diagnóstico que llevó a microbot-mesh.ts
-  // a evitarlo desde el principio. STRUCTURE/RELATION quedan siempre en 0
-  // instancias desde Fase 15 (ver formShapeWithRoles en shapes.ts), así que
-  // la única geometría que de verdad se dibuja es esférica (DETALLE/COLOR)
-  // — no hace falta rotación por instancia (una esfera se ve igual rotada).
-  // El caso RELATION (viga orientada) se deja andando por si se reactiva,
-  // reusando la misma técnica de base ortonormal que microbot-mesh.ts.
-  const relationA = new THREE.Vector3();
-  const relationB = new THREE.Vector3();
-  const relationUp = new THREE.Vector3();
-  const relationRight = new THREE.Vector3();
-  const relationForward = new THREE.Vector3();
-  const relationArbitrary = new THREE.Vector3();
-  const relationBasis = new THREE.Matrix4();
+  // a evitarlo desde el principio. Toda la geometría que se dibuja acá es
+  // esférica, así que no hace falta rotación por instancia (una esfera se
+  // ve igual rotada).
 
   const instancedMeshes = ROLE_GEOMETRIES.map((geometry, role) => {
     const mesh = new THREE.InstancedMesh(geometry, buildRoleMaterial(role), maxCount);
@@ -252,9 +210,8 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     positions: Float32Array,
     count: number,
     roles: Uint8Array<ArrayBufferLike>,
-    relationSpans: Float32Array,
     formationTargets: Float32Array,
-    visibleRoles: readonly [boolean, boolean, boolean, boolean],
+    visibleRoles: readonly [boolean, boolean],
     colorWave: Uint8Array<ArrayBufferLike>,
     revealedColorWaves: number,
   ) {
@@ -325,39 +282,7 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
       const py = isSnapped ? ty : liveY;
       const pz = isSnapped ? tz : liveZ;
 
-      if (role === NANOBOT_ROLE.RELATION) {
-        // Viga sólida entre las 2 anclas de ESTRUCTURA que este nanobot
-        // conecta: se posiciona en su punto (físico mientras viaja, fijo
-        // una vez asentado — ver arriba) y se orienta/estira para cubrir
-        // el largo real de la conexión (siempre fijo, ya sale de spans).
-        relationA.set(
-          relationSpans[i * 6 + 0],
-          relationSpans[i * 6 + 1],
-          relationSpans[i * 6 + 2],
-        );
-        relationB.set(
-          relationSpans[i * 6 + 3],
-          relationSpans[i * 6 + 4],
-          relationSpans[i * 6 + 5],
-        );
-        relationUp.subVectors(relationB, relationA);
-        const length = Math.max(relationUp.length(), 0.001);
-        relationUp.multiplyScalar(1 / length);
-        // Base ortonormal con `relationUp` como eje Y (evita Quaternion),
-        // misma técnica que microbot-mesh.ts: right/forward quedan
-        // escalados al radio de diseño (`scale`), solo el eje Y se escala
-        // al largo real de la conexión.
-        relationArbitrary.set(Math.abs(relationUp.y) > 0.99 ? 1 : 0, Math.abs(relationUp.y) > 0.99 ? 0 : 1, 0);
-        relationRight.crossVectors(relationArbitrary, relationUp).normalize().multiplyScalar(scale);
-        // cross(unitario, vector de magnitud `scale`) ya sale con magnitud
-        // `scale` (perpendiculares) — sin necesidad de reescalar de nuevo.
-        relationForward.crossVectors(relationUp, relationRight);
-        relationBasis.makeBasis(relationRight, relationUp.multiplyScalar(length), relationForward);
-        relationBasis.setPosition(px, py, pz);
-        relationBasis.toArray(arr, localIndex * 16);
-      } else {
-        writeScaleMatrix(arr, localIndex * 16, px, py, pz, scale);
-      }
+      writeScaleMatrix(arr, localIndex * 16, px, py, pz, scale);
     }
 
     // Sin `addUpdateRange`, three.js sube el buffer COMPLETO de
@@ -402,8 +327,6 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   }
 
   const SKELETON_ROLE_COLORS: Array<{ role: number; color: number; emissive: number }> = [
-    { role: NANOBOT_ROLE.STRUCTURE, color: STRUCTURE_COLOR, emissive: STRUCTURE_EMISSIVE },
-    { role: NANOBOT_ROLE.RELATION, color: RELATION_COLOR, emissive: RELATION_EMISSIVE },
     { role: NANOBOT_ROLE.DETAIL, color: DETAIL_COLOR, emissive: DETAIL_EMISSIVE },
   ];
 
