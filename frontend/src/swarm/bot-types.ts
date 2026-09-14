@@ -72,6 +72,11 @@ export interface BotTypeInfo {
   readonly implemented: boolean;
   /** Qué falta, cuando `implemented` es false. Se muestra en la UI. */
   readonly pendingReason?: string;
+  /**
+   * Aclaración para un tipo que SÍ existe pero cuya cantidad puede ser 0
+   * por razones legítimas. Sin esto, un cero se lee como un bug.
+   */
+  readonly note?: string;
 }
 
 export const BOT_TYPES: readonly BotTypeInfo[] = [
@@ -104,6 +109,12 @@ export const BOT_TYPES: readonly BotTypeInfo[] = [
     relativeSize: 2.6,
     acceptsObjectMaterial: true,
     implemented: true,
+    // Verificado en pantalla: cubo y carro dan 3520 Union Bots contra 480
+    // Microbots, pero persona da 0. No es un fallo: las formas humanoides
+    // usan huesos reales como nube densa de puntos y no llevan vigas
+    // (decisión de la Fase 17, con test que la fija). Sin esta aclaración
+    // el 0 se leería como un bug.
+    note: "Sólo en formas con exoesqueleto de vigas (cubo, carro…). Las formas humanoides usan hueso macizo, sin vigas.",
   },
   {
     type: BOT_TYPE.REPAIR,

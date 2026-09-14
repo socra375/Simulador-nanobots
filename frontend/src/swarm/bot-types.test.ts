@@ -36,6 +36,14 @@ describe("catálogo de tipos", () => {
     }
   });
 
+  it("un tipo implementado que puede dar 0 trae su aclaración", () => {
+    // Union Bot da 0 en formas humanoides (usan hueso macizo, sin vigas).
+    // Sin aclaración, ese 0 se lee como un fallo.
+    const union = botTypeInfo(BOT_TYPE.UNION);
+    expect(union.implemented).toBe(true);
+    expect(union.note ?? "").not.toBe("");
+  });
+
   it("Repair y Transform son los únicos todavía sin agentes propios", () => {
     const pendientes = BOT_TYPES.filter((b) => !b.implemented).map((b) => b.type);
     expect(pendientes.sort()).toEqual([BOT_TYPE.REPAIR, BOT_TYPE.TRANSFORM].sort());

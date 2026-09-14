@@ -258,9 +258,10 @@ export function addBotTypePanel(gui: GUI): (readCounts: () => Uint32Array) => vo
 
     list.appendChild(row);
 
-    if (!info.implemented) {
+    const aclaracion = info.implemented ? info.note : info.pendingReason;
+    if (aclaracion) {
       const note = document.createElement("div");
-      note.textContent = info.pendingReason ?? "";
+      note.textContent = aclaracion;
       note.style.fontSize = "10px";
       note.style.opacity = "0.45";
       note.style.margin = "-2px 0 4px 15px";
