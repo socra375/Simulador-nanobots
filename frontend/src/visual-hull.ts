@@ -1,4 +1,6 @@
 import { SHAPE_HALF_EXTENT } from "./shapes";
+import { loadImageBufferSquare } from "./vision/image-buffer";
+import { segmentByFloodFill } from "./vision/segmentation";
 import {
   createVoxelGrid,
   DEFAULT_VOXEL_RES,
@@ -30,14 +32,6 @@ import {
 // posición normal, sin rotarla).
 
 const SILHOUETTE_SIZE = 128;
-// Diferencia de color tolerada (RGB, 0-255 por eje) entre un píxel de
-// fondo YA confirmado y su vecino inmediato durante el flood fill de
-// abajo. Es un umbral LOCAL (paso a paso), no una distancia a un color
-// de referencia fijo — por eso tolera fondos con degradé/iluminación
-// desigual (probado en Fase 23: un fondo de estudio con degradé engañaba
-// por completo al umbral fijo anterior, ya que la esquina y el centro del
-// fondo podían diferir mucho más que esto aun siendo "el mismo fondo").
-const FLOOD_STEP_THRESHOLD = 18;
 
 export interface ScanPhotos {
   front: File;
@@ -51,96 +45,21 @@ export interface Silhouette {
   size: number;
 }
 
-// Separa objeto/fondo por flood fill (relleno por continuidad) desde el
-// borde del frame: se asume que el borde es fondo (mismo supuesto de
-// antes), pero en vez de compararlo con un único color de referencia fijo
-// (promedio de las 4 esquinas), el fondo se "propaga" hacia adentro
-// píxel a píxel mientras el salto de color entre vecinos sea chico — así
-// sigue el degradé del fondo en vez de romperse con él. Cualquier píxel
-// al que el flood fill no llega (por un salto de color grande, el borde
-// real del objeto) queda como objeto. Pura, testeable sin DOM.
+// El flood fill vive ahora en vision/segmentation.ts, generalizado a
+// frames no cuadrados y con el umbral como parámetro (Fase 38). Acá queda
+// el envoltorio cuadrado que este archivo necesita: los 7 tests de
+// visual-hull.test.ts siguen pasando SIN TOCARSE, que es la prueba de que
+// la generalización es fiel y no una reescritura con otro nombre — el
+// mismo criterio con el que el VoxelGrid absorbió esta misma grilla en la
+// Fase 30.
 export function silhouetteFromPixels(pixels: Uint8ClampedArray, size: number): Silhouette {
-  const isBackground = new Uint8Array(size * size);
-  const visited = new Uint8Array(size * size);
-  const queue: number[] = [];
-
-  const colorAt = (i: number): [number, number, number] => {
-    const idx = i * 4;
-    return [pixels[idx], pixels[idx + 1], pixels[idx + 2]];
-  };
-
-  for (let x = 0; x < size; x++) {
-    queue.push(x); // fila de arriba
-    queue.push((size - 1) * size + x); // fila de abajo
-  }
-  for (let y = 0; y < size; y++) {
-    queue.push(y * size); // columna izquierda
-    queue.push(y * size + size - 1); // columna derecha
-  }
-  for (const i of queue) {
-    if (!visited[i]) {
-      visited[i] = 1;
-      isBackground[i] = 1;
-    }
-  }
-
-  const thresholdSq = FLOOD_STEP_THRESHOLD * FLOOD_STEP_THRESHOLD;
-  let head = 0;
-  while (head < queue.length) {
-    const i = queue[head++];
-    const [r, g, b] = colorAt(i);
-    const x = i % size;
-    const y = (i - x) / size;
-    const neighbors: number[] = [];
-    if (x > 0) neighbors.push(i - 1);
-    if (x < size - 1) neighbors.push(i + 1);
-    if (y > 0) neighbors.push(i - size);
-    if (y < size - 1) neighbors.push(i + size);
-    for (const n of neighbors) {
-      if (visited[n]) continue;
-      const [nr, ng, nb] = colorAt(n);
-      const dr = nr - r, dg = ng - g, db = nb - b;
-      visited[n] = 1;
-      if (dr * dr + dg * dg + db * db <= thresholdSq) {
-        isBackground[n] = 1;
-        queue.push(n);
-      }
-    }
-  }
-
-  const mask = new Uint8Array(size * size);
-  for (let i = 0; i < size * size; i++) mask[i] = isBackground[i] ? 0 : 1;
+  const { mask } = segmentByFloodFill(pixels, size, size);
   return { mask, size };
 }
 
-function loadPixels(file: File, size: number): Promise<Uint8ClampedArray> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          reject(new Error("Canvas 2D no disponible"));
-          return;
-        }
-        ctx.drawImage(img, 0, 0, size, size);
-        resolve(ctx.getImageData(0, 0, size, size).data);
-      } catch (err) {
-        reject(err);
-      } finally {
-        URL.revokeObjectURL(url);
-      }
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("No se pudo cargar la foto"));
-    };
-    img.src = url;
-  });
+async function loadPixels(file: File, size: number): Promise<Uint8ClampedArray> {
+  const { pixels } = await loadImageBufferSquare(file, size);
+  return pixels;
 }
 
 export async function extractSilhouette(file: File, size: number = SILHOUETTE_SIZE): Promise<Silhouette> {
