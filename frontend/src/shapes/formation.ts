@@ -136,13 +136,24 @@ export function formShapeWithRoles(
   // parte anatómica correspondiente (CABEZA_PARTS[wave].generator) — no un
   // resample de la silueta completa.
   const colorWaveCounts = splitCounts(colorCount, clusters.map((c) => c.weight));
-  const colorWavePts = colorParts
-    ? colorWaveCounts.map((n, wave) => colorParts[wave].generator(n))
-    : colorWaveCounts.map((n) => generator(n));
+
+  // Fase 40: si la forma trae color POR PUNTO (hoy sólo el escaneo desde
+  // imagen), cada ola se muestrea con `generateWithColor`, que devuelve
+  // posiciones y colores del MISMO muestreo. Las 17 formas predefinidas no
+  // la declaran y caen al camino de siempre, byte por byte.
+  const colored = def.generateWithColor;
+  const colorWaveClouds = colorParts
+    ? colorWaveCounts.map((n, wave) => ({ points: colorParts[wave].generator(n), colors: null }))
+    : colorWaveCounts.map((n) =>
+        colored ? colored(n) : { points: generator(n), colors: null },
+      );
 
   const points = new Float32Array(count * 3);
   const roles = new Uint8Array(count);
   const colorWave = new Uint8Array(count);
+  // Sólo se reserva si de verdad hay color por punto: para las formas de
+  // siempre queda en null y el render sigue pintando por olas.
+  const pointColors = colored && !colorParts ? new Uint8Array(count * 3) : null;
   let cursor = 0;
 
   const write = (src: Float32Array, n: number, role: NanobotRole) => {
@@ -156,8 +167,8 @@ export function formShapeWithRoles(
   };
 
   write(detailPts, detailCount, NANOBOT_ROLE.DETAIL);
-  for (let wave = 0; wave < colorWavePts.length; wave++) {
-    const src = colorWavePts[wave];
+  for (let wave = 0; wave < colorWaveClouds.length; wave++) {
+    const { points: src, colors } = colorWaveClouds[wave];
     const n = colorWaveCounts[wave];
     for (let i = 0; i < n; i++) {
       points[cursor * 3 + 0] = src[i * 3 + 0] + center[0];
@@ -165,11 +176,23 @@ export function formShapeWithRoles(
       points[cursor * 3 + 2] = src[i * 3 + 2] + center[2];
       roles[cursor] = NANOBOT_ROLE.COLOR;
       colorWave[cursor] = wave;
+      if (pointColors && colors) {
+        pointColors[cursor * 3 + 0] = colors[i * 3 + 0];
+        pointColors[cursor * 3 + 1] = colors[i * 3 + 1];
+        pointColors[cursor * 3 + 2] = colors[i * 3 + 2];
+      }
       cursor++;
     }
   }
 
-  return { points, roles, colorWave, colorWaveCount: clusters.length, colorClusters: clusters };
+  return {
+    points,
+    roles,
+    colorWave,
+    colorWaveCount: clusters.length,
+    colorClusters: clusters,
+    pointColors,
+  };
 }
 
 // Cluster de reposo: cáscara esférica aleatoria alrededor del núcleo.

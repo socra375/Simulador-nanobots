@@ -32,11 +32,14 @@ interface Recorded {
   lastPositions: Float32Array | null;
   /** Último cuadro del exoesqueleto: nodos, vigas y quién es quién. */
   lastMicro: { points: Float32Array; spans: Float32Array; isBeam: Uint8Array; count: number } | null;
+  /** Último color por agente que recibió la malla (Fase 40). */
+  lastPointColors: Uint8Array | null;
 }
 
 function makeSim(settings?: Partial<SimSettings>, reactor?: { pulseColor(c: number): void; resetColor(): void }) {
   const rec: Recorded = {
     calls: [], lastUpdate: null, formationSettledMs: [], lastPositions: null, lastMicro: null,
+    lastPointColors: null,
   };
   let swarmCount = 0;
   const positions = new Float32Array(60000 * 3);
@@ -59,6 +62,10 @@ function makeSim(settings?: Partial<SimSettings>, reactor?: { pulseColor(c: numb
     },
     setVisible(v) { rec.calls.push(`mesh.setVisible(${v})`); },
     setColorClusters() { rec.calls.push("mesh.setColorClusters"); },
+    setPointColors(colors) {
+      rec.calls.push(`mesh.setPointColors(${colors ? colors.length / 3 : "null"})`);
+      rec.lastPointColors = colors;
+    },
     setSkeletonGrayscale(a) { rec.calls.push(`mesh.grayscale(${a})`); },
   };
 

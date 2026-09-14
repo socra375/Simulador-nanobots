@@ -75,6 +75,16 @@ export interface ShapeFormation {
   // leer este campo para pintar bien cada ola, sin duplicar el criterio de
   // "es cabeza o no" fuera de este archivo.
   colorClusters: ColorClusterInput[];
+  /**
+   * Color del objeto por agente (count*3 bytes RGB), o null si esta forma
+   * no lo trae — el caso de las 17 formas predefinidas, donde el color
+   * sale del histograma de la foto repartido en olas (Fase 40).
+   *
+   * Sólo tiene valores útiles en las posiciones de los agentes con rol
+   * COLOR: son los Material Bots, los únicos que llevan el material del
+   * objeto. Los de DETALLE quedan en cero y el render ni los mira.
+   */
+  pointColors: Uint8Array | null;
 }
 
 // Árbol de expansión mínima (Prim, O(anchorCount²) — trivial para los

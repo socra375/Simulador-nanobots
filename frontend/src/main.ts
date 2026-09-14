@@ -4,6 +4,7 @@ import { createMicrobotSwarmMesh } from "./microbot-mesh";
 import { Swarm } from "./swarm";
 import { createReactor } from "./reactor";
 import { FORMATION_CENTER } from "./shapes";
+import { registerCustomScan } from "./shapes/registry";
 import {
   createControlPanel,
   addAgentStatePanel,
@@ -73,6 +74,22 @@ async function main() {
       fov: camera.fov,
       minDistance: controls.minDistance,
     }),
+  };
+  // Sonda de escaneo (Fase 40): permite registrar una nube de puntos con
+  // color y formarla, sin pasar por la UI. La usan los scripts de
+  // verificación visual para probar el color por instancia —que es un
+  // parche de shader y sólo se puede comprobar de verdad renderizando— y
+  // los E2E del pipeline imagen->3D. Mismo criterio que las dos sondas de
+  // arriba: leer el estado real en vez de mirar un PNG y adivinar.
+  (window as unknown as { __nanobotScan: unknown }).__nanobotScan = {
+    form: (points: number[], colors: number[] | null, clusters: ColorCluster[]) => {
+      const name = registerCustomScan(
+        Float32Array.from(points),
+        colors ? Uint8Array.from(colors) : null,
+      );
+      sim.formShape(name, clusters);
+      return name;
+    },
   };
   // Por defecto three.js resetea `renderer.info` en cada render. Con
   // EffectComposer eso significa que al terminar el cuadro el contador

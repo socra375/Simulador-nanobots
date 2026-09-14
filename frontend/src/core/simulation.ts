@@ -124,6 +124,8 @@ export interface NanobotMeshApi {
   ): void;
   setVisible(visible: boolean): void;
   setColorClusters(clusters: ColorCluster[]): void;
+  /** Color del objeto por agente, o null para volver al color por olas. */
+  setPointColors(colors: Uint8Array | null): void;
   setSkeletonGrayscale(active: boolean): void;
 }
 
@@ -538,6 +540,10 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     // la foto); para "cabeza" son los tonos fijos por parte anatómica.
     // shapes decide cuál corresponde, acá sólo se lee el resultado.
     swarmMesh.setColorClusters(formation.colorClusters);
+    // Fase 40: si la figura trae el color real de la foto punto por punto
+    // (hoy, el escaneo desde imagen), cada Material Bot lleva el suyo. Si
+    // no, null vuelve al color por olas del histograma.
+    swarmMesh.setPointColors(formation.pointColors);
   }
 
   function goIdle(): void {
@@ -548,6 +554,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     applyIdleTargets();
     swarmMesh.setVisible(false);
     swarmMesh.setSkeletonGrayscale(false);
+    swarmMesh.setPointColors(null);
     currentShapeName = null;
     microbotExo = null;
     microbotPhase = "hidden";

@@ -19,6 +19,7 @@ import { pixelIndex, type ImageBuffer } from "./image-buffer";
 import type { ObjectMask } from "./segmentation";
 import type { DepthMap } from "./depth-estimator";
 import { detectSymmetry, type SymmetryResult } from "./symmetry";
+import { emptyCloud, POINT_ORIGIN, type PointCloud } from "./reconstruction-result";
 
 export const RECON_MODE = {
   /** Silueta extruida a espesor constante. El modo de último recurso. */
@@ -52,11 +53,11 @@ export const EXTRUSION_RATIO = 0.35;
 export const MAX_CLOUD_POINTS = 120_000;
 
 export interface Reconstruction {
-  /** n*3 posiciones, centradas en el origen. */
-  readonly points: Float32Array;
-  /** n*3 bytes RGB, alineado punto a punto con `points`. */
-  readonly colors: Uint8Array;
-  readonly count: number;
+  /**
+   * Posiciones, color y PROCEDENCIA, los tres alineados punto a punto.
+   * Viajan juntos en un solo tipo para que no se puedan desalinear.
+   */
+  readonly cloud: PointCloud;
   readonly mode: ReconMode;
   /** Sólo en modo simetría; null en el resto. */
   readonly symmetry: SymmetryResult | null;
@@ -67,9 +68,7 @@ export interface Reconstruction {
 }
 
 const EMPTY: Reconstruction = {
-  points: new Float32Array(0),
-  colors: new Uint8Array(0),
-  count: 0,
+  cloud: emptyCloud(),
   mode: RECON_MODE.DEPTH,
   symmetry: null,
   confidence: 0,
@@ -87,11 +86,21 @@ export function reconConfidence(
   segmentation: number,
   depth: number,
   symmetryScore: number,
+  observedFraction = 1,
 ): number {
   const base = Math.min(segmentation, depth);
-  if (mode === RECON_MODE.EXTRUSION) return base * 0.6;
-  if (mode === RECON_MODE.DEPTH_SYMMETRY) return Math.min(1, base * (1 + 0.25 * symmetryScore));
-  return base;
+  const porModo =
+    mode === RECON_MODE.EXTRUSION
+      ? base * 0.6
+      : mode === RECON_MODE.DEPTH_SYMMETRY
+        ? Math.min(1, base * (1 + 0.25 * symmetryScore))
+        : base;
+  // Cuanta menos geometría se VIO de verdad, menos se puede afirmar. Es la
+  // consecuencia directa de distinguir observado de inferido: si la nube
+  // es mayoría suposición, decirlo es parte del resultado. No baja a cero
+  // porque la cara vista sigue siendo información real.
+  const porProcedencia = 0.5 + 0.5 * Math.min(1, Math.max(0, observedFraction) * 2);
+  return porModo * porProcedencia;
 }
 
 /**
@@ -185,6 +194,7 @@ export function reconstruct(
   // --- Emisión ---------------------------------------------------------
   const positions: number[] = [];
   const rgb: number[] = [];
+  const origins: number[] = [];
   for (let y = bbox.minY; y <= bbox.maxY; y += step) {
     for (let x = bbox.minX; x <= bbox.maxX; x += step) {
       const i = y * width + x;
@@ -197,8 +207,11 @@ export function reconstruct(
 
       // El color sale del píxel ORIGINAL; en modo simetría, un píxel que
       // sólo existe en el reflejo toma el color de su espejo.
+      // Un píxel que la foto NO mostró y que sólo existe por el reflejo:
+      // todo lo que salga de él es inferido, incluida su cara de adelante.
+      const desdeReflejo = !m.mask[i];
       let sx = x;
-      if (!m.mask[i] && symmetry) {
+      if (desdeReflejo && symmetry) {
         const mx = Math.round(2 * symmetry.axisX - x);
         if (mx >= 0 && mx < width && m.mask[y * width + mx]) sx = mx;
       }
@@ -212,22 +225,42 @@ export function reconstruct(
         const t = n === 1 ? 0 : k / (n - 1);
         positions.push(wx, wy, -zw + 2 * zw * t);
         rgb.push(r, g, b);
+        // t=1 es la cara de ADELANTE (z = +zw), la que mira a la cámara:
+        // eso es lo único que la foto respalda. t=0 es la cara de atrás,
+        // pura suposición. El medio está acotado por las dos.
+        origins.push(
+          desdeReflejo
+            ? POINT_ORIGIN.INFERRED
+            : n === 1 || k === n - 1
+              ? POINT_ORIGIN.OBSERVED
+              : k === 0
+                ? POINT_ORIGIN.INFERRED
+                : POINT_ORIGIN.INTERPOLATED,
+        );
       }
     }
   }
 
   const count = positions.length / 3;
+  const origin = Uint8Array.from(origins);
+  let observed = 0;
+  for (let i = 0; i < count; i++) if (origin[i] === POINT_ORIGIN.OBSERVED) observed++;
+
   const confidence = reconConfidence(
     effMode,
     opts.segmentationConfidence ?? 1,
     depthMap.confidence,
     symmetry?.score ?? 0,
+    count === 0 ? 0 : observed / count,
   );
 
   return {
-    points: Float32Array.from(positions),
-    colors: Uint8Array.from(rgb),
-    count,
+    cloud: {
+      points: Float32Array.from(positions),
+      colors: Uint8Array.from(rgb),
+      origin,
+      count,
+    },
     mode: effMode,
     symmetry,
     confidence,

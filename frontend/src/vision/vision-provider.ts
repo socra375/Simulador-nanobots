@@ -18,7 +18,8 @@
 
 import type { ImageBuffer } from "./image-buffer";
 import { segment, type ObjectMask } from "./segmentation";
-import { estimateDepth, type DepthMap } from "./depth-estimator";
+import type { DepthMap } from "./depth-estimator";
+import { getDepthProvider } from "./depth-provider";
 
 export interface VisionProvider {
   readonly id: string;
@@ -45,7 +46,11 @@ export const localVisionProvider: VisionProvider = {
     return segment(img);
   },
   async estimateDepth(img, mask) {
-    return estimateDepth(img, mask);
+    // Delega en el proveedor de profundidad ACTIVO, no en la heurística
+    // directamente: segmentación y profundidad se mejoran por caminos
+    // distintos y tienen que poder reemplazarse por separado (ver
+    // depth-provider.ts).
+    return getDepthProvider().estimate(img, mask);
   },
 };
 
