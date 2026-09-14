@@ -30,10 +30,14 @@ interface Recorded {
   formationSettledMs: number[];
   /** Copia de las posiciones del último cuadro (el buffer real se reusa). */
   lastPositions: Float32Array | null;
+  /** Último cuadro del exoesqueleto: nodos, vigas y quién es quién. */
+  lastMicro: { points: Float32Array; spans: Float32Array; isBeam: Uint8Array; count: number } | null;
 }
 
 function makeSim(settings?: Partial<SimSettings>, reactor?: { pulseColor(c: number): void; resetColor(): void }) {
-  const rec: Recorded = { calls: [], lastUpdate: null, formationSettledMs: [], lastPositions: null };
+  const rec: Recorded = {
+    calls: [], lastUpdate: null, formationSettledMs: [], lastPositions: null, lastMicro: null,
+  };
   let swarmCount = 0;
   const positions = new Float32Array(60000 * 3);
 
@@ -59,7 +63,15 @@ function makeSim(settings?: Partial<SimSettings>, reactor?: { pulseColor(c: numb
   };
 
   const microbotMesh: MicrobotMeshApi = {
-    updateFromPositions() { rec.calls.push("micro.update"); },
+    updateFromPositions(points, count, isBeam, spans) {
+      rec.calls.push("micro.update");
+      rec.lastMicro = {
+        points: points.slice(0, count * 3),
+        spans: spans.slice(0, count * 6),
+        isBeam: isBeam.slice(0, count),
+        count,
+      };
+    },
     setVisible(v) { rec.calls.push(`micro.setVisible(${v})`); },
   };
 
@@ -423,18 +435,26 @@ describe("cola de tareas (SwarmDirector)", () => {
     const { sim } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
     // Las olas de color no se conocen hasta que la forma se resuelve, y eso
-    // pasa recién cuando el exoesqueleto termina.
-    expect(sim.director.tasks.map((t) => t.type)).toEqual([TASK_TYPE.CREATE_STRUCTURE]);
-    expect(sim.director.tasks[0].status).toBe(TASK_STATUS.PENDING);
+    // pasa recién cuando el exoesqueleto termina. "cubo" tiene vigas, así
+    // que su exoesqueleto sale en dos grupos (Fase 37).
+    expect(sim.director.tasks.map((t) => t.type)).toEqual([
+      TASK_TYPE.CREATE_STRUCTURE,
+      TASK_TYPE.CONNECT_STRUCTURE,
+    ]);
+    expect(sim.director.tasks.every((t) => t.status === TASK_STATUS.PENDING)).toBe(true);
   });
 
   it("el exoesqueleto corre y, al cumplirse, aparecen las tareas de las capas", () => {
     const { sim } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, MICROBOT_EXO_DURATION - 0.3);
+    // A mitad del lanzamiento van los nodos; cerca del final, las uniones.
+    advance(sim, MICROBOT_EXO_DURATION * 0.3);
     expect(sim.director.active?.type).toBe(TASK_TYPE.CREATE_STRUCTURE);
+    advance(sim, MICROBOT_EXO_DURATION * 0.5);
+    expect(sim.director.active?.type).toBe(TASK_TYPE.CONNECT_STRUCTURE);
+    expect(sim.director.isStructureDone()).toBe(false);
 
-    advance(sim, 0.5);
+    advance(sim, MICROBOT_EXO_DURATION * 0.3);
     expect(sim.director.isStructureDone()).toBe(true);
     const tipos = sim.director.tasks.map((t) => t.type);
     expect(tipos[0]).toBe(TASK_TYPE.CREATE_STRUCTURE);
@@ -486,12 +506,13 @@ describe("cola de tareas (SwarmDirector)", () => {
   it("describe() sigue el avance real de la formación", () => {
     const { sim } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    expect(sim.director.describe()).toEqual(["exoesqueleto: pending"]);
+    expect(sim.director.describe()).toEqual(["exoesqueleto: pending", "uniones: pending"]);
 
     advance(sim, FULL_LAUNCH + 0.3);
     const d = sim.director.describe();
     expect(d[0]).toBe("exoesqueleto: done");
-    expect(d[1]).toBe("relleno: running");
+    expect(d[1]).toBe("uniones: done");
+    expect(d[2]).toBe("relleno: running");
   });
 });
 
@@ -766,5 +787,81 @@ describe("parpadeo del núcleo (Material Bots)", () => {
     const { sim } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
     expect(() => advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3)).not.toThrow();
+  });
+});
+
+// Fase 37. El pedido fue estético y concreto: que el enjambre no salga
+// todo junto, sino un grupo y después otro. Acá se afirma sobre las
+// posiciones reales, no sobre la cola de tareas: la cola podría decir
+// cualquier cosa mientras la pantalla muestra un solo bulto.
+describe("el exoesqueleto sale por grupos, no todo junto", () => {
+  const CORE: readonly [number, number, number] = [-8, 8, -8];
+
+  /** Distancia máxima al núcleo dentro de un grupo (0 = ninguno salió). */
+  function maxDistancia(rec: Recorded, quiero: 0 | 1): number {
+    const m = rec.lastMicro!;
+    let max = 0;
+    for (let i = 0; i < m.count; i++) {
+      if ((m.isBeam[i] ? 1 : 0) !== quiero) continue;
+      // Los nodos viven en `points`; las vigas, en el primer extremo de su span.
+      const base = quiero === 0 ? m.points[i * 3 + 0] : m.spans[i * 6 + 0];
+      const y = quiero === 0 ? m.points[i * 3 + 1] : m.spans[i * 6 + 1];
+      const z = quiero === 0 ? m.points[i * 3 + 2] : m.spans[i * 6 + 2];
+      max = Math.max(max, Math.hypot(base - CORE[0], y - CORE[1], z - CORE[2]));
+    }
+    return max;
+  }
+
+  it("a un tercio del lanzamiento los nodos ya salieron y las vigas siguen en el núcleo", () => {
+    const { sim, rec } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, MICROBOT_EXO_DURATION * 0.3);
+
+    const nodos = maxDistancia(rec, 0);
+    const vigas = maxDistancia(rec, 1);
+    expect(nodos).toBeGreaterThan(2);
+    // Antes de la Fase 37 esto daba lo mismo que `nodos`: un único
+    // progreso compartido por las dos poblaciones.
+    expect(vigas).toBeLessThan(nodos * 0.25);
+  });
+
+  it("más tarde las vigas también salen y al final los dos grupos están afuera", () => {
+    const { sim, rec } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, MICROBOT_EXO_DURATION * 0.3);
+    const vigasTemprano = maxDistancia(rec, 1);
+
+    advance(sim, MICROBOT_EXO_DURATION * 0.5);
+    const vigasTarde = maxDistancia(rec, 1);
+    expect(vigasTarde).toBeGreaterThan(vigasTemprano + 2);
+
+    advance(sim, MICROBOT_EXO_DURATION * 0.3);
+    expect(maxDistancia(rec, 0)).toBeGreaterThan(2);
+    expect(maxDistancia(rec, 1)).toBeGreaterThan(2);
+  });
+
+  it("una figura sin vigas sale en un solo grupo, sin media salida vacía", () => {
+    const { sim, rec } = makeSim();
+    // Las humanoides usan hueso macizo: buildExoskeleton no genera vigas.
+    sim.formShape("cabeza", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, MICROBOT_EXO_DURATION * 0.3);
+
+    expect(rec.lastMicro!.isBeam.some((b) => b === 1)).toBe(false);
+    expect(sim.director.tasks.map((t) => t.type)).toEqual([TASK_TYPE.CREATE_STRUCTURE]);
+    // Con dos grupos sobre una figura sin vigas, a esta altura el único
+    // grupo que existe recién estaría arrancando.
+    expect(maxDistancia(rec, 0)).toBeGreaterThan(2);
+  });
+
+  it("el relleno de Nanobots no arranca hasta que los DOS grupos terminaron", () => {
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    // Justo después de que los nodos se cumplen, con las vigas en vuelo.
+    advance(sim, MICROBOT_EXO_DURATION * 0.8);
+    expect(sim.director.active?.type).toBe(TASK_TYPE.CONNECT_STRUCTURE);
+    expect(sim.state.nanobotPhase).toBe("idle");
+
+    advance(sim, MICROBOT_EXO_DURATION * 0.3);
+    expect(sim.state.nanobotPhase).toBe("forming");
   });
 });

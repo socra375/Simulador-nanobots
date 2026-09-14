@@ -399,11 +399,79 @@ function writeSpiralReturn(
 }
 
 /**
- * Escribe el exoesqueleto de Microbots en el progreso `eased` (0=núcleo,
- * 1=posición final): los nodos van a `outPoints` y las vigas a
+ * Solape entre las ventanas de dos grupos consecutivos, como fracción de
+ * la ventana de cada uno. Con 0 el enjambre se corta en seco entre grupo y
+ * grupo; con un solape chico el segundo grupo ya está arrancando cuando el
+ * primero termina de acomodarse, que es lo que hace que se lea como una
+ * secuencia y no como dos animaciones pegadas.
+ */
+export const GROUP_OVERLAP = 0.15;
+
+/**
+ * Cola final del lanzamiento en la que ya está TODO en su lugar. Existe
+ * para que el grupo siguiente de la secuencia (los Nanobots, que arrancan
+ * recién cuando el exoesqueleto se da por cumplido) no salga pisando el
+ * último instante de vuelo del grupo anterior.
+ */
+export const GROUP_SETTLE_FRACTION = 0.1;
+
+export interface GroupWindow {
+  /** Fracción del progreso total en la que el grupo empieza a salir. */
+  readonly start: number;
+  /** Fracción en la que el grupo ya está en su posición final. */
+  readonly end: number;
+}
+
+/**
+ * Ventana de salida del grupo `group` de `groups` (Fase 37).
+ *
+ * POR QUÉ EXISTE: hasta acá todo el exoesqueleto salía del núcleo con un
+ * único progreso compartido — nodos y vigas, miles de instancias, en un
+ * solo bulto. Escalonado, cada grupo tiene su propia ventana dentro del
+ * mismo reloj: no se agrega una duración por grupo ni un reloj nuevo, se
+ * reparte la que ya había.
+ *
+ * Es la ÚNICA fuente de verdad de ese reparto: la usan tanto la escritura
+ * de posiciones como el director para las ventanas de sus tareas, así que
+ * la cola de tareas no puede decir una cosa mientras la pantalla muestra
+ * otra.
+ */
+export function groupWindow(
+  group: number,
+  groups: number,
+  overlap: number = GROUP_OVERLAP,
+  settle: number = GROUP_SETTLE_FRACTION,
+): GroupWindow {
+  if (groups <= 1) return { start: 0, end: 1 - settle };
+  // Los grupos se solapan, así que N ventanas ocupan menos que N veces su
+  // largo: cada una arranca a (1-overlap) de la anterior.
+  const span = (1 - settle) / (groups - (groups - 1) * overlap);
+  const start = group * span * (1 - overlap);
+  return { start, end: start + span };
+}
+
+function windowProgress(progress: number, w: GroupWindow): number {
+  const span = w.end - w.start;
+  if (span <= 0) return progress >= w.end ? 1 : 0;
+  return easeInOutCubic(Math.min(Math.max((progress - w.start) / span, 0), 1));
+}
+
+/**
+ * Escribe el exoesqueleto de Microbots en el progreso `progress` (0=núcleo,
+ * 1=lanzamiento terminado): los nodos van a `outPoints` y las vigas a
  * `outSpans`. Los DOS extremos de una viga usan el mismo offset de
  * remolino (mismo `i`), así viaja como pieza rígida que además "crece"
  * desde largo ~0 en el núcleo hasta su largo real.
+ *
+ * Con `groups = 2` los nodos (Microbots) salen primero y las vigas (Union
+ * Bots) después, cada grupo con su propia ventana sobre el mismo progreso.
+ * Con `groups = 1` —las figuras humanoides no tienen vigas, su
+ * exoesqueleto es hueso macizo— salen todos juntos, sin un hueco de
+ * medio lanzamiento esperando a un grupo vacío.
+ *
+ * El progreso de cada grupo se calcula UNA vez por cuadro, fuera del
+ * recorrido: el costo por agente sigue siendo el lerp y el remolino de
+ * siempre.
  */
 export function writeMicrobotFrame(
   outPoints: Float32Array,
@@ -414,11 +482,16 @@ export function writeMicrobotFrame(
   count: number,
   core: Vec3,
   axes: SwirlAxes,
-  eased: number,
+  progress: number,
   turns: number,
   maxRadius: number,
+  groups = 1,
 ): void {
+  const nodeEased = windowProgress(progress, groupWindow(0, groups));
+  const beamEased = groups > 1 ? windowProgress(progress, groupWindow(1, groups)) : nodeEased;
+
   for (let i = 0; i < count; i++) {
+    const eased = isBeam[i] ? beamEased : nodeEased;
     swirlOffset(eased, i, turns, maxRadius, axes, swirlScratch);
     if (!isBeam[i]) {
       outPoints[i * 3 + 0] = core[0] + (points[i * 3 + 0] - core[0]) * eased + swirlScratch[0];

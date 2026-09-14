@@ -5,17 +5,32 @@ import {
   TASK_TYPE,
   type SwarmDirector,
 } from "./director";
-import { layerIndexAt } from "../core/kinematics";
+import { groupWindow, layerIndexAt } from "../core/kinematics";
 import { taskExecutor, TASK_EXECUTOR } from "./director";
 import { BOT_TYPE } from "./bot-types";
 
 const EXO = 2.2;
 const LAYER = 2.0;
 
+/**
+ * Exoesqueleto de un solo grupo: la figura no tiene vigas (las humanoides
+ * usan hueso macizo), así que no hay tarea de uniones.
+ */
+const SIN_VIGAS = { exoDuration: EXO, nodeEnd: EXO, beamStart: null };
+/**
+ * Exoesqueleto en dos grupos, con las MISMAS ventanas que usa la
+ * cinemática para escribir las posiciones.
+ */
+const CON_VIGAS = {
+  exoDuration: EXO,
+  nodeEnd: groupWindow(0, 2).end * EXO,
+  beamStart: groupWindow(1, 2).start * EXO,
+};
+
 /** La secuencia completa, como la arma la simulación en dos momentos. */
 function planned(layerCount: number): SwarmDirector {
   const d = createSwarmDirector();
-  d.planStructure(EXO);
+  d.planStructure(SIN_VIGAS);
   d.planLayers({ layerCount, layerDuration: LAYER });
   return d;
 }
@@ -54,7 +69,7 @@ describe("cola de tareas", () => {
 
   it("planificar de nuevo descarta la cola anterior", () => {
     const d = planned(4); // 5 tareas
-    d.planStructure(EXO);
+    d.planStructure(SIN_VIGAS);
     d.planLayers({ layerCount: 2, layerDuration: LAYER });
     // layerCount 2 = DETALLE + 1 ola: exoesqueleto + relleno + color 1.
     expect(d.tasks.map((t) => t.type)).toEqual([
@@ -68,13 +83,13 @@ describe("cola de tareas", () => {
 describe("la cola se arma en dos momentos", () => {
   it("planStructure sola deja únicamente el exoesqueleto: todavía no se sabe cuántas olas hay", () => {
     const d = createSwarmDirector();
-    d.planStructure(EXO);
+    d.planStructure(SIN_VIGAS);
     expect(d.tasks.map((t) => t.type)).toEqual([TASK_TYPE.CREATE_STRUCTURE]);
   });
 
   it("planLayers NO pisa el exoesqueleto ya en curso", () => {
     const d = createSwarmDirector();
-    d.planStructure(EXO);
+    d.planStructure(SIN_VIGAS);
     d.sync(EXO, 0); // exoesqueleto cumplido
     expect(d.isStructureDone()).toBe(true);
 
@@ -90,6 +105,69 @@ describe("la cola se arma en dos momentos", () => {
     d.planLayers({ layerCount: 3, layerDuration: LAYER });
     expect(d.tasks.filter((t) => t.clock === "nanobot")).toHaveLength(3);
     expect(d.tasks.filter((t) => t.type === TASK_TYPE.CREATE_STRUCTURE)).toHaveLength(1);
+  });
+});
+
+// Fase 37: el exoesqueleto dejó de salir de un saque. Los nodos van
+// primero y las uniones después, cada grupo con su ventana, y la cola de
+// tareas tiene que describir esa secuencia — no seguir diciendo
+// "exoesqueleto" como si fuera un solo bulto.
+describe("exoesqueleto en dos grupos", () => {
+  it("encola nodos y uniones, en ese orden", () => {
+    const d = createSwarmDirector();
+    d.planStructure(CON_VIGAS);
+    expect(d.tasks.map((t) => t.type)).toEqual([
+      TASK_TYPE.CREATE_STRUCTURE,
+      TASK_TYPE.CONNECT_STRUCTURE,
+    ]);
+    expect(d.tasks.every((t) => t.clock === "microbot")).toBe(true);
+  });
+
+  it("las uniones arrancan DESPUÉS de que los nodos están casi puestos, con un solape chico", () => {
+    const d = createSwarmDirector();
+    d.planStructure(CON_VIGAS);
+    const [nodos, uniones] = d.tasks;
+    // Si arrancaran en 0 sería el bulto único de antes.
+    expect(uniones.t0).toBeGreaterThan(0);
+    // Y si arrancaran después del final de los nodos, el enjambre se
+    // cortaría en seco entre grupo y grupo.
+    expect(uniones.t0).toBeLessThan(nodos.t1);
+    // El solape es chico: la mayor parte de cada ventana el grupo está solo.
+    expect(nodos.t1 - uniones.t0).toBeLessThan((nodos.t1 - nodos.t0) * 0.25);
+    // Las uniones llegan hasta el final del lanzamiento.
+    expect(uniones.t1).toBeCloseTo(EXO, 10);
+  });
+
+  it("el relleno NO se habilita mientras las uniones siguen saliendo", () => {
+    const d = createSwarmDirector();
+    d.planStructure(CON_VIGAS);
+    const [nodos, uniones] = d.tasks;
+
+    // Nodos ya puestos, uniones a mitad de camino: si isStructureDone()
+    // mirara sólo la primera tarea (como antes de la Fase 37), acá daría
+    // true y los Nanobots saldrían encima de las vigas en vuelo.
+    d.sync((nodos.t1 + uniones.t1) / 2, 0);
+    expect(nodos.status).toBe(TASK_STATUS.DONE);
+    expect(uniones.status).toBe(TASK_STATUS.RUNNING);
+    expect(d.isStructureDone()).toBe(false);
+
+    d.sync(EXO, 0);
+    expect(d.isStructureDone()).toBe(true);
+  });
+
+  it("sin vigas no encola una tarea de uniones que nadie ejecutaría", () => {
+    const d = createSwarmDirector();
+    d.planStructure(SIN_VIGAS);
+    expect(d.tasks.map((t) => t.type)).toEqual([TASK_TYPE.CREATE_STRUCTURE]);
+    d.sync(EXO, 0);
+    expect(d.isStructureDone()).toBe(true);
+  });
+
+  it("el panel nombra los dos grupos por separado", () => {
+    const d = createSwarmDirector();
+    d.planStructure(CON_VIGAS);
+    d.sync(EXO, 0);
+    expect(d.describe()).toEqual(["exoesqueleto: done", "uniones: done"]);
   });
 });
 
@@ -234,6 +312,10 @@ describe("describe() para el panel", () => {
 describe("qué tipo de bot ejecuta cada tarea (spec §17)", () => {
   it("la estructura la arman los Microbots", () => {
     expect(taskExecutor(TASK_TYPE.CREATE_STRUCTURE)).toBe(BOT_TYPE.MICROBOT);
+  });
+
+  it("las uniones las hacen los Union Bots", () => {
+    expect(taskExecutor(TASK_TYPE.CONNECT_STRUCTURE)).toBe(BOT_TYPE.UNION);
   });
 
   it("el relleno lo hacen los Nanobots", () => {

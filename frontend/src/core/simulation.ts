@@ -9,7 +9,7 @@ import {
 } from "../shapes";
 import {
   DEFAULT_NANOBOT_TIMINGS,
-  easeInOutCubic,
+  groupWindow,
   planLayers,
   writeMicrobotFrame,
   writeNanobotFrame,
@@ -36,7 +36,11 @@ import { buildMorphSource } from "../voxel/correspondence";
 // Lo que NO vive acá: escena, cámara, postprocesado, reactor y panel de
 // control. Eso es presentación y sigue en main.ts.
 
-export const MICROBOT_EXO_DURATION = 2.2;
+// Fase 37: el exoesqueleto ya no sale de un saque, sale en dos grupos
+// (nodos y después uniones). La duración sube porque ahora tiene que
+// alcanzar para las dos ventanas más la cola de asentamiento; cada grupo
+// vuela ~1,65 s, parecido a lo que tardaba antes el lanzamiento entero.
+export const MICROBOT_EXO_DURATION = 3.4;
 // Mismo problema y mismo trayecto de 18 unidades que el remolino de
 // Nanobots: 1.4 era un 7,8% de desvío, invisible. Los Microbots giran un
 // poco más abierto porque salen todos juntos y el vórtice es lo único que
@@ -283,6 +287,9 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   let microbotPhase: MicrobotPhase = "hidden";
   let microbotCount = Math.min(settings.microbotCount, deps.maxMicrobots);
   let microbotExo: Exoskeleton | null = null;
+  // Cuántas de esas instancias son vigas. Define si el exoesqueleto sale
+  // en uno o en dos grupos, y alimenta el desglose por tipo.
+  let microbotBeamCount = 0;
   let microbotElapsed = 0;
   const microbotRenderPoints = new Float32Array(deps.maxMicrobots * 3);
   const microbotRenderRelationSpans = new Float32Array(deps.maxMicrobots * 6);
@@ -296,10 +303,27 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   let pendingCount: number | null = null;
 
   function computeMicrobotTargets(): void {
-    microbotExo = buildExoskeleton(currentShapeName ?? "", microbotCount, FORMATION_CENTER);
+    const exo = buildExoskeleton(currentShapeName ?? "", microbotCount, FORMATION_CENTER);
+    microbotExo = exo;
+    // Se cuenta UNA vez acá, al construir el exoesqueleto, y no en cada
+    // lectura del desglose por tipo: es el mismo recorrido de hasta 60.000
+    // elementos, pero una vez por figura en lugar de una por cuadro.
+    let beams = 0;
+    if (exo) for (let i = 0; i < microbotCount; i++) if (exo.isBeam[i]) beams++;
+    microbotBeamCount = beams;
   }
 
-  function renderMicrobotsAt(eased: number): void {
+  /**
+   * Cuántos grupos escalonados tiene la salida del exoesqueleto: nodos y
+   * uniones, o uno solo cuando la figura no tiene vigas (las humanoides
+   * usan hueso macizo). Con un grupo vacío quedaría medio lanzamiento sin
+   * nada en pantalla.
+   */
+  function microbotGroups(): number {
+    return microbotBeamCount > 0 ? 2 : 1;
+  }
+
+  function renderMicrobotsAt(progress: number): void {
     if (!microbotExo) return;
     const { points, relationSpans, isBeam } = microbotExo;
     writeMicrobotFrame(
@@ -311,11 +335,26 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       microbotCount,
       reactorCenter,
       swirlAxes,
-      eased,
+      progress,
       MICROBOT_SWIRL_TURNS,
       MICROBOT_SWIRL_MAX_RADIUS,
+      microbotGroups(),
     );
     microbotMesh.updateFromPositions(microbotRenderPoints, microbotCount, isBeam, microbotRenderRelationSpans);
+  }
+
+  /**
+   * Encola el exoesqueleto con las MISMAS ventanas que usa la cinemática
+   * para escribir las posiciones (ver groupWindow): la cola de tareas
+   * describe lo que se ve, no una versión aparte de la secuencia.
+   */
+  function planStructureTasks(): void {
+    const groups = microbotGroups();
+    director.planStructure({
+      exoDuration: MICROBOT_EXO_DURATION,
+      nodeEnd: groupWindow(0, groups).end * MICROBOT_EXO_DURATION,
+      beamStart: groups > 1 ? groupWindow(1, groups).start * MICROBOT_EXO_DURATION : null,
+    });
   }
 
   function renderNanobotsAt(elapsed: number, retracting = false): void {
@@ -522,7 +561,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     if (microbotPhase !== "retracting") microbotElapsed = 0;
     microbotPhase = "launching";
     microbotMesh.setVisible(true);
-    director.planStructure(MICROBOT_EXO_DURATION);
+    planStructureTasks();
     applyParams();
   }
 
@@ -582,7 +621,13 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     microbotCount = Math.min(count, deps.maxMicrobots);
     settings.microbotCount = microbotCount;
     if (microbotPhase !== "launching" && microbotPhase !== "settled") return;
+    const groupsAntes = microbotGroups();
     computeMicrobotTargets();
+    // Bajar mucho la cantidad puede dejar la figura sin vigas, y con eso el
+    // exoesqueleto pasa de dos grupos a uno. Se re-encola sólo en ese caso
+    // y sólo durante el lanzamiento: ya asentado, planStructure borraría
+    // las tareas de Nanobots que para entonces sí existen.
+    if (microbotPhase === "launching" && microbotGroups() !== groupsAntes) planStructureTasks();
     if (microbotPhase === "settled") renderMicrobotsAt(1);
   }
 
@@ -594,7 +639,9 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     if (microbotPhase === "launching" || microbotPhase === "retracting") {
       const direction = microbotPhase === "launching" ? 1 : -1;
       microbotElapsed = Math.min(Math.max(microbotElapsed + direction * dt, 0), MICROBOT_EXO_DURATION);
-      renderMicrobotsAt(easeInOutCubic(microbotElapsed / MICROBOT_EXO_DURATION));
+      // Progreso crudo: el suavizado y el reparto por grupo los aplica la
+      // cinemática, que es la que sabe qué ventana le toca a cada uno.
+      renderMicrobotsAt(microbotElapsed / MICROBOT_EXO_DURATION);
       director.sync(microbotElapsed, nanobotElapsed);
       // El relleno arranca cuando el director da por cumplida la tarea del
       // exoesqueleto — antes esta condición estaba duplicada acá como una
@@ -736,10 +783,8 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       // y vigas (conexión). Se suman acá para que el desglose describa el
       // enjambre COMPLETO y no sólo media población.
       if (microbotPhase !== "hidden" && microbotExo) {
-        let vigas = 0;
-        for (let i = 0; i < microbotCount; i++) if (microbotExo.isBeam[i]) vigas++;
-        typeCountsScratch[BOT_TYPE.MICROBOT] += microbotCount - vigas;
-        typeCountsScratch[BOT_TYPE.UNION] += vigas;
+        typeCountsScratch[BOT_TYPE.MICROBOT] += microbotCount - microbotBeamCount;
+        typeCountsScratch[BOT_TYPE.UNION] += microbotBeamCount;
       }
       return typeCountsScratch;
     },

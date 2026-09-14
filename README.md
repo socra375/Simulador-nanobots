@@ -38,6 +38,11 @@ agente que antes topaba a Nanobots en 10.000 (ver "Notas de rendimiento"):
    expansión mínima + conexiones extra), ya que no tienen huesos reales.
    Microbots no tiene física boid propia ni "Comandos" propio — siempre
    sigue automáticamente la figura activa de Nanobots.
+   En las formas con red genérica el exoesqueleto sale **en dos grupos, uno
+   después del otro**: primero los nodos (Microbots) y después las vigas
+   que los unen (Union Bots), con un solape chico entre las dos ventanas.
+   Las humanoides no tienen vigas, así que salen en un solo grupo en vez
+   de dejar medio lanzamiento esperando a un grupo vacío.
 2. Recién cuando ese exoesqueleto termina de asentarse, **Nanobots** sale
    del núcleo con un **enjambre escalonado por capas**, al estilo del
    nanotech que se auto-ensambla partícula por partícula (referencia:
@@ -102,7 +107,10 @@ alineación que deja el usuario en el panel, para el movimiento orgánico
 de enjambre.
 
 El exoesqueleto de Microbots se revela con un tiempo fijo (lanzamiento en
-vórtice de ~2.2s, sin física que "asentar"). Recién cuando termina, Nanobots
+vórtice de ~3.4s, sin física que "asentar"), repartido entre sus dos grupos
+—nodos y uniones— más una cola final en la que ya está todo puesto, para
+que el relleno no salga pisando el último instante de vuelo de las vigas.
+Recién cuando termina, Nanobots
 arranca su propio revelado por capas: cada capa (Detalle, luego cada ola
 de Color) dura un tiempo fijo — ~1s de vuelo por agente más ~1s de
 "ventana" en la que se reparten los instantes de salida de todos los
@@ -193,8 +201,10 @@ voxel/
 
 - **Estado de los agentes**: cuántos están en el núcleo, viajando,
   ensamblando, asentados, volviendo o en reposo.
-- **Cola de tareas**: exoesqueleto → relleno → una tarea por ola de color,
-  con su estado.
+- **Cola de tareas**: exoesqueleto → uniones → relleno → una tarea por ola
+  de color, con su estado. Es la misma secuencia que se ve en pantalla: las
+  ventanas de los grupos salen de una sola fuente (`groupWindow`), así que
+  la cola no puede describir un orden distinto del que se anima.
 - **Cobertura de la figura**: qué fracción del volumen de la forma ocupan
   realmente los nanobots. Responde a "¿me alcanzan los agentes para esta
   figura?", que antes sólo se podía adivinar mirando.

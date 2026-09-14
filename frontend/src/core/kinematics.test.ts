@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_NANOBOT_TIMINGS,
   easeInOutCubic,
+  GROUP_SETTLE_FRACTION,
+  groupWindow,
   layerIndexAt,
   makeSwirlAxes,
   swirlOffset,
+  writeMicrobotFrame,
   writeNanobotFrame,
   type LayerPlan,
   type SwirlAxes,
@@ -332,5 +335,139 @@ describe("espiral de regreso", () => {
     const out = new Float32Array(count * 3);
     writeNanobotFrame(out, points, count, plan, core, axes, total * 0.4);
     for (let i = 0; i < out.length; i++) expect(a[i]).toBeCloseTo(out[i], 6);
+  });
+});
+
+// Fase 37: la salida del exoesqueleto dejó de ser un bulto único. Los
+// nodos (Microbots) salen primero y las vigas (Union Bots) después, cada
+// grupo con su ventana sobre el MISMO progreso — no hay reloj nuevo ni
+// duración por grupo, se reparte la que ya había.
+describe("groupWindow: reparto de la salida en grupos", () => {
+  it("con un solo grupo, ocupa todo el vuelo y deja la cola de asentamiento", () => {
+    const w = groupWindow(0, 1);
+    expect(w.start).toBe(0);
+    expect(w.end).toBeCloseTo(1 - GROUP_SETTLE_FRACTION, 10);
+  });
+
+  it("con dos grupos, el segundo arranca después del primero y se solapan poco", () => {
+    const a = groupWindow(0, 2);
+    const b = groupWindow(1, 2);
+    expect(a.start).toBe(0);
+    expect(b.start).toBeGreaterThan(0);
+    // Secuencial: el segundo arranca cuando el primero ya casi terminó.
+    expect(b.start).toBeGreaterThan(a.end * 0.8);
+    expect(b.start).toBeLessThan(a.end);
+    expect(b.end).toBeGreaterThan(a.end);
+  });
+
+  it("el último grupo termina de volar antes del final, no justo encima", () => {
+    // Si terminara en 1 no habría separación con lo que sale después.
+    expect(groupWindow(1, 2).end).toBeCloseTo(1 - GROUP_SETTLE_FRACTION, 10);
+  });
+
+  it("todos los grupos tienen la misma duración de vuelo", () => {
+    const a = groupWindow(0, 2);
+    const b = groupWindow(1, 2);
+    expect(b.end - b.start).toBeCloseTo(a.end - a.start, 10);
+  });
+});
+
+describe("writeMicrobotFrame: salida escalonada de nodos y vigas", () => {
+  const core: Vec3 = [-8, 8, -8];
+  const axes = makeSwirlAxes(core, [4, 2, 4]);
+  const count = 6;
+  // Mitad nodos, mitad vigas.
+  const isBeam = Uint8Array.from([0, 0, 0, 1, 1, 1]);
+  const points = new Float32Array(count * 3);
+  const spans = new Float32Array(count * 6);
+  for (let i = 0; i < count; i++) {
+    points[i * 3 + 0] = 4 + i;
+    points[i * 3 + 1] = 2;
+    points[i * 3 + 2] = 4;
+    spans[i * 6 + 0] = 4 + i; spans[i * 6 + 1] = 2; spans[i * 6 + 2] = 4;
+    spans[i * 6 + 3] = 5 + i; spans[i * 6 + 4] = 2; spans[i * 6 + 5] = 4;
+  }
+
+  function frame(progress: number, groups: number) {
+    const outPoints = new Float32Array(count * 3);
+    const outSpans = new Float32Array(count * 6);
+    writeMicrobotFrame(
+      outPoints, outSpans, points, spans, isBeam, count,
+      core, axes, progress, 2.2, 5.0, groups,
+    );
+    return { outPoints, outSpans };
+  }
+
+  /** Cuánto se alejó del núcleo un nodo (0 = todavía adentro). */
+  function nodeDistance(outPoints: Float32Array, i: number): number {
+    const dx = outPoints[i * 3 + 0] - core[0];
+    const dy = outPoints[i * 3 + 1] - core[1];
+    const dz = outPoints[i * 3 + 2] - core[2];
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
+  }
+
+  function beamDistance(outSpans: Float32Array, i: number): number {
+    const dx = outSpans[i * 6 + 0] - core[0];
+    const dy = outSpans[i * 6 + 1] - core[1];
+    const dz = outSpans[i * 6 + 2] - core[2];
+    return Math.sqrt(dx * dx + dy * dy + dz * dz);
+  }
+
+  // ESTE es el test de la fase: es lo que el usuario pidió (que salga un
+  // grupo, después otro) y lo que se rompería si alguien volviera a
+  // compartir un único progreso entre los dos.
+  it("cuando los nodos ya salieron, las vigas todavía no arrancaron", () => {
+    const { outPoints, outSpans } = frame(groupWindow(0, 2).end * 0.5, 2);
+    expect(nodeDistance(outPoints, 0)).toBeGreaterThan(1);
+    // Las vigas siguen dentro del núcleo (el remolino vale 0 en eased=0).
+    expect(beamDistance(outSpans, 3)).toBeCloseTo(0, 6);
+  });
+
+  it("al final del lanzamiento los DOS grupos están en su posición exacta", () => {
+    const { outPoints, outSpans } = frame(1, 2);
+    for (let i = 0; i < 3; i++) {
+      expect(outPoints[i * 3 + 0]).toBeCloseTo(points[i * 3 + 0], 6);
+      expect(outPoints[i * 3 + 1]).toBeCloseTo(points[i * 3 + 1], 6);
+    }
+    for (let i = 3; i < count; i++) {
+      expect(outSpans[i * 6 + 0]).toBeCloseTo(spans[i * 6 + 0], 6);
+      expect(outSpans[i * 6 + 3]).toBeCloseTo(spans[i * 6 + 3], 6);
+    }
+  });
+
+  it("en progreso 0 todo sale exactamente del núcleo", () => {
+    const { outPoints, outSpans } = frame(0, 2);
+    for (let i = 0; i < 3; i++) expect(nodeDistance(outPoints, i)).toBeCloseTo(0, 6);
+    for (let i = 3; i < count; i++) expect(beamDistance(outSpans, i)).toBeCloseTo(0, 6);
+  });
+
+  it("con un solo grupo nodos y vigas salen juntas: nadie espera a un grupo vacío", () => {
+    const mitad = groupWindow(0, 1).end * 0.5;
+    const { outPoints, outSpans } = frame(mitad, 1);
+    expect(nodeDistance(outPoints, 0)).toBeGreaterThan(1);
+    expect(beamDistance(outSpans, 3)).toBeGreaterThan(1);
+  });
+
+  it("los dos extremos de una viga viajan juntos: sigue siendo una pieza rígida", () => {
+    const { outSpans } = frame(0.7, 2);
+    const i = 4;
+    const largo = Math.hypot(
+      outSpans[i * 6 + 3] - outSpans[i * 6 + 0],
+      outSpans[i * 6 + 4] - outSpans[i * 6 + 1],
+      outSpans[i * 6 + 5] - outSpans[i * 6 + 2],
+    );
+    // Crece desde ~0 en el núcleo hasta su largo real (1 unidad).
+    expect(largo).toBeGreaterThan(0);
+    expect(largo).toBeLessThanOrEqual(1 + 1e-6);
+  });
+
+  it("nunca produce NaN en todo el recorrido, con uno o dos grupos", () => {
+    for (const groups of [1, 2]) {
+      for (let p = 0; p <= 1.0001; p += 0.05) {
+        const { outPoints, outSpans } = frame(p, groups);
+        for (const v of outPoints) expect(Number.isNaN(v)).toBe(false);
+        for (const v of outSpans) expect(Number.isNaN(v)).toBe(false);
+      }
+    }
   });
 });
