@@ -10,6 +10,7 @@ import {
   addTaskQueuePanel,
   addCoveragePanel,
   addBotTypePanel,
+  addInspectionFolder,
   type UiState,
 } from "./ui";
 import { loadConfig, saveConfig, type SwarmConfig } from "./config-client";
@@ -18,7 +19,10 @@ import { createMetrics } from "./core/metrics";
 import { makeSwirlAxes } from "./core/kinematics";
 import { createSimulation, IDLE_SEEK_WEIGHT } from "./core/simulation";
 import { createFrameLoop } from "./core/loop";
-import { createLodSelector } from "./rendering/bot-lod";
+import { createLodSelector, LOD_LEVEL } from "./rendering/bot-lod";
+import { createZoomMode } from "./ui/zoom-mode";
+import { createBotInspector } from "./ui/bot-inspector";
+import { createLayerInspector, SWARM_LAYER, type LayerVisibility } from "./ui/layer-inspector";
 
 // Punto de entrada: SOLO cableado. La simulación del enjambre vive en
 // core/simulation.ts y el loop en core/loop.ts — hasta la Fase 27 todo
@@ -51,7 +55,7 @@ const DEFAULT_STATE: UiState = {
 
 async function main() {
   const container = document.getElementById("app")!;
-  const { scene, renderer, composer, controls } = createScene(container);
+  const { scene, camera, renderer, composer, controls } = createScene(container);
 
   // Fase 26a: el brief exige medir antes de optimizar, y el informe final
   // necesita números de "antes". Se expone en `window` para poder leerlo
@@ -146,6 +150,64 @@ async function main() {
   const lod = createLodSelector();
   swarmMesh.setLodLevel(lod.level);
 
+  // --- Modo de inspección (Fase 33) ---------------------------------
+  //
+  // Tres herramientas que comparten propósito: acercarse más de lo que el
+  // zoom normal permite, mirar un tipo de bot en detalle, y separar las
+  // capas para entender cómo se apila el objeto. NINGUNA toca la
+  // simulación: sólo cambian cómo se dibuja lo que ya está pasando.
+
+  const inspector = createBotInspector();
+  document.body.appendChild(inspector.element);
+
+  const layerState = {
+    visible: [true, true, true, true],
+    explode: 0,
+  };
+
+  function applyLayers(state: LayerVisibility): void {
+    // El desplazamiento se reparte simétrico alrededor del centro para que
+    // separar las capas no mande la figura entera fuera de cuadro.
+    const step = state.explode;
+    microbotMesh.setLayerDisplay(
+      { visible: state.visible[SWARM_LAYER.STRUCTURE], offsetY: -1.5 * step },
+      { visible: state.visible[SWARM_LAYER.CONNECTION], offsetY: -0.5 * step },
+    );
+    swarmMesh.setLayerDisplay(
+      { visible: state.visible[SWARM_LAYER.DETAIL], offsetY: 0.5 * step },
+      { visible: state.visible[SWARM_LAYER.MATERIAL], offsetY: 1.5 * step },
+    );
+  }
+
+  const layers = createLayerInspector({ onChange: applyLayers });
+  document.body.appendChild(layers.element);
+  applyLayers(layerState as LayerVisibility);
+
+  const zoom = createZoomMode({
+    camera,
+    controls,
+    onChange: (on) => {
+      // En zoom especial el detalle alto es el punto: se fuerza sin
+      // esperar a que la distancia cruce el umbral.
+      if (on) swarmMesh.setLodLevel(LOD_LEVEL.NEAR);
+      else swarmMesh.setLodLevel(lod.level);
+    },
+  });
+
+  let layersOpen = false;
+  addInspectionFolder(gui, {
+    onToggleZoom: () => zoom.toggle(),
+    onToggleInspector: () => {
+      inspector.setOpen(!inspector.open);
+      return inspector.open;
+    },
+    onToggleLayers: () => {
+      layersOpen = !layersOpen;
+      layers.setOpen(layersOpen);
+      return layersOpen;
+    },
+  });
+
   const loop = createFrameLoop(
     (dt) => {
       const frameStart = performance.now();
@@ -155,7 +217,10 @@ async function main() {
       controls.update(); // necesario por el damping de OrbitControls
       // `update` devuelve true sólo cuando el nivel CAMBIÓ, así que en un
       // paneo normal esto es una resta y una comparación por cuadro.
-      if (lod.update(controls.getDistance())) swarmMesh.setLodLevel(lod.level);
+      // Con el zoom especial activo el nivel lo fija el modo, no la
+      // distancia: si no, alejarse un poco dentro del modo bajaría el
+      // detalle justo cuando el usuario lo pidió.
+      if (lod.update(controls.getDistance()) && !zoom.active) swarmMesh.setLodLevel(lod.level);
       sim.step(dt);
       composer.render();
 
@@ -172,6 +237,8 @@ async function main() {
       paintTaskQueue(readDirector);
       paintCoverage(readCoverage);
       paintBotTypes(readTypeCounts);
+      inspector.setCounts(sim.state.typeCounts);
+      inspector.render(dt);
     },
     {
       onError: (err) => console.error("Error en el loop de animación; se detiene el render:", err),

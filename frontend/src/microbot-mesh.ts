@@ -37,7 +37,18 @@ const NODE_EMISSIVE = botVisual(BOT_TYPE.MICROBOT).identityEmissive;
 const BEAM_COLOR = botVisual(BOT_TYPE.UNION).identityColor;
 const BEAM_EMISSIVE = botVisual(BOT_TYPE.UNION).identityEmissive;
 
+export interface LayerDisplay {
+  visible: boolean;
+  offsetY: number;
+}
+
 export interface MicrobotSwarmMesh {
+  /**
+   * Visibilidad y desplazamiento vertical de las dos capas de esta malla:
+   * los NODOS son la estructura (Microbots) y las VIGAS las conexiones
+   * (Union Bots). Sólo presentación; la simulación no se entera.
+   */
+  setLayerDisplay: (structure: LayerDisplay, connection: LayerDisplay) => void;
   group: THREE.Group;
   setCount: (count: number) => void;
   setVisible: (visible: boolean) => void;
@@ -176,5 +187,12 @@ export function createMicrobotSwarmMesh(maxCount: number): MicrobotSwarmMesh {
     group.visible = visible;
   }
 
-  return { group, setCount, setVisible, updateFromPositions };
+  function setLayerDisplay(structure: LayerDisplay, connection: LayerDisplay) {
+    nodeMesh.visible = structure.visible;
+    nodeMesh.position.y = structure.offsetY;
+    beamMesh.visible = connection.visible;
+    beamMesh.position.y = connection.offsetY;
+  }
+
+  return { group, setCount, setVisible, updateFromPositions, setLayerDisplay };
 }

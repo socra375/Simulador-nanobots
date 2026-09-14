@@ -97,6 +97,11 @@ function buildRoleMaterial(role: number): THREE.Material {
   });
 }
 
+export interface LayerDisplay {
+  visible: boolean;
+  offsetY: number;
+}
+
 export interface NanobotSwarmMesh {
   group: THREE.Group;
   setCount: (count: number) => void;
@@ -126,6 +131,16 @@ export interface NanobotSwarmMesh {
    * instanceMatrix no se toca: las instancias siguen donde estaban.
    */
   setLodLevel: (level: LodLevel) => void;
+  /**
+   * Visibilidad y desplazamiento vertical por capa (vista de capas).
+   *
+   * Es puramente de PRESENTACIÓN: no toca posiciones de agentes ni estado
+   * de simulación. La visibilidad de cada capa se aplica sobre `.visible`
+   * de la malla, que es un eje independiente del conteo de instancias con
+   * el que se maneja el revelado progresivo — por eso las dos cosas
+   * conviven sin pisarse.
+   */
+  setLayerDisplay: (detail: LayerDisplay, material: LayerDisplay) => void;
 }
 
 // Un InstancedMesh por rol (detalle/color) más uno por ola de color extra,
@@ -387,6 +402,22 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     }
   }
 
+  function setLayerDisplay(detail: LayerDisplay, material: LayerDisplay) {
+    const detailMesh = instancedMeshes[NANOBOT_ROLE.DETAIL];
+    detailMesh.visible = detail.visible;
+    detailMesh.position.y = detail.offsetY;
+
+    // La capa de material son el mesh del rol COLOR y todas las olas.
+    // colorWaveMeshes[0] ES instancedMeshes[COLOR] (misma referencia, ver
+    // ensureCapacity), así que alcanza con recorrer las olas.
+    for (const mesh of colorWaveMeshes) {
+      mesh.visible = material.visible;
+      mesh.position.y = material.offsetY;
+    }
+    instancedMeshes[NANOBOT_ROLE.COLOR].visible = material.visible;
+    instancedMeshes[NANOBOT_ROLE.COLOR].position.y = material.offsetY;
+  }
+
   function setLodLevel(level: LodLevel) {
     if (level === lodLevel) return;
     lodLevel = level;
@@ -406,5 +437,14 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
 
   setCount(0);
 
-  return { group, setCount, updateFromPositions, setVisible, setColorClusters, setSkeletonGrayscale, setLodLevel };
+  return {
+    group,
+    setCount,
+    updateFromPositions,
+    setVisible,
+    setColorClusters,
+    setSkeletonGrayscale,
+    setLodLevel,
+    setLayerDisplay,
+  };
 }

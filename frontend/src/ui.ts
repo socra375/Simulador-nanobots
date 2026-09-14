@@ -288,6 +288,46 @@ export function addBotTypePanel(gui: GUI): (readCounts: () => Uint32Array) => vo
   };
 }
 
+export interface InspectionCallbacks {
+  onToggleZoom: () => boolean;
+  onToggleInspector: () => boolean;
+  onToggleLayers: () => boolean;
+}
+
+/**
+ * Carpeta "Inspección": los tres interruptores del modo de observación
+ * (Fase 33). Van juntos porque son la misma herramienta vista desde tres
+ * ángulos — acercarse, mirar un tipo, y separar las capas.
+ */
+export function addInspectionFolder(gui: GUI, callbacks: InspectionCallbacks): void {
+  const folder = gui.addFolder("Inspección");
+
+  const tip = document.createElement("div");
+  tip.style.cssText = "font-size:10px;opacity:0.5;line-height:1.35;padding:4px 10px";
+  tip.textContent =
+    "El Zoom especial deja acercarse mucho más que el zoom normal, y ahí se distingue el hexágono y el tipo de cada bot.";
+  folder.domElement.appendChild(tip);
+
+  const acciones = {
+    zoom: () => {
+      const on = callbacks.onToggleZoom();
+      zoomCtrl.name(on ? "Zoom especial: ACTIVO" : "Zoom especial");
+    },
+    inspector: () => {
+      const on = callbacks.onToggleInspector();
+      inspCtrl.name(on ? "Inspección de bots: ABIERTA" : "Inspección de bots");
+    },
+    capas: () => {
+      const on = callbacks.onToggleLayers();
+      capasCtrl.name(on ? "Ver capas: ABIERTO" : "Ver capas");
+    },
+  };
+
+  const zoomCtrl = folder.add(acciones, "zoom").name("Zoom especial");
+  const inspCtrl = folder.add(acciones, "inspector").name("Inspección de bots");
+  const capasCtrl = folder.add(acciones, "capas").name("Ver capas");
+}
+
 // Carpeta "Comandos": el usuario escribe el nombre de un objeto, adjunta
 // una foto de confirmación y el enjambre forma esa figura. La foto sirve
 // para dos cosas: es el requisito de confirmación de UX (no hay backend/IA
