@@ -647,3 +647,64 @@ describe("morph directo", () => {
     expect(sim.state.stateCounts[AGENT_STATE.ATTACHED]).toBe(settings.count);
   });
 });
+
+// Este bloque existe por un fallo que los tests NO detectaron y sí se vio
+// en pantalla: al pedir la figura nueva, la malla se ocultaba durante los
+// ~2 s del relanzamiento del exoesqueleto y la figura anterior
+// DESAPARECÍA, quedando sólo el reactor. Los tests de morph miraban las
+// posiciones al arrancar la animación, no la visibilidad de la ventana de
+// espera. Un morph que hace desaparecer la figura no es un morph.
+describe("morph: la figura anterior no desaparece mientras espera", () => {
+  it("NO se oculta la malla al pedir otra figura sin volver al núcleo", () => {
+    const { sim, rec } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+
+    rec.calls.length = 0;
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, MICROBOT_EXO_DURATION * 0.5);
+
+    expect(rec.calls).not.toContain("mesh.setVisible(false)");
+  });
+
+  it("la sigue dibujando durante la espera, con la figura VIEJA", () => {
+    const { sim, rec, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    const antes = rec.lastPositions!.slice();
+
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, MICROBOT_EXO_DURATION * 0.5);
+
+    // Se sigue dibujando...
+    expect(rec.lastPositions).not.toBeNull();
+    expect(rec.lastUpdate!.count).toBe(settings.count);
+    // ...y quieta, exactamente donde estaba.
+    for (let i = 0; i < 30; i++) expect(rec.lastPositions![i]).toBeCloseTo(antes[i], 5);
+  });
+
+  it("desde el REPOSO sí se oculta: no hay figura anterior que preservar", () => {
+    const { sim, rec } = makeSim();
+    rec.calls.length = 0;
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    expect(rec.calls).toContain("mesh.setVisible(false)");
+  });
+
+  it("tras volver al núcleo se vuelve a dibujar el enjambre en reposo, no la figura retenida", () => {
+    const { sim, rec } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    const figura = rec.lastPositions!.slice();
+    sim.returnToCore();
+    advance(sim, 20);
+
+    advance(sim, 1);
+    // En reposo la malla SÍ se sigue actualizando (con el enjambre en
+    // descanso, oculto). Lo que no puede pasar es que siga mostrando la
+    // figura vieja congelada.
+    expect(rec.calls).toContain("mesh.setVisible(false)");
+    let iguales = 0;
+    for (let i = 0; i < 30; i++) if (rec.lastPositions![i] === figura[i]) iguales++;
+    expect(iguales).toBeLessThan(30);
+  });
+});

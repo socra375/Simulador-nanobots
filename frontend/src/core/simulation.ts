@@ -242,6 +242,17 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   // Morph directo (Fase 30b): de dónde arranca cada agente. null = del
   // núcleo, que es una formación normal desde el reposo.
   let morphFrom: Float32Array | null = null;
+  // La figura anterior, congelada, mientras el exoesqueleto nuevo se
+  // relanza (~2 s). Sin esto la malla se ocultaba y la figura DESAPARECÍA
+  // en esa ventana — verificado en pantalla: quedaba sólo el reactor. Un
+  // morph que hace desaparecer la figura no es un morph.
+  let morphHold: {
+    positions: Float32Array;
+    count: number;
+    roles: Uint8Array<ArrayBufferLike>;
+    colorWave: Uint8Array<ArrayBufferLike>;
+    revealed: number;
+  } | null = null;
 
   let microbotPhase: MicrobotPhase = "hidden";
   let microbotCount = Math.min(settings.microbotCount, deps.maxMicrobots);
@@ -252,13 +263,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
 
   // Formación que espera a que el exoesqueleto de Microbots termine de
   // asentarse antes de arrancar (ver step()).
-  let pendingFormation: {
-    shapeName: string;
-    colorClusters: ColorCluster[];
-    /** Posiciones congeladas de la figura anterior, para el morph. */
-    morphPrevious: Float32Array | null;
-    morphPreviousCount: number;
-  } | null = null;
+  let pendingFormation: { shapeName: string; colorClusters: ColorCluster[] } | null = null;
   let formationStartedAt: number | null = null;
   // Cantidad pedida durante un repliegue: se aplica al terminar, no en el
   // medio (ver setNanobotCount).
@@ -351,12 +356,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     return { fraction: report.coverage, covered: report.covered, total: report.target };
   }
 
-  function startFormation(
-    name: string,
-    colorClusters: ColorCluster[],
-    morphPrevious: Float32Array | null = null,
-    morphPreviousCount = 0,
-  ): void {
+  function startFormation(name: string, colorClusters: ColorCluster[]): void {
     const formation = formShapeWithRoles(
       name,
       settings.count,
@@ -398,15 +398,17 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     // Cada destino se empareja con el agente viejo más cercano (por
     // celda de vóxel) para que nadie cruce la figura de punta a punta.
     morphFrom =
-      morphPrevious && morphPreviousCount > 0
+      morphHold && morphHold.count > 0
         ? buildMorphSource(
             formation.points,
             settings.count,
-            morphPrevious,
-            morphPreviousCount,
+            morphHold.positions,
+            morphHold.count,
             reactorCenter as [number, number, number],
           ).from
         : null;
+    // La retención cumplió su función: de acá en más dibuja la animación.
+    morphHold = null;
 
     coverage = measureCoverage(name, formation.points, settings.count);
 
@@ -440,6 +442,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     director.clear();
     coverage = null;
     morphFrom = null;
+    morphHold = null;
     applyParams();
   }
 
@@ -450,23 +453,32 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     // reactor. Se congelan sus posiciones ACÁ, antes de que el reseteo de
     // abajo las pise. Desde el reposo no hay nada que congelar: salen del
     // núcleo como siempre.
-    const morphPrevious =
+    morphHold =
       currentShapeName !== null && currentFormation !== null
-        ? nanobotRenderPositions.slice(0, nanobotAnimCount * 3)
+        ? {
+            positions: nanobotRenderPositions.slice(0, nanobotAnimCount * 3),
+            count: nanobotAnimCount,
+            roles: currentRoles,
+            colorWave: currentColorWave,
+            revealed: nanobotPlan.layerCount - 1,
+          }
         : null;
-    const morphPreviousCount = morphPrevious ? nanobotAnimCount : 0;
 
     pendingFormation = null;
     currentFormation = null;
     nanobotPhase = "idle";
     nanobotElapsed = 0;
     applyIdleTargets();
-    swarmMesh.setVisible(false);
-    swarmMesh.setSkeletonGrayscale(false);
+    // Con morph, la figura anterior se queda en pantalla (la redibuja
+    // step() mientras dure la retención); sin morph se oculta como siempre.
+    if (!morphHold) {
+      swarmMesh.setVisible(false);
+      swarmMesh.setSkeletonGrayscale(false);
+    }
 
     currentShapeName = shapeName;
     currentColorClusters = colorClusters ?? DEFAULT_COLOR_CLUSTERS;
-    pendingFormation = { shapeName, colorClusters: currentColorClusters, morphPrevious, morphPreviousCount };
+    pendingFormation = { shapeName, colorClusters: currentColorClusters };
     computeMicrobotTargets();
     // Si veníamos de un repliegue EN CURSO se retoma desde donde quedó:
     // reiniciar en 0 hacía que el exoesqueleto saltara de golpe al núcleo
@@ -554,9 +566,9 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       if (microbotPhase === "launching" && director.isStructureDone()) {
         microbotPhase = "settled";
         if (pendingFormation) {
-          const { shapeName, colorClusters, morphPrevious, morphPreviousCount } = pendingFormation;
+          const { shapeName, colorClusters } = pendingFormation;
           pendingFormation = null;
-          startFormation(shapeName, colorClusters, morphPrevious, morphPreviousCount);
+          startFormation(shapeName, colorClusters);
           nanobotPhase = "forming";
           nanobotElapsed = 0;
           swarmMesh.setVisible(true);
@@ -606,6 +618,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
         // informar sobre algo que no está en pantalla.
         coverage = null;
         morphFrom = null;
+        morphHold = null;
         swarmMesh.setVisible(false);
         // Un cambio de cantidad pedido durante el repliegue se aplica
         // recién acá, con todos los buffers ya libres.
@@ -619,16 +632,37 @@ export function createSimulation(deps: SimulationDeps): Simulation {
         applyParams();
       }
     } else if (nanobotPhase === "idle") {
+      // La física del enjambre en reposo sigue corriendo igual; lo que
+      // cambia es QUÉ se dibuja.
       swarm.step(dt);
-      swarmMesh.updateFromPositions(
-        swarm.getPositions(),
-        swarm.getCount(),
-        currentRoles,
-        currentFormationTargets,
-        ALL_ROLES_VISIBLE,
-        currentColorWave,
-        0,
-      );
+      if (morphHold) {
+        // Morph en curso: la figura anterior se queda quieta y visible
+        // mientras el exoesqueleto nuevo se relanza (~2 s).
+        //
+        // Tiene que estar DENTRO de esta rama, no en un `if` aparte antes:
+        // así estaba en el primer intento y el dibujado de reposo de acá
+        // abajo lo pisaba en el mismo cuadro, dejando en pantalla el
+        // enjambre en descanso en vez de la figura.
+        swarmMesh.updateFromPositions(
+          morphHold.positions,
+          morphHold.count,
+          morphHold.roles,
+          morphHold.positions,
+          ALL_ROLES_VISIBLE,
+          morphHold.colorWave,
+          morphHold.revealed,
+        );
+      } else {
+        swarmMesh.updateFromPositions(
+          swarm.getPositions(),
+          swarm.getCount(),
+          currentRoles,
+          currentFormationTargets,
+          ALL_ROLES_VISIBLE,
+          currentColorWave,
+          0,
+        );
+      }
     }
     // "settled": nada que hacer, el cuadro anterior ya dejó el buffer de
     // instancias en su posición final.
