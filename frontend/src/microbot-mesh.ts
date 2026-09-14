@@ -87,6 +87,11 @@ export function createMicrobotSwarmMesh(maxCount: number): MicrobotSwarmMesh {
 
   const nodeMesh = new THREE.InstancedMesh(nodeGeometry, nodeMaterial, maxCount);
   const beamMesh = new THREE.InstancedMesh(beamGeometry, beamMaterial, maxCount);
+  // Mismo motivo que en nanobot-mesh: la esfera envolvente que calcula
+  // three para un InstancedMesh sale de la geometría y no de las
+  // instancias, así que de cerca descartaría la malla entera.
+  nodeMesh.frustumCulled = false;
+  beamMesh.frustumCulled = false;
   nodeMesh.count = 0;
   beamMesh.count = 0;
   group.add(nodeMesh, beamMesh);

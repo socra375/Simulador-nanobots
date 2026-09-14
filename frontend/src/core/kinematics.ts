@@ -101,11 +101,18 @@ export const DEFAULT_NANOBOT_TIMINGS: NanobotTimings = {
   travelDuration: TRAVEL_DURATION,
   layerStaggerSpan: LAYER_STAGGER_SPAN,
   layerDuration: LAYER_DURATION,
-  swirlTurns: 1.2,
-  swirlMaxRadius: 1.0,
+  // Fase 35: el remolino era invisible y había que medirlo para verlo.
+  // El trayecto del reactor (-8, 8, -8) al centro de formación (4, 2, 4)
+  // mide EXACTAMENTE 18 unidades; con maxRadius 1.0 el desvío lateral
+  // máximo era del 5,6% con poco más de una vuelta. O sea: un bamboleo,
+  // no un vórtice. Ahora el radio es ~22% del trayecto y da 2,5 vueltas.
+  swirlTurns: 2.5,
+  swirlMaxRadius: 4.0,
   packetDuration: PACKET_DURATION,
-  packetSwirlTurns: 1.5,
-  packetSwirlMaxRadius: 0.4,
+  // La "bola" de la 1ra ola viaja compacta: su remolino tiene que ser
+  // mucho menor que el del vuelo individual o deja de leerse como bola.
+  packetSwirlTurns: 2.0,
+  packetSwirlMaxRadius: 1.2,
   burstTravelDuration: BURST_WINDOW / 2,
   burstStaggerSpan: BURST_WINDOW / 2,
 };
@@ -246,8 +253,26 @@ export function writeNanobotFrame(
    * están repartidos sobre la figura anterior.
    */
   from: Float32Array | null = null,
+  /**
+   * Espiral de regreso (Fase 35). Cuando es true, el repliegue deja de
+   * ser "la formación al revés" y pasa a ser una cola en espiral que
+   * converge al núcleo: cada agente se va enroscando alrededor del eje
+   * núcleo->figura mientras cae hacia el centro, escalonado por su
+   * delayFraction, así se ve una fila girando en vez de una figura que
+   * se desarma en el lugar.
+   *
+   * Opt-in, igual que `from`: sin esto el camino de código es el de
+   * siempre y los golden frames siguen cubriéndolo.
+   */
+  spiralReturn = false,
 ): void {
   const { layerOf, delayFraction, layerCount, wave0Landing } = plan;
+
+  if (spiralReturn) {
+    writeSpiralReturn(out, points, count, plan, core, axes, elapsed, timings, outState);
+    return;
+  }
+
   const layerIndex = layerIndexAt(elapsed, layerCount, timings.layerDuration);
   const layerElapsed = elapsed - layerIndex * timings.layerDuration;
   const isFirstColorWave = layerIndex === 1;
@@ -299,6 +324,77 @@ export function writeNanobotFrame(
       out[i * 3 + 2] = sz + (points[i * 3 + 2] - sz) * eased + swirlScratch[2];
       if (outState) outState[i] = progressState(eased, movingState);
     }
+  }
+}
+
+/** Vueltas que da la cola al replegarse. */
+const SPIRAL_RETURN_TURNS = 3.0;
+/** Radio de la espiral al arrancar, en el punto más lejano del núcleo. */
+const SPIRAL_RETURN_RADIUS = 6.0;
+
+/**
+ * Repliegue en espiral: los agentes vuelven al núcleo enroscándose.
+ *
+ * POR QUÉ NO ES "LA FORMACIÓN AL REVÉS": deshaciendo la formación, cada
+ * agente vuelve por la misma recta por la que vino y el conjunto se
+ * desarma en el lugar — se ve como un borrado, no como un regreso. Acá el
+ * progreso global se reparte en una COLA (los de las capas más altas
+ * salen primero, igual que al armar pero al revés) y cada agente sigue una
+ * espiral que se cierra sobre el eje núcleo->figura.
+ *
+ * `elapsed` sigue bajando de totalDuration a 0, igual que antes, así que
+ * la máquina de estados de la simulación no cambia en nada.
+ */
+function writeSpiralReturn(
+  out: Float32Array,
+  points: Float32Array,
+  count: number,
+  plan: LayerPlan,
+  core: Vec3,
+  axes: SwirlAxes,
+  elapsed: number,
+  timings: NanobotTimings,
+  outState?: Uint8Array,
+): void {
+  const { layerOf, delayFraction, layerCount } = plan;
+  const total = layerCount * timings.layerDuration;
+  // 0 = recién empieza el repliegue (todos en la figura), 1 = todos en el
+  // núcleo. Se invierte porque `elapsed` viene bajando.
+  const global = total > 0 ? 1 - Math.min(Math.max(elapsed / total, 0), 1) : 1;
+
+  for (let i = 0; i < count; i++) {
+    // La cola: las capas de arriba (color) se van primero y, dentro de
+    // cada capa, el orden de llegada se respeta al revés. Sin esto todos
+    // saldrían a la vez y no habría fila.
+    const layerRank = layerCount > 1 ? (layerCount - 1 - layerOf[i]) / (layerCount - 1) : 0;
+    const queue = (layerRank + delayFraction[i]) * 0.5;
+    const local = Math.min(Math.max((global - queue * 0.6) / 0.4, 0), 1);
+    const eased = easeInOutCubic(local);
+
+    if (local <= 0) {
+      // Todavía en su lugar de la figura, esperando su turno.
+      out[i * 3 + 0] = points[i * 3 + 0];
+      out[i * 3 + 1] = points[i * 3 + 1];
+      out[i * 3 + 2] = points[i * 3 + 2];
+      if (outState) outState[i] = AGENT_STATE.ATTACHED;
+      continue;
+    }
+
+    // La amplitud vale CERO en los dos extremos y es máxima a mitad de
+    // camino (mismo patrón que swirlOffset). Con un `1 - eased` lineal el
+    // agente arrancaba con la amplitud al máximo y SALTABA seis unidades
+    // de costado en el instante en que empezaba a moverse: un corte
+    // visible. Así sale exacto de su lugar en la figura, se abre girando,
+    // y llega exacto al núcleo en vez de quedar en órbita.
+    const amplitude = SPIRAL_RETURN_RADIUS * Math.sin(eased * Math.PI);
+    const angle = eased * SPIRAL_RETURN_TURNS * Math.PI * 2 + i * GOLDEN_ANGLE;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+
+    out[i * 3 + 0] = points[i * 3 + 0] + (core[0] - points[i * 3 + 0]) * eased + (axes.ux * cos + axes.vx * sin) * amplitude;
+    out[i * 3 + 1] = points[i * 3 + 1] + (core[1] - points[i * 3 + 1]) * eased + (axes.uy * cos + axes.vy * sin) * amplitude;
+    out[i * 3 + 2] = points[i * 3 + 2] + (core[2] - points[i * 3 + 2]) * eased + (axes.uz * cos + axes.vz * sin) * amplitude;
+    if (outState) outState[i] = eased >= 1 ? AGENT_STATE.CORE : AGENT_STATE.RETURNING;
   }
 }
 

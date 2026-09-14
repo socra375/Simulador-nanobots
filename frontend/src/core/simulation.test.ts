@@ -32,7 +32,7 @@ interface Recorded {
   lastPositions: Float32Array | null;
 }
 
-function makeSim(settings?: Partial<SimSettings>) {
+function makeSim(settings?: Partial<SimSettings>, reactor?: { pulseColor(c: number): void; resetColor(): void }) {
   const rec: Recorded = { calls: [], lastUpdate: null, formationSettledMs: [], lastPositions: null };
   let swarmCount = 0;
   const positions = new Float32Array(60000 * 3);
@@ -79,6 +79,7 @@ function makeSim(settings?: Partial<SimSettings>) {
     maxMicrobots: 60000,
     now: () => (clock += 100),
     onFormationSettled: (ms) => rec.formationSettledMs.push(ms),
+    reactor,
   });
   rec.calls.length = 0; // descartar lo de la construcción
   return { sim, rec, settings: merged };
@@ -706,5 +707,64 @@ describe("morph: la figura anterior no desaparece mientras espera", () => {
     let iguales = 0;
     for (let i = 0; i < 30; i++) if (rec.lastPositions![i] === figura[i]) iguales++;
     expect(iguales).toBeLessThan(30);
+  });
+});
+
+// Fase 36: el núcleo parpadea y toma el color de cada ola al desplegarla.
+describe("parpadeo del núcleo (Material Bots)", () => {
+  function makeSimConReactor(settings?: Partial<SimSettings>) {
+    const pulses: number[] = [];
+    let resets = 0;
+    const h = makeSim(settings, { pulseColor: (c) => pulses.push(c), resetColor: () => { resets++; } });
+    return { ...h, pulses, resets: () => resets };
+  }
+
+  it("en reposo no parpadea", () => {
+    const h = makeSimConReactor();
+    advance(h.sim, 1);
+    expect(h.pulses).toHaveLength(0);
+  });
+
+  it("no parpadea durante el exoesqueleto ni el relleno: todavía no hay color", () => {
+    const h = makeSimConReactor();
+    h.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(h.sim, FULL_LAUNCH + 0.2); // capa 0 = relleno
+    expect(h.pulses).toHaveLength(0);
+  });
+
+  it("parpadea al entrar la primera ola de color, con SU color", () => {
+    const h = makeSimConReactor();
+    h.sim.formShape("cubo", [{ color: 0x123456, weight: 1 }]);
+    advance(h.sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration + 0.2);
+    expect(h.pulses).toContain(0x123456);
+  });
+
+  it("parpadea UNA vez por ola, no cada cuadro", () => {
+    // El parpadeo dura casi un segundo; relanzarlo 60 veces por segundo lo
+    // dejaría clavado en el primer destello.
+    const h = makeSimConReactor();
+    h.sim.formShape("cubo", [{ color: 0x111111, weight: 1 }]);
+    advance(h.sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    const capasDeColor = h.sim.director.tasks.filter((t) => t.type === TASK_TYPE.APPLY_COLOR).length;
+    expect(h.pulses.length).toBeLessThanOrEqual(capasDeColor);
+    expect(h.pulses.length).toBeGreaterThan(0);
+  });
+
+  it("vuelve al azul de identidad al volver al núcleo", () => {
+    const h = makeSimConReactor();
+    h.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(h.sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    const antes = h.resets();
+    h.sim.returnToCore();
+    advance(h.sim, 20);
+    expect(h.resets()).toBeGreaterThan(antes);
+  });
+
+  it("sin núcleo inyectado no se rompe nada", () => {
+    // El reactor es opcional para que la simulación siga siendo testeable
+    // sin three.js.
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    expect(() => advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3)).not.toThrow();
   });
 });
