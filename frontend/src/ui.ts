@@ -6,6 +6,7 @@ import { extractColorClustersFromFile, type ColorCluster } from "./image-color";
 import { buildVisualHullPoints, type ScanPhotos } from "./visual-hull";
 import { AGENT_STATE_NAMES } from "./swarm/agent-store";
 import { type SwarmDirector } from "./swarm/director";
+import { type CoverageInfo } from "./core/simulation";
 
 export interface UiState extends SwarmParams {
   count: number;
@@ -168,6 +169,40 @@ export function addTaskQueuePanel(gui: GUI): (readDirector: () => SwarmDirector)
     if (next === lastText) return;
     lastText = next;
     list.textContent = next;
+  };
+}
+
+/**
+ * Cobertura de la figura (Fase 30): qué fracción del volumen de la forma
+ * ocupan realmente los nanobots. Responde a "¿me alcanzan los agentes
+ * para esta figura?", que antes sólo se podía adivinar mirando.
+ */
+export function addCoveragePanel(gui: GUI): (readCoverage: () => CoverageInfo | null) => void {
+  const folder = gui.addFolder("Cobertura de la figura");
+  const line = document.createElement("div");
+  line.style.padding = "6px 10px";
+  line.style.fontSize = "11px";
+  line.style.lineHeight = "1.6";
+  line.style.whiteSpace = "pre";
+  line.style.opacity = "0.85";
+  line.textContent = "sin figura";
+  folder.domElement.appendChild(line);
+
+  let lastPaint = -Infinity;
+  let lastText = "";
+
+  return (readCoverage) => {
+    const now = performance.now();
+    if (now - lastPaint < STATE_PANEL_INTERVAL_MS) return;
+    lastPaint = now;
+
+    const c = readCoverage();
+    const next = c
+      ? `${Math.round(c.fraction * 100)}% del volumen\n${c.covered} de ${c.total} celdas`
+      : "sin figura";
+    if (next === lastText) return;
+    lastText = next;
+    line.textContent = next;
   };
 }
 

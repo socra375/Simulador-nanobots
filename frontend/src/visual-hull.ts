@@ -1,4 +1,12 @@
 import { SHAPE_HALF_EXTENT } from "./shapes";
+import {
+  createVoxelGrid,
+  DEFAULT_VOXEL_RES,
+  surfacePoints,
+  voxelIndex,
+  voxelWorldCoord,
+  type VoxelGrid,
+} from "./voxel/grid";
 
 // Fase 23 — Reconstrucción 3D real desde 4 fotos (frente/atrás/lateral
 // izq./lateral der.) vía "visual hull" (shape-from-silhouette): una
@@ -22,7 +30,6 @@ import { SHAPE_HALF_EXTENT } from "./shapes";
 // posición normal, sin rotarla).
 
 const SILHOUETTE_SIZE = 128;
-const DEFAULT_VOXEL_RES = 48;
 // Diferencia de color tolerada (RGB, 0-255 por eje) entre un píxel de
 // fondo YA confirmado y su vecino inmediato durante el flood fill de
 // abajo. Es un umbral LOCAL (paso a paso), no una distancia a un color
@@ -155,30 +162,30 @@ function project(a: number, b: number, s: number, size: number): [number, number
   return [px, py];
 }
 
-// Talla la grilla de vóxeles intersectando las 4 siluetas y devuelve los
-// centros de los vóxeles de SUPERFICIE (con al menos 1 de 6 vecinos que
-// no sobrevivió, o en el borde de la grilla) como nube de puntos —
-// directamente consumible por registerCustomScan (shapes.ts). Costo:
-// ~voxelRes³ operaciones simples, UNA sola vez al reconstruir (no es un
-// costo por-frame, no afecta el framerate del render).
-export function carveVisualHull(
+// Talla la grilla de vóxeles intersectando las 4 siluetas: un vóxel
+// sobrevive sólo si cae dentro del contorno en las CUATRO vistas a la vez
+// — eso es el visual hull. Costo: ~voxelRes³ operaciones simples, UNA sola
+// vez al reconstruir (no es un costo por-frame, no afecta el framerate).
+//
+// Fase 30: la grilla de ocupación que esto armaba a mano ahora es un
+// VoxelGrid (voxel/grid.ts). Misma convención de índices y coordenadas;
+// lo único que cambió es de dónde sale el Uint8Array.
+export function carveVisualHullGrid(
   front: Silhouette,
   back: Silhouette,
   left: Silhouette,
   right: Silhouette,
   voxelRes: number = DEFAULT_VOXEL_RES,
-): Float32Array {
+): VoxelGrid {
   const s = SHAPE_HALF_EXTENT;
-  const kept = new Uint8Array(voxelRes * voxelRes * voxelRes);
-  const idx = (vx: number, vy: number, vz: number) => (vz * voxelRes + vy) * voxelRes + vx;
-  const worldCoord = (v: number) => ((v + 0.5) / voxelRes - 0.5) * 2 * s;
+  const grid = createVoxelGrid(voxelRes, s);
 
   for (let vz = 0; vz < voxelRes; vz++) {
-    const z = worldCoord(vz);
+    const z = voxelWorldCoord(vz, voxelRes, s);
     for (let vy = 0; vy < voxelRes; vy++) {
-      const y = worldCoord(vy);
+      const y = voxelWorldCoord(vy, voxelRes, s);
       for (let vx = 0; vx < voxelRes; vx++) {
-        const x = worldCoord(vx);
+        const x = voxelWorldCoord(vx, voxelRes, s);
 
         const [fpx, fpy] = project(x, y, s, front.size);
         if (!inMask(front.mask, front.size, fpx, fpy)) continue;
@@ -189,32 +196,28 @@ export function carveVisualHull(
         const [rpx, rpy] = project(-z, y, s, right.size);
         if (!inMask(right.mask, right.size, rpx, rpy)) continue;
 
-        kept[idx(vx, vy, vz)] = 1;
+        grid.occupied[voxelIndex(vx, vy, vz, voxelRes)] = 1;
       }
     }
   }
+  return grid;
+}
 
-  const surfacePoints: number[] = [];
-  for (let vz = 0; vz < voxelRes; vz++) {
-    for (let vy = 0; vy < voxelRes; vy++) {
-      for (let vx = 0; vx < voxelRes; vx++) {
-        if (!kept[idx(vx, vy, vz)]) continue;
-        const onBoundary =
-          vx === 0 || vx === voxelRes - 1 || vy === 0 || vy === voxelRes - 1 || vz === 0 || vz === voxelRes - 1;
-        const isSurface =
-          onBoundary ||
-          !kept[idx(vx - 1, vy, vz)] ||
-          !kept[idx(vx + 1, vy, vz)] ||
-          !kept[idx(vx, vy - 1, vz)] ||
-          !kept[idx(vx, vy + 1, vz)] ||
-          !kept[idx(vx, vy, vz - 1)] ||
-          !kept[idx(vx, vy, vz + 1)];
-        if (!isSurface) continue;
-        surfacePoints.push(worldCoord(vx), worldCoord(vy), worldCoord(vz));
-      }
-    }
-  }
-  return new Float32Array(surfacePoints);
+// Los centros de los vóxeles de SUPERFICIE del visual hull, como nube de
+// puntos — directamente consumible por registerCustomScan (shapes.ts).
+//
+// La firma y el resultado son idénticos a los de antes de la Fase 30: los
+// 7 tests de este archivo pasan sin tocarse, que es justamente la prueba
+// de que el VoxelGrid generaliza lo que había y no lo reemplaza por algo
+// parecido.
+export function carveVisualHull(
+  front: Silhouette,
+  back: Silhouette,
+  left: Silhouette,
+  right: Silhouette,
+  voxelRes: number = DEFAULT_VOXEL_RES,
+): Float32Array {
+  return surfacePoints(carveVisualHullGrid(front, back, left, right, voxelRes));
 }
 
 // Wrapper de extremo a extremo: de los 4 archivos a la nube de puntos

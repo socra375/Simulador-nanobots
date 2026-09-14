@@ -490,3 +490,72 @@ describe("cola de tareas (SwarmDirector)", () => {
     expect(d[1]).toBe("relleno: running");
   });
 });
+
+// Fase 30: la métrica de cobertura. Lo que se afirma acá no es que el
+// campo exista, sino que MIDE algo: más nanobots tienen que cubrir más
+// volumen de la misma figura. Si diera un número fijo, estos tests lo
+// dicen.
+describe("cobertura de la figura (VoxelGrid)", () => {
+  it("en reposo no hay cobertura que informar", () => {
+    const { sim } = makeSim();
+    sim.step(0.1);
+    expect(sim.state.coverage).toBeNull();
+  });
+
+  it("formar una figura calcula la cobertura", () => {
+    const { sim } = makeSim({ count: 2000 });
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.2);
+    const c = sim.state.coverage;
+    expect(c).not.toBeNull();
+    expect(c!.total).toBeGreaterThan(0);
+    expect(c!.covered).toBeGreaterThan(0);
+    expect(c!.fraction).toBeGreaterThan(0);
+    expect(c!.fraction).toBeLessThanOrEqual(1);
+  });
+
+  it("MÁS nanobots cubren MÁS: la métrica responde a la cantidad", () => {
+    const pocos = makeSim({ count: 300 });
+    pocos.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(pocos.sim, FULL_LAUNCH + 0.2);
+
+    const muchos = makeSim({ count: 8000 });
+    muchos.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(muchos.sim, FULL_LAUNCH + 0.2);
+
+    expect(muchos.sim.state.coverage!.fraction).toBeGreaterThan(pocos.sim.state.coverage!.fraction);
+  });
+
+  it("la figura de referencia es la misma sin importar cuántos agentes haya", () => {
+    // `total` describe la FIGURA, no el enjambre: si cambiara con el
+    // conteo, comparar cobertura entre dos cantidades no querría decir
+    // nada.
+    const a = makeSim({ count: 300 });
+    a.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(a.sim, FULL_LAUNCH + 0.2);
+
+    const b = makeSim({ count: 8000 });
+    b.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(b.sim, FULL_LAUNCH + 0.2);
+
+    expect(b.sim.state.coverage!.total).toBe(a.sim.state.coverage!.total);
+  });
+
+  it("volver al núcleo borra la cobertura: ya no hay figura que medir", () => {
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    expect(sim.state.coverage).not.toBeNull();
+
+    sim.returnToCore();
+    advance(sim, 20);
+    expect(sim.state.coverage).toBeNull();
+  });
+
+  it("una forma desconocida no rompe nada: cobertura null", () => {
+    const { sim } = makeSim();
+    sim.formShape("no-existe-123", [{ color: 0xff0000, weight: 1 }]);
+    expect(() => advance(sim, FULL_LAUNCH + 5)).not.toThrow();
+    expect(sim.state.coverage).toBeNull();
+  });
+});

@@ -20,6 +20,8 @@ import {
 import { DEFAULT_COLOR_CLUSTERS, type ColorCluster } from "../image-color";
 import { AGENT_STATE, createAgentStore, type AgentStore } from "../swarm/agent-store";
 import { createSwarmDirector, type SwarmDirector } from "../swarm/director";
+import { getShape, shapeRevision } from "../shapes/registry";
+import { validateCoverage, voxelizePoints, type VoxelGrid } from "../voxel/grid";
 
 // Simulación del enjambre (Fase 27c).
 //
@@ -36,6 +38,29 @@ export const MICROBOT_EXO_DURATION = 2.2;
 const MICROBOT_SWIRL_TURNS = 1.5;
 const MICROBOT_SWIRL_MAX_RADIUS = 1.4;
 const NANOBOT_LAYER_DURATION = DEFAULT_NANOBOT_TIMINGS.layerDuration;
+
+// Densidad de referencia con la que se voxeliza la figura "ideal" para
+// medir cobertura (Fase 30). Tiene que ser bastante mayor que cualquier
+// cantidad de nanobots razonable: si fuera parecida, la figura de
+// referencia tendría los mismos huecos que el enjambre y la cobertura
+// daría ~100% siempre, midiendo nada. Es un costo de UNA vez por
+// formación, no por cuadro.
+const COVERAGE_REFERENCE_COUNT = 40000;
+const ORIGIN: readonly [number, number, number] = [0, 0, 0];
+
+// Grilla de referencia por forma. Sirve para dos cosas: evita repetir
+// 40.000 puntos en cada formación, y sobre todo hace que la cobertura sea
+// COMPARABLE — los generadores tienen jitter aleatorio, así que dos
+// llamadas a cubo(40000) voxelizan a un número de celdas levemente
+// distinto (medido: ~0,4%). Sin el caché, comparar la cobertura a 300
+// agentes contra la de 8.000 estaría midiendo también ese ruido de
+// muestreo, no sólo la diferencia de cantidad.
+//
+// Es de módulo, no por simulación: la figura ideal depende de la FORMA,
+// no de quién la está simulando. La clave incluye la revisión de la forma
+// porque "escaneo" se re-registra en cada reconstrucción 3D (ver
+// registerCustomScan) y la referencia vieja ya no describiría la figura.
+const referenceGrids = new Map<string, VoxelGrid>();
 
 // La física boid corre SOLO en reposo (Fase 18), así que este peso de
 // seek es el único que se usa: al formar, la posición la maneja por
@@ -121,6 +146,15 @@ export interface SimulationDeps {
 }
 
 /** Estado observable — para la UI, las métricas y los tests. */
+export interface CoverageInfo {
+  /** 0..1 */
+  readonly fraction: number;
+  /** Celdas de la figura cubiertas por al menos un agente. */
+  readonly covered: number;
+  /** Celdas que tiene la figura de referencia. */
+  readonly total: number;
+}
+
 export interface SimState {
   readonly nanobotPhase: NanobotPhase;
   readonly microbotPhase: MicrobotPhase;
@@ -134,6 +168,12 @@ export interface SimState {
    * panel. Se rellena un array reusado, sin asignar por consulta.
    */
   readonly stateCounts: Uint32Array;
+  /**
+   * Qué fracción del volumen de la figura ocupan realmente los nanobots
+   * (Fase 30). Responde a "¿me alcanzan los agentes para esta figura?".
+   * null en reposo o si la forma no se pudo resolver.
+   */
+  readonly coverage: CoverageInfo | null;
   /**
    * Derivado, NO almacenado. Antes existía un `mode` aparte que se seteaba
    * en paralelo con `currentShapeName` y podía quedar desfasado: por
@@ -197,6 +237,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   // lee `microbotElapsed`/`nanobotElapsed`, que siguen siendo la única
   // línea temporal.
   const director = createSwarmDirector();
+  let coverage: CoverageInfo | null = null;
 
   let microbotPhase: MicrobotPhase = "hidden";
   let microbotCount = Math.min(settings.microbotCount, deps.maxMicrobots);
@@ -269,6 +310,36 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     agents.reset(settings.count, currentRoles, currentFormationTargets);
   }
 
+  /**
+   * Cobertura de la figura por el enjambre actual (Fase 30).
+   *
+   * Compara dos voxelizaciones sobre la MISMA grilla: la figura ideal
+   * (el generador a densidad de referencia) contra los destinos reales de
+   * los agentes. El resultado dice si la cantidad de nanobots alcanza
+   * para representar esta forma, que es algo que el usuario no tenía cómo
+   * saber salvo mirando y adivinando.
+   *
+   * Se calcula UNA vez por formación, y la grilla ideal se cachea por
+   * forma: la primera vez cuesta 40.000 divisiones enteras (irrelevante
+   * al lado de generar la formación), después es gratis. Cero costo por
+   * cuadro en ambos casos.
+   */
+  function measureCoverage(name: string, points: Float32Array, count: number): CoverageInfo | null {
+    const def = getShape(name);
+    if (!def) return null;
+    // El generador devuelve la figura centrada en el origen; los destinos
+    // de los agentes ya vienen trasladados a FORMATION_CENTER.
+    const key = `${name}#${shapeRevision(name)}`;
+    let ideal = referenceGrids.get(key);
+    if (!ideal) {
+      ideal = voxelizePoints(def.generate(COVERAGE_REFERENCE_COUNT), COVERAGE_REFERENCE_COUNT, ORIGIN);
+      referenceGrids.set(key, ideal);
+    }
+    const real = voxelizePoints(points, count, FORMATION_CENTER);
+    const report = validateCoverage(ideal, real);
+    return { fraction: report.coverage, covered: report.covered, total: report.target };
+  }
+
   function startFormation(name: string, colorClusters: ColorCluster[]): void {
     const formation = formShapeWithRoles(
       name,
@@ -308,6 +379,8 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       target: formation.points,
     });
 
+    coverage = measureCoverage(name, formation.points, settings.count);
+
     // Recién acá se sabe cuántas olas de color tiene la figura, así que
     // recién acá se pueden encolar las tareas de Nanobots (el exoesqueleto
     // ya venía encolado desde formShape).
@@ -336,6 +409,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     microbotElapsed = 0;
     microbotMesh.setVisible(false);
     director.clear();
+    coverage = null;
     applyParams();
   }
 
@@ -487,6 +561,9 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       } else if (nanobotPhase === "retracting" && nanobotElapsed <= 0) {
         nanobotPhase = "idle";
         currentFormation = null;
+        // Ya no hay figura: mostrar la cobertura de la anterior sería
+        // informar sobre algo que no está en pantalla.
+        coverage = null;
         swarmMesh.setVisible(false);
         // Un cambio de cantidad pedido durante el repliegue se aplica
         // recién acá, con todos los buffers ya libres.
@@ -524,6 +601,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     get microbotCount() { return microbotCount; },
     get currentShapeName() { return currentShapeName; },
     get stateCounts() { return agents.countByState(stateCountsScratch); },
+    get coverage() { return coverage; },
     get forming() { return currentShapeName !== null; },
   };
 
