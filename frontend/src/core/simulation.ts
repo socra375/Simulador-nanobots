@@ -10,7 +10,6 @@ import {
 import {
   DEFAULT_NANOBOT_TIMINGS,
   easeInOutCubic,
-  layerIndexAt,
   planLayers,
   writeMicrobotFrame,
   writeNanobotFrame,
@@ -20,6 +19,7 @@ import {
 } from "./kinematics";
 import { DEFAULT_COLOR_CLUSTERS, type ColorCluster } from "../image-color";
 import { AGENT_STATE, createAgentStore, type AgentStore } from "../swarm/agent-store";
+import { createSwarmDirector, type SwarmDirector } from "../swarm/director";
 
 // Simulación del enjambre (Fase 27c).
 //
@@ -148,6 +148,8 @@ export interface Simulation {
   readonly state: SimState;
   /** Estado por agente (SoA). Lo lee el panel y, más adelante, la reparación. */
   readonly agents: AgentStore;
+  /** Cola de tareas. La lee el panel; la escribe formShape/returnToCore. */
+  readonly director: SwarmDirector;
   /** Avanza un cuadro. Es el cuerpo del viejo animate(), sin render. */
   step(dt: number): void;
   formShape(shapeName: string, colorClusters: ColorCluster[]): void;
@@ -189,6 +191,12 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   // no cuesta un segundo pase.
   const agents = createAgentStore();
   const stateCountsScratch = new Uint32Array(8);
+  // Fase 29: la secuencia (exoesqueleto -> relleno -> una ola de color por
+  // capa) deja de estar implícita en aritmética suelta acá adentro y pasa a
+  // ser una cola de tareas consultable. El director NO tiene reloj propio:
+  // lee `microbotElapsed`/`nanobotElapsed`, que siguen siendo la única
+  // línea temporal.
+  const director = createSwarmDirector();
 
   let microbotPhase: MicrobotPhase = "hidden";
   let microbotCount = Math.min(settings.microbotCount, deps.maxMicrobots);
@@ -226,10 +234,6 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       MICROBOT_SWIRL_MAX_RADIUS,
     );
     microbotMesh.updateFromPositions(microbotRenderPoints, microbotCount, isBeam, microbotRenderRelationSpans);
-  }
-
-  function nanobotLayerIndexAt(elapsed: number): number {
-    return layerIndexAt(elapsed, nanobotPlan.layerCount, NANOBOT_LAYER_DURATION);
   }
 
   function renderNanobotsAt(elapsed: number, retracting = false): void {
@@ -304,6 +308,14 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       target: formation.points,
     });
 
+    // Recién acá se sabe cuántas olas de color tiene la figura, así que
+    // recién acá se pueden encolar las tareas de Nanobots (el exoesqueleto
+    // ya venía encolado desde formShape).
+    director.planLayers({
+      layerCount: nanobotPlan.layerCount,
+      layerDuration: NANOBOT_LAYER_DURATION,
+    });
+
     // Para casi todas las formas es un eco de `colorClusters` (derivados de
     // la foto); para "cabeza" son los tonos fijos por parte anatómica.
     // shapes decide cuál corresponde, acá sólo se lee el resultado.
@@ -323,6 +335,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     microbotPhase = "hidden";
     microbotElapsed = 0;
     microbotMesh.setVisible(false);
+    director.clear();
     applyParams();
   }
 
@@ -346,6 +359,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     if (microbotPhase !== "retracting") microbotElapsed = 0;
     microbotPhase = "launching";
     microbotMesh.setVisible(true);
+    director.planStructure(MICROBOT_EXO_DURATION);
     applyParams();
   }
 
@@ -358,6 +372,9 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     pendingFormation = null;
     if (microbotPhase === "launching" || microbotPhase === "settled") microbotPhase = "retracting";
     if (nanobotPhase === "forming" || nanobotPhase === "settled") nanobotPhase = "retracting";
+    // Cancela lo pendiente y encola el repliegue. Lo ya cumplido queda
+    // como historial en la cola, no se reescribe.
+    director.planReturn();
   }
 
   function setNanobotCount(count: number): void {
@@ -415,7 +432,11 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       const direction = microbotPhase === "launching" ? 1 : -1;
       microbotElapsed = Math.min(Math.max(microbotElapsed + direction * dt, 0), MICROBOT_EXO_DURATION);
       renderMicrobotsAt(easeInOutCubic(microbotElapsed / MICROBOT_EXO_DURATION));
-      if (microbotPhase === "launching" && microbotElapsed >= MICROBOT_EXO_DURATION) {
+      director.sync(microbotElapsed, nanobotElapsed);
+      // El relleno arranca cuando el director da por cumplida la tarea del
+      // exoesqueleto — antes esta condición estaba duplicada acá como una
+      // comparación suelta contra MICROBOT_EXO_DURATION.
+      if (microbotPhase === "launching" && director.isStructureDone()) {
         microbotPhase = "settled";
         if (pendingFormation) {
           const { shapeName, colorClusters } = pendingFormation;
@@ -438,7 +459,12 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       const direction = nanobotPhase === "forming" ? 1 : -1;
       nanobotElapsed = Math.min(Math.max(nanobotElapsed + direction * dt, 0), nanobotPlan.totalDuration);
       renderNanobotsAt(nanobotElapsed, nanobotPhase === "retracting");
-      const layerIndex = nanobotLayerIndexAt(nanobotElapsed);
+      director.sync(microbotElapsed, nanobotElapsed);
+      // Qué capa se revela sale de la COLA DE TAREAS, no de una cuenta
+      // suelta: la tarea de Nanobots activa ES la capa activa. Un test
+      // barre todo el recorrido afirmando que da exactamente lo mismo que
+      // el layerIndexAt que había antes.
+      const layerIndex = director.nanobotLayerIndex(nanobotElapsed);
       // Detalle pasa a gris apenas arranca la primera ola de Color, para
       // que el color real de la foto termine predominando.
       swarmMesh.setSkeletonGrayscale(layerIndex >= 1);
@@ -507,6 +533,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   return {
     state,
     agents,
+    director,
     step,
     formShape,
     returnToCore,

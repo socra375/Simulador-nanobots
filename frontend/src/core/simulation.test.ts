@@ -10,6 +10,7 @@ import {
 } from "./simulation";
 import { DEFAULT_NANOBOT_TIMINGS, makeSwirlAxes } from "./kinematics";
 import { AGENT_STATE } from "../swarm/agent-store";
+import { TASK_STATUS, TASK_TYPE } from "../swarm/director";
 
 // Arnés de la máquina de estados. Antes de la Fase 27c esto era
 // literalmente intesteable: todo vivía en una closure de main() sin
@@ -400,5 +401,92 @@ describe("desglose por estado (AgentStore)", () => {
     sim.setNanobotCount(120);
     advance(sim, 0.2);
     expect(total(sim.state.stateCounts)).toBe(120);
+  });
+});
+
+// Fase 29: la cola de tareas contra la máquina de estados real. Lo que se
+// afirma acá no es que el director exista, sino que GOBIERNA la secuencia:
+// el relleno espera al exoesqueleto, las olas se cumplen en orden, y el
+// repliegue cancela lo que quedaba.
+describe("cola de tareas (SwarmDirector)", () => {
+  it("en reposo no hay tareas", () => {
+    const { sim } = makeSim();
+    sim.step(0.1);
+    expect(sim.director.tasks).toHaveLength(0);
+  });
+
+  it("pedir una figura encola primero el exoesqueleto, todavía sin las capas", () => {
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    // Las olas de color no se conocen hasta que la forma se resuelve, y eso
+    // pasa recién cuando el exoesqueleto termina.
+    expect(sim.director.tasks.map((t) => t.type)).toEqual([TASK_TYPE.CREATE_STRUCTURE]);
+    expect(sim.director.tasks[0].status).toBe(TASK_STATUS.PENDING);
+  });
+
+  it("el exoesqueleto corre y, al cumplirse, aparecen las tareas de las capas", () => {
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, MICROBOT_EXO_DURATION - 0.3);
+    expect(sim.director.active?.type).toBe(TASK_TYPE.CREATE_STRUCTURE);
+
+    advance(sim, 0.5);
+    expect(sim.director.isStructureDone()).toBe(true);
+    const tipos = sim.director.tasks.map((t) => t.type);
+    expect(tipos[0]).toBe(TASK_TYPE.CREATE_STRUCTURE);
+    expect(tipos).toContain(TASK_TYPE.FILL_STRUCTURE);
+    expect(tipos).toContain(TASK_TYPE.APPLY_COLOR);
+  });
+
+  it("las tareas se cumplen en orden y al asentarse no queda ninguna corriendo", () => {
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.3);
+    expect(sim.director.active?.type).toBe(TASK_TYPE.FILL_STRUCTURE);
+
+    advance(sim, DEFAULT_NANOBOT_TIMINGS.layerDuration);
+    expect(sim.director.active?.type).toBe(TASK_TYPE.APPLY_COLOR);
+
+    advance(sim, DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    expect(sim.state.nanobotPhase).toBe("settled");
+    expect(sim.director.active).toBeNull();
+    expect(sim.director.tasks.every((t) => t.status === TASK_STATUS.DONE)).toBe(true);
+  });
+
+  it("volver al núcleo cancela lo que quedaba y encola el repliegue", () => {
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.3); // relleno en curso, olas pendientes
+    sim.returnToCore();
+
+    const cancelled = sim.director.tasks.filter((t) => t.status === TASK_STATUS.CANCELLED);
+    expect(cancelled.length).toBeGreaterThan(0);
+    expect(sim.director.tasks[sim.director.tasks.length - 1].type).toBe(TASK_TYPE.RETURN_TO_CORE);
+
+    advance(sim, 20);
+    expect(sim.state.nanobotPhase).toBe("idle");
+    expect(sim.director.active).toBeNull();
+  });
+
+  it("formar otra figura sin volver al núcleo reemplaza la cola entera", () => {
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    const idsViejos = sim.director.tasks.map((t) => t.id);
+
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    const idsNuevos = sim.director.tasks.map((t) => t.id);
+    expect(idsNuevos.some((id) => idsViejos.includes(id))).toBe(false);
+  });
+
+  it("describe() sigue el avance real de la formación", () => {
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    expect(sim.director.describe()).toEqual(["exoesqueleto: pending"]);
+
+    advance(sim, FULL_LAUNCH + 0.3);
+    const d = sim.director.describe();
+    expect(d[0]).toBe("exoesqueleto: done");
+    expect(d[1]).toBe("relleno: running");
   });
 });

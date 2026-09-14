@@ -57,11 +57,18 @@ async function attachFakePhoto(page: Page) {
 // no es un módulo decorativo: si dejara de escribirse, este panel se
 // congela y estos tests fallan.
 async function readAgentStatePanel(page: Page): Promise<string> {
-  return page.evaluate(() => {
+  return readFolderText(page, "Estado de los agentes");
+}
+
+// Fase 29: la cola de tareas del director, en vivo.
+async function readTaskQueuePanel(page: Page): Promise<string> {
+  return readFolderText(page, "Cola de tareas");
+}
+
+async function readFolderText(page: Page, title: string): Promise<string> {
+  return page.evaluate((wanted) => {
     const guis = Array.from(document.querySelectorAll(".lil-gui"));
-    const folder = guis.find(
-      (g) => g.querySelector(":scope > .title")?.textContent === "Estado de los agentes",
-    );
+    const folder = guis.find((g) => g.querySelector(":scope > .title")?.textContent === wanted);
     if (!folder) return "(sin panel)";
     // El ÚLTIMO div directo, no el primero: el primero es el título de la
     // carpeta (mismo criterio que readCommandsStatus).
@@ -69,7 +76,7 @@ async function readAgentStatePanel(page: Page): Promise<string> {
       (c) => c.tagName === "DIV" && !c.classList.contains("children") && !c.classList.contains("title"),
     );
     return divs.length ? (divs[divs.length - 1].textContent ?? "") : "(sin contenido)";
-  });
+  }, title);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -336,4 +343,28 @@ test("el panel de estado vuelve a reposo tras volver al núcleo", async ({ page 
   await expect
     .poll(() => readAgentStatePanel(page), { timeout: 180000 })
     .toMatch(/^reposo: \d+$/);
+});
+
+test("la cola de tareas refleja el avance real de la formación", async ({ page }) => {
+  test.setTimeout(300_000);
+
+  await expect.poll(() => readTaskQueuePanel(page), { timeout: 20000 }).toBe("sin tareas");
+
+  await attachFakePhoto(page);
+  await setObjectName(page, "cubo");
+  await clickCommandButton(page, "Formar objeto");
+
+  // Primero sólo el exoesqueleto: las olas de color todavía no se conocen.
+  await expect.poll(() => readTaskQueuePanel(page), { timeout: 20000 }).toMatch(/^exoesqueleto: (pending|running)$/);
+
+  // Cumplido el exoesqueleto aparecen el relleno y las olas.
+  await expect.poll(() => readTaskQueuePanel(page), { timeout: 60000 }).toMatch(/exoesqueleto: done[\s\S]*relleno:/);
+
+  // Y al final TODO queda cumplido, sin ninguna tarea colgada.
+  await expect
+    .poll(() => readTaskQueuePanel(page), { timeout: 180000 })
+    .toMatch(/^(?:(?:exoesqueleto|relleno|color \d+): done\n?)+$/);
+
+  await clickCommandButton(page, "Volver al núcleo");
+  await expect.poll(() => readTaskQueuePanel(page), { timeout: 60000 }).toMatch(/repliegue:/);
 });
