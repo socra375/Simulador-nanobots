@@ -30,6 +30,15 @@ export interface ZoomModeDeps {
   controls: OrbitControls;
   /** Se avisa al entrar/salir para forzar (o soltar) el detalle alto. */
   onChange?: (active: boolean) => void;
+  /**
+   * A DÓNDE acercarse. Sin esto el zoom converge al objetivo de la
+   * órbita, que es el origen de la escena — y ahí no hay nada: la figura
+   * está en (4, 2, 4) y el núcleo en (-8, 8, -8). Verificado en pantalla:
+   * el zoom especial terminaba mirando un vacío negro entre las dos
+   * cosas. Se consulta al ENTRAR, no una vez al construir, porque el
+   * enjambre se mueve.
+   */
+  focusTarget?: () => readonly [number, number, number];
 }
 
 export function createZoomMode(deps: ZoomModeDeps): ZoomMode {
@@ -38,12 +47,16 @@ export function createZoomMode(deps: ZoomModeDeps): ZoomMode {
   // Se guardan los valores REALES del momento de entrar, no constantes.
   let savedMinDistance = controls.minDistance;
   let savedFov = camera.fov;
+  const savedTarget = controls.target.clone();
 
   function enter(): void {
     if (active) return;
     active = true;
     savedMinDistance = controls.minDistance;
     savedFov = camera.fov;
+    savedTarget.copy(controls.target);
+    const focus = deps.focusTarget?.();
+    if (focus) controls.target.set(focus[0], focus[1], focus[2]);
     controls.minDistance = ZOOM_MIN_DISTANCE;
     camera.fov = ZOOM_FOV;
     camera.updateProjectionMatrix();
@@ -54,6 +67,7 @@ export function createZoomMode(deps: ZoomModeDeps): ZoomMode {
     if (!active) return;
     active = false;
     controls.minDistance = savedMinDistance;
+    controls.target.copy(savedTarget);
     camera.fov = savedFov;
     camera.updateProjectionMatrix();
     // Si el usuario quedó más cerca que el mínimo normal, OrbitControls lo

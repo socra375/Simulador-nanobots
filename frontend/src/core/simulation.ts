@@ -37,8 +37,12 @@ import { buildMorphSource } from "../voxel/correspondence";
 // control. Eso es presentación y sigue en main.ts.
 
 export const MICROBOT_EXO_DURATION = 2.2;
-const MICROBOT_SWIRL_TURNS = 1.5;
-const MICROBOT_SWIRL_MAX_RADIUS = 1.4;
+// Mismo problema y mismo trayecto de 18 unidades que el remolino de
+// Nanobots: 1.4 era un 7,8% de desvío, invisible. Los Microbots giran un
+// poco más abierto porque salen todos juntos y el vórtice es lo único que
+// los separa visualmente durante el viaje.
+const MICROBOT_SWIRL_TURNS = 2.2;
+const MICROBOT_SWIRL_MAX_RADIUS = 5.0;
 const NANOBOT_LAYER_DURATION = DEFAULT_NANOBOT_TIMINGS.layerDuration;
 
 // Densidad de referencia con la que se voxeliza la figura "ideal" para
@@ -131,6 +135,16 @@ export interface SimSettings {
   maxSpeed: number;
 }
 
+/**
+ * Lo que la simulación necesita del núcleo (Fase 36). Se declara acá, en
+ * vez de importar el Reactor entero, para que la simulación siga siendo
+ * testeable sin three.js — igual que las mallas.
+ */
+export interface ReactorApi {
+  pulseColor(color: number): void;
+  resetColor(): void;
+}
+
 export interface SimulationDeps {
   swarm: SwarmApi;
   swarmMesh: NanobotMeshApi;
@@ -145,6 +159,8 @@ export interface SimulationDeps {
   now?: () => number;
   /** Duración total de una formación, en ms, al terminar de asentarse. */
   onFormationSettled?: (ms: number) => void;
+  /** Opcional: el núcleo, para que parpadee al desplegar cada ola de color. */
+  reactor?: ReactorApi;
 }
 
 /** Estado observable — para la UI, las métricas y los tests. */
@@ -254,6 +270,8 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   // relanza (~2 s). Sin esto la malla se ocultaba y la figura DESAPARECÍA
   // en esa ventana — verificado en pantalla: quedaba sólo el reactor. Un
   // morph que hace desaparecer la figura no es un morph.
+  // Última capa para la que se disparó el parpadeo del núcleo.
+  let lastPulsedLayer = -1;
   let morphHold: {
     positions: Float32Array;
     count: number;
@@ -314,6 +332,9 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       agents.state,
       retracting ? AGENT_STATE.RETURNING : AGENT_STATE.TRAVELING,
       morphFrom,
+      // Fase 35: al replegarse, la espiral. Al formar (y al morphear), el
+      // vuelo por capas de siempre.
+      retracting,
     );
   }
 
@@ -456,6 +477,8 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     coverage = null;
     morphFrom = null;
     morphHold = null;
+    lastPulsedLayer = -1;
+    deps.reactor?.resetColor();
     applyParams();
   }
 
@@ -605,6 +628,19 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       // barre todo el recorrido afirmando que da exactamente lo mismo que
       // el layerIndexAt que había antes.
       const layerIndex = director.nanobotLayerIndex(nanobotElapsed);
+      // Fase 36: al ENTRAR en una capa de color, el núcleo parpadea y toma
+      // ese color — es el traspaso del material desde los Material Bots
+      // del núcleo hacia la figura. Sólo al entrar, no cada cuadro: el
+      // parpadeo dura casi un segundo y relanzarlo 60 veces por segundo lo
+      // dejaría clavado en el primer destello.
+      if (layerIndex !== lastPulsedLayer) {
+        lastPulsedLayer = layerIndex;
+        // La capa 0 es el relleno (sin color propio); de ahí en más, una
+        // ola de color por capa.
+        const wave = layerIndex - 1;
+        const cluster = wave >= 0 ? currentFormation?.colorClusters?.[wave] : undefined;
+        if (cluster) deps.reactor?.pulseColor(cluster.color);
+      }
       // Detalle pasa a gris apenas arranca la primera ola de Color, para
       // que el color real de la foto termine predominando.
       swarmMesh.setSkeletonGrayscale(layerIndex >= 1);
@@ -632,6 +668,8 @@ export function createSimulation(deps: SimulationDeps): Simulation {
         coverage = null;
         morphFrom = null;
         morphHold = null;
+        lastPulsedLayer = -1;
+        deps.reactor?.resetColor();
         swarmMesh.setVisible(false);
         // Un cambio de cantidad pedido durante el repliegue se aplica
         // recién acá, con todos los buffers ya libres.

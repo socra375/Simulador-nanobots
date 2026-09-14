@@ -184,6 +184,14 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
 
   function makeMesh(geometry: THREE.BufferGeometry, material: THREE.Material, cap: number): THREE.InstancedMesh {
     const mesh = new THREE.InstancedMesh(geometry, material, cap);
+    // Las instancias llevan su propia posición en instanceMatrix, pero
+    // three calcula la esfera envolvente de un InstancedMesh desde la
+    // GEOMETRÍA, no desde las instancias: cree que toda la malla es una
+    // esfera del tamaño de UN bot en el origen de la escena. De lejos eso
+    // no se nota (el origen cae dentro del frustum), pero al acercarse con
+    // el zoom especial el origen queda afuera y three descarta la malla
+    // ENTERA: pantalla negra. Verificado en pantalla.
+    mesh.frustumCulled = false;
     mesh.count = 0;
     // Fase 21: los Nanobots no proyectan sombra (el pase de sombras de
     // miles de instancias con mapa 2048px+PCF es un costo real de GPU; el

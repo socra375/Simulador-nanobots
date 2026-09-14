@@ -62,6 +62,18 @@ async function main() {
   // desde el script de benchmark headless (bench/frame-bench.mjs).
   const metrics = createMetrics();
   (window as unknown as { __nanobotMetrics: typeof metrics }).__nanobotMetrics = metrics;
+  // Sonda de cámara: la usan los scripts de verificación visual para
+  // poder afirmar DÓNDE quedó la cámara en vez de mirar un PNG negro y
+  // adivinar. No cuesta nada y ya se ganó el lugar una vez.
+  (window as unknown as { __nanobotCamera: unknown }).__nanobotCamera = {
+    get: () => ({
+      pos: camera.position.toArray(),
+      target: controls.target.toArray(),
+      distance: controls.getDistance(),
+      fov: camera.fov,
+      minDistance: controls.minDistance,
+    }),
+  };
   // Por defecto three.js resetea `renderer.info` en cada render. Con
   // EffectComposer eso significa que al terminar el cuadro el contador
   // sólo refleja el ÚLTIMO pase (el quad de bloom, 1 draw call) en vez de
@@ -104,6 +116,7 @@ async function main() {
     maxNanobots: MAX_NANOBOTS,
     maxMicrobots: MAX_MICROBOTS,
     onFormationSettled: (ms) => metrics.mark("formacionMs", ms),
+    reactor,
   });
 
   const gui = createControlPanel(state, {
@@ -186,6 +199,10 @@ async function main() {
   const zoom = createZoomMode({
     camera,
     controls,
+    // Acercarse a donde están los bots: la figura si hay una, el núcleo
+    // si el enjambre está en reposo. Sin esto el zoom cae en el origen de
+    // la escena, que está vacío.
+    focusTarget: () => (sim.state.forming ? FORMATION_CENTER : reactorCenter),
     onChange: (on) => {
       // En zoom especial el detalle alto es el punto: se fuerza sin
       // esperar a que la distancia cruce el umbral.
