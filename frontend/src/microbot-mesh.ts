@@ -1,4 +1,6 @@
 import * as THREE from "three";
+import { BOT_TYPE } from "./swarm/bot-types";
+import { botVisual } from "./swarm/bot-config";
 
 // Render de la población de Microbots (Fase 15): exoesqueleto denso
 // (nodos + vigas) a conteos MUCHO más altos que Nanobots (decenas de
@@ -19,10 +21,20 @@ const BEAM_RADIUS = 0.03;
 // compita visualmente con la capa de tejido que se posa encima (ver
 // nanobot-mesh.ts). emissiveIntensity baja de 0.9/0.75 a un valor apenas
 // perceptible, solo para que no se vea plano bajo la luz ambiental.
-const NODE_COLOR = 0xe8e2d4;
-const NODE_EMISSIVE = 0x2a2820;
-const BEAM_COLOR = 0xdcd5c4;
-const BEAM_EMISSIVE = 0x241f18;
+// Fase 31: los dos cuerpos de esta malla son DOS TIPOS de bot distintos,
+// y ahora se ven como tales.
+//
+// - Los NODOS son Microbots: la estructura principal. Azul.
+// - Las VIGAS son Union Bots. No es un tipo inventado para la ocasión:
+//   estas vigas ya conectaban nodos y daban rigidez desde la Fase 15
+//   (se calculan con un árbol de expansión mínima). Lo único que cambia
+//   es que ahora se llaman por su nombre y se distinguen a la vista.
+//
+// Los colores salen de la config central, no de constantes sueltas.
+const NODE_COLOR = botVisual(BOT_TYPE.MICROBOT).identityColor;
+const NODE_EMISSIVE = botVisual(BOT_TYPE.MICROBOT).identityEmissive;
+const BEAM_COLOR = botVisual(BOT_TYPE.UNION).identityColor;
+const BEAM_EMISSIVE = botVisual(BOT_TYPE.UNION).identityEmissive;
 
 export interface MicrobotSwarmMesh {
   group: THREE.Group;

@@ -20,6 +20,7 @@ import {
 import { DEFAULT_COLOR_CLUSTERS, type ColorCluster } from "../image-color";
 import { AGENT_STATE, createAgentStore, type AgentStore } from "../swarm/agent-store";
 import { createSwarmDirector, type SwarmDirector } from "../swarm/director";
+import { BOT_TYPE, BOT_TYPE_COUNT } from "../swarm/bot-types";
 import { getShape, shapeRevision } from "../shapes/registry";
 import { validateCoverage, voxelizePoints, type VoxelGrid } from "../voxel/grid";
 import { buildMorphSource } from "../voxel/correspondence";
@@ -176,6 +177,12 @@ export interface SimState {
    */
   readonly coverage: CoverageInfo | null;
   /**
+   * Cuántos agentes hay de cada tipo (índice = BOT_TYPE). Incluye los
+   * Microbots y los Union Bots, que viven en la otra malla — el desglose
+   * es del enjambre entero, no sólo de los Nanobots.
+   */
+  readonly typeCounts: Uint32Array;
+  /**
    * Derivado, NO almacenado. Antes existía un `mode` aparte que se seteaba
    * en paralelo con `currentShapeName` y podía quedar desfasado: por
    * ejemplo `returnToCore()` ponía `mode = "idle"` mientras las otras dos
@@ -232,6 +239,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   // no cuesta un segundo pase.
   const agents = createAgentStore();
   const stateCountsScratch = new Uint32Array(8);
+  const typeCountsScratch = new Uint32Array(BOT_TYPE_COUNT);
   // Fase 29: la secuencia (exoesqueleto -> relleno -> una ola de color por
   // capa) deja de estar implícita en aritmética suelta acá adentro y pasa a
   // ser una cola de tareas consultable. El director NO tiene reloj propio:
@@ -411,6 +419,11 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     morphHold = null;
 
     coverage = measureCoverage(name, formation.points, settings.count);
+
+    // Fase 31: el tipo de cada agente se deriva de su rol. La capa que
+    // lleva el color del objeto SON los Material Bots; el resto de la
+    // nube son Nanobots de detalle.
+    agents.assignTypesFromRoles(NANOBOT_ROLE.COLOR);
 
     // Recién acá se sabe cuántas olas de color tiene la figura, así que
     // recién acá se pueden encolar las tareas de Nanobots (el exoesqueleto
@@ -678,6 +691,20 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     get currentShapeName() { return currentShapeName; },
     get stateCounts() { return agents.countByState(stateCountsScratch); },
     get coverage() { return coverage; },
+    get typeCounts() {
+      agents.countByType(typeCountsScratch);
+      // Microbots y Union Bots no están en el AgentStore: viven en la malla
+      // del exoesqueleto, que reparte sus instancias entre nodos (estructura)
+      // y vigas (conexión). Se suman acá para que el desglose describa el
+      // enjambre COMPLETO y no sólo media población.
+      if (microbotPhase !== "hidden" && microbotExo) {
+        let vigas = 0;
+        for (let i = 0; i < microbotCount; i++) if (microbotExo.isBeam[i]) vigas++;
+        typeCountsScratch[BOT_TYPE.MICROBOT] += microbotCount - vigas;
+        typeCountsScratch[BOT_TYPE.UNION] += vigas;
+      }
+      return typeCountsScratch;
+    },
     get forming() { return currentShapeName !== null; },
   };
 

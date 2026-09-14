@@ -4,7 +4,14 @@ import { createMicrobotSwarmMesh } from "./microbot-mesh";
 import { Swarm } from "./swarm";
 import { createReactor } from "./reactor";
 import { FORMATION_CENTER } from "./shapes";
-import { createControlPanel, addAgentStatePanel, addTaskQueuePanel, addCoveragePanel, type UiState } from "./ui";
+import {
+  createControlPanel,
+  addAgentStatePanel,
+  addTaskQueuePanel,
+  addCoveragePanel,
+  addBotTypePanel,
+  type UiState,
+} from "./ui";
 import { loadConfig, saveConfig, type SwarmConfig } from "./config-client";
 import { type ColorCluster } from "./image-color";
 import { createMetrics } from "./core/metrics";
@@ -127,6 +134,10 @@ async function main() {
   const paintCoverage = addCoveragePanel(gui);
   const readCoverage = () => sim.state.coverage;
 
+  // Fase 31: desglose del enjambre por tipo de bot.
+  const paintBotTypes = addBotTypePanel(gui);
+  const readTypeCounts = () => sim.state.typeCounts;
+
   const loop = createFrameLoop(
     (dt) => {
       const frameStart = performance.now();
@@ -149,6 +160,7 @@ async function main() {
       paintAgentStates(readStateCounts);
       paintTaskQueue(readDirector);
       paintCoverage(readCoverage);
+      paintBotTypes(readTypeCounts);
     },
     {
       onError: (err) => console.error("Error en el loop de animación; se detiene el render:", err),

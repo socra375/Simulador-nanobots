@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AGENT_STATE, AGENT_STATE_NAMES, createAgentStore } from "./agent-store";
+import { BOT_TYPE, BOT_TYPE_COUNT } from "./bot-types";
 
 function formationLike(count: number) {
   return {
@@ -139,5 +140,65 @@ describe("AGENT_STATE", () => {
   it("los códigos son contiguos desde 0 (se usan como índice de array)", () => {
     const codes = Object.values(AGENT_STATE).sort((a, b) => a - b);
     expect(codes).toEqual(codes.map((_, i) => i));
+  });
+});
+
+describe("tipo de bot (Fase 31)", () => {
+  it("por defecto todos los agentes de una formación son Nanobots", () => {
+    const store = createAgentStore();
+    store.adoptFormation(formationLike(40));
+    const counts = store.countByType(new Uint32Array(BOT_TYPE_COUNT));
+    expect(counts[BOT_TYPE.NANOBOT]).toBe(40);
+  });
+
+  it("assignTypesFromRoles convierte la capa de color en Material Bots", () => {
+    const store = createAgentStore();
+    const f = formationLike(10);
+    // Rol 1 = COLOR en la convención de shapes.
+    for (let i = 0; i < 4; i++) f.role[i] = 1;
+    store.adoptFormation(f);
+    store.assignTypesFromRoles(1);
+
+    const counts = store.countByType(new Uint32Array(BOT_TYPE_COUNT));
+    expect(counts[BOT_TYPE.MATERIAL]).toBe(4);
+    expect(counts[BOT_TYPE.NANOBOT]).toBe(6);
+  });
+
+  it("el tipo es un byte por agente en su propio array, no un objeto por agente", () => {
+    const store = createAgentStore();
+    store.adoptFormation(formationLike(1000));
+    expect(store.botType).toBeInstanceOf(Uint8Array);
+    expect(store.botType.length).toBeGreaterThanOrEqual(1000);
+  });
+
+  it("countByType no asigna y sólo cuenta los agentes activos", () => {
+    const store = createAgentStore();
+    store.adoptFormation(formationLike(200));
+    store.adoptFormation(formationLike(25)); // el buffer sigue siendo de 200
+    const out = new Uint32Array(BOT_TYPE_COUNT);
+    expect(store.countByType(out)).toBe(out);
+    let total = 0;
+    for (let i = 0; i < BOT_TYPE_COUNT; i++) total += out[i];
+    expect(total).toBe(25);
+  });
+
+  it("reset() vuelve a dejar todo como Nanobots", () => {
+    const store = createAgentStore();
+    const f = formationLike(10);
+    for (let i = 0; i < 10; i++) f.role[i] = 1;
+    store.adoptFormation(f);
+    store.assignTypesFromRoles(1);
+    store.reset(10, new Uint8Array(10), new Float32Array(30));
+    expect(store.countByType(new Uint32Array(BOT_TYPE_COUNT))[BOT_TYPE.NANOBOT]).toBe(10);
+  });
+
+  it("el accesor por agente expone el tipo", () => {
+    const store = createAgentStore();
+    const f = formationLike(5);
+    f.role[2] = 1;
+    store.adoptFormation(f);
+    store.assignTypesFromRoles(1);
+    expect(store.at(2).botType).toBe(BOT_TYPE.MATERIAL);
+    expect(store.at(0).botType).toBe(BOT_TYPE.NANOBOT);
   });
 });

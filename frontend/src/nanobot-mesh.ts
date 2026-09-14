@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { NANOBOT_ROLE } from "./shapes";
 import { DEFAULT_DOMINANT_COLOR, MAX_COLOR_CLUSTERS, type ColorCluster } from "./image-color";
+import { BOT_TYPE } from "./swarm/bot-types";
+import { botVisual } from "./swarm/bot-config";
 
 // Geometría y material por ROL de nanobot (ver shapes/types.ts). Desde la
 // Fase 27 hay exactamente dos: el exoesqueleto lo arma la población de
@@ -50,7 +52,10 @@ const UNSNAP_DISTANCE_SQ = 1.2 * 1.2;
 // RESTAURARLO: mientras la capa de COLOR viaja desde el núcleo, DETALLE
 // pierde su color (pasa a gris) para que el color de la foto termine
 // predominando al llegar.
-const DETAIL_COLOR = 0x1c8f5a;
+// El color de identidad del tipo NANOBOT sale de la config central
+// (swarm/bot-config.ts), no de una constante suelta acá: la spec pide un
+// solo lugar donde cambiar la paleta.
+const DETAIL_COLOR = botVisual(BOT_TYPE.NANOBOT).identityColor;
 const DETAIL_EMISSIVE = 0x7dffb3;
 const SKELETON_GRAYSCALE_COLOR = 0x555555;
 const SKELETON_GRAYSCALE_EMISSIVE = 0x2a2a2a;
