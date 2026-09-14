@@ -50,9 +50,23 @@ export interface ShapeDef {
 const SHAPES = new Map<string, ShapeDef>();
 const ALIASES = new Map<string, string>();
 
+// Cuántas veces se registró cada nombre. Casi todas las formas se
+// registran una sola vez al cargar el módulo, pero "escaneo" se
+// re-registra con puntos nuevos en CADA reconstrucción 3D (ver
+// registerCustomScan). Cualquier cosa que cachee algo derivado de un
+// generador tiene que poder notar ese cambio; si no, se queda con la
+// figura del escaneo anterior.
+const REVISIONS = new Map<string, number>();
+
 export function registerShape(def: ShapeDef): void {
   SHAPES.set(def.name, def);
   for (const alias of def.aliases) ALIASES.set(alias, def.name);
+  REVISIONS.set(def.name, (REVISIONS.get(def.name) ?? 0) + 1);
+}
+
+/** Cambia cada vez que se re-registra la forma. Clave de invalidación. */
+export function shapeRevision(name: string): number {
+  return REVISIONS.get(name) ?? 0;
 }
 
 export function getShape(name: string): ShapeDef | null {

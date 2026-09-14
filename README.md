@@ -160,6 +160,53 @@ en vez de saltar.
 /backend    FastAPI — sirve el frontend y expone /api/config
 ```
 
+### Módulos del frontend
+
+`main.ts` es **sólo cableado** (~150 líneas: escena, postprocesado,
+reactor, métricas, panel, loop). Antes tenía 666 líneas con todo el estado
+dentro de una única closure de 551, sin un solo export y por lo tanto sin
+forma de testearlo.
+
+```
+core/
+  simulation.ts   Máquina de estados del enjambre. Recibe swarm y mallas
+                  inyectados, así que se puede correr entera contra mallas
+                  falsas que registran cada llamada.
+  loop.ts         Loop de cuadros con reloj y agendador inyectables.
+  kinematics.ts   Matemática pura de las animaciones (sin three.js, sin DOM).
+  metrics.ts      Frame time, FPS, draw calls, heap. Sin asignar en el
+                  camino caliente.
+shapes/           16 generadores de formas + huesos + registry + grafo
+                  (MST/anclas) + pipeline de formación. Antes era un solo
+                  archivo de 2097 líneas.
+swarm/
+  agent-store.ts  Estado por agente en Structure-of-Arrays (TypedArrays
+                  paralelos, no un objeto por agente).
+  director.ts     Cola de tareas. Las tareas NO tienen reloj propio:
+                  ocupan ventanas [t0, t1] sobre la línea temporal única.
+voxel/
+  grid.ts         Grilla de ocupación + superficie + cobertura.
+  correspondence.ts  Emparejamiento agente→destino para el morph directo.
+```
+
+### Qué muestra el panel en vivo
+
+- **Estado de los agentes**: cuántos están en el núcleo, viajando,
+  ensamblando, asentados, volviendo o en reposo.
+- **Cola de tareas**: exoesqueleto → relleno → una tarea por ola de color,
+  con su estado.
+- **Cobertura de la figura**: qué fracción del volumen de la forma ocupan
+  realmente los nanobots. Responde a "¿me alcanzan los agentes para esta
+  figura?", que antes sólo se podía adivinar mirando.
+
+### Morph directo
+
+Pedir otra figura sin volver al núcleo **no** manda los agentes de vuelta
+al reactor: viajan desde donde están. El emparejamiento agente→destino se
+hace por celda de vóxel (no húngaro, que es O(n³) e inviable a 60.000);
+medido contra el orden crudo, la distancia total de viaje baja a menos de
+la mitad.
+
 ## Requisitos
 
 - [Emscripten SDK](https://emscripten.org/docs/getting_started/downloads.html)
@@ -342,3 +389,69 @@ npm run test:e2e
   FPS real en navegador con GPU (solo headless/SwiftShader, que subestima
   mucho el rendimiento real); si hace falta, `MAX_NANOBOTS`/
   `MAX_MICROBOTS` son un solo número cada uno para ajustar en `main.ts`.
+
+### Medido, no estimado
+
+`frontend/bench/frame-bench.mjs` mide contra el build real (Playwright
+headless) y `frontend/bench/BASELINE.md` guarda los números. Lo que se
+aprendió midiendo, y que conviene no volver a adivinar:
+
+| momento | heap | qué lo movió |
+|---|---:|---|
+| línea base | 61,0 MB | — |
+| tras arreglar 6 bugs de estabilidad | 61,0 MB | nada: eran arreglos de corrección, no de memoria |
+| tras borrar roles muertos | 54,2 MB | borrar código que no se ejecutaba |
+| tras capacidad adaptativa de las mallas | 33,5 MB | dejar de reservar para agentes inexistentes |
+
+Las dos mejoras reales de memoria vinieron de **sacar** cosas, no de
+agregar optimizaciones. En cambio las "optimizaciones" intuitivas
+(evitar un literal de array por cuadro, sacar closures de `forEach`,
+saltear escrituras de matriz invisibles) no dieron **nada** medible: a
+10.000 agentes en reposo el costo real es la física boid en Wasm (~6 ms)
+contra ~0,3 ms de escritura de matrices.
+
+**Advertencia sobre las mediciones headless**: SwiftShader (sin GPU) más
+el tope de `dt` del loop hacen que una formación de ~12 s nominales tarde
+bastante más en reloj de pared. Es un artefacto del entorno de medición,
+no un problema del simulador.
+
+## Limitaciones conocidas
+
+Cosas que el proyecto **no** hace, dichas explícitamente para que nadie
+las asuma:
+
+- **La física no es nanométrica.** Es un modelo de boids (cohesión,
+  separación, alineación) a escala visual. No hay fuerzas de van der
+  Waals, ni movimiento browniano, ni química.
+- **La forma no sale de la foto.** La foto adjuntada sirve como
+  confirmación de UX y para extraer olas de color; la geometría viene de
+  los generadores de `shapes/`. No hay modelo de visión.
+- **El escaneo 3D por 4 fotos sobre-aproxima.** Es un visual hull: las
+  concavidades que no se ven desde ninguna de las 4 vistas quedan
+  rellenas. Tampoco hay alineación automática entre fotos, así que el
+  encuadre y el zoom tienen que ser consistentes en las 4 tomas — eso es
+  una limitación de la técnica, no del código, y la UI lo avisa antes de
+  intentarlo.
+- **La física corre sólo en reposo.** Al formar una figura los agentes se
+  mueven por animación scripted, no por convergencia física.
+- **No hay medición de FPS real con GPU.** Los números de arriba son
+  headless; subestiman el rendimiento real.
+- **Sin WebGPU.** Se midió primero: con el objetivo de 3.000–10.000
+  agentes el cuello no está en las llamadas de dibujo (hay ~20 por
+  cuadro), así que migrar no se justifica todavía.
+
+## Qué falta (siguiente ronda)
+
+Ninguna de estas está empezada; se nombran para que quede claro el límite
+entre lo que funciona y lo que no existe:
+
+- Conexiones entre agentes y hashing espacial expuesto desde C++ (hoy la
+  grilla existe en `boids.cpp` pero no exporta la lista de vecinos).
+- Materiales por agente y reparación de huecos. La grilla de vóxeles ya
+  devuelve las celdas faltantes (`validateCoverage`), que es justo la
+  entrada que necesita la reparación; falta el handler que las llene.
+- Los tipos de tarea `REPAIR`, `TRANSFORM`, `DISASSEMBLE` y
+  `APPLY_MATERIAL`. **No están declarados a propósito**: un tipo de tarea
+  sin nada que lo ejecute es una lista de enums que finge un sistema.
+  Entran cuando lleguen sus consumidores, sin reescribir el director.
+- Comandos en lenguaje natural.

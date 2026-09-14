@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getShape, listSupportedNames, registerShape, resolveShapeName } from "./registry";
+import { getShape, listSupportedNames, registerCustomScan, registerShape, resolveShapeName, shapeRevision } from "./registry";
 import { buildExoskeleton, formShapeWithRoles } from "./formation";
 
 // El registro es estado de módulo (igual que antes del split: el viejo
@@ -96,5 +96,28 @@ describe("ShapeDef.colorParts decide de dónde salen las olas de color", () => {
     expect(f.colorWaveCount).toBe(2);
     expect(f.colorClusters.map((c) => c.color)).toEqual([verde, azul]);
     expect(f.colorClusters.map((c) => c.color)).not.toContain(rojo);
+  });
+});
+
+describe("shapeRevision", () => {
+  it("arranca en 0 para un nombre que no existe", () => {
+    expect(shapeRevision("no-existe-jamas-123")).toBe(0);
+  });
+
+  it("las formas del catálogo ya vienen registradas", () => {
+    expect(shapeRevision("cubo")).toBeGreaterThan(0);
+  });
+
+  it("sube en cada re-registro: es lo que invalida cualquier caché derivado", () => {
+    // "escaneo" se re-registra con puntos nuevos en CADA reconstrucción 3D.
+    // Sin este contador, la métrica de cobertura seguiría comparando
+    // contra la figura del escaneo anterior.
+    const antes = shapeRevision("escaneo");
+    registerCustomScan(new Float32Array([0, 0, 0, 1, 1, 1]));
+    const despues = shapeRevision("escaneo");
+    expect(despues).toBe(antes + 1);
+
+    registerCustomScan(new Float32Array([2, 2, 2]));
+    expect(shapeRevision("escaneo")).toBe(antes + 2);
   });
 });

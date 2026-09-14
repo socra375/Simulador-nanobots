@@ -234,6 +234,18 @@ export function writeNanobotFrame(
   outState?: Uint8Array,
   /** Qué estado usar para "en movimiento": TRAVELING al formar, RETURNING al replegar. */
   movingState: number = AGENT_STATE.TRAVELING,
+  /**
+   * Morph directo (Fase 30b): de dónde arranca cada agente, count*3. Sin
+   * esto todos salen del núcleo, que es el comportamiento de siempre —
+   * por eso es opcional y no un parámetro obligatorio: los golden frames
+   * y los tests de caracterización siguen ejercitando exactamente el
+   * mismo camino de código que antes.
+   *
+   * Con `from`, la sub-fase de "bola" de la 1ra ola de color se saltea: la
+   * bola tiene sentido saliendo del reactor, no cuando los agentes ya
+   * están repartidos sobre la figura anterior.
+   */
+  from: Float32Array | null = null,
 ): void {
   const { layerOf, delayFraction, layerCount, wave0Landing } = plan;
   const layerIndex = layerIndexAt(elapsed, layerCount, timings.layerDuration);
@@ -248,11 +260,17 @@ export function writeNanobotFrame(
       out[i * 3 + 2] = points[i * 3 + 2];
       if (outState) outState[i] = AGENT_STATE.ATTACHED;
     } else if (layer > layerIndex) {
-      out[i * 3 + 0] = core[0];
-      out[i * 3 + 1] = core[1];
-      out[i * 3 + 2] = core[2];
+      // Todavía no le toca: en una formación normal espera dentro del
+      // núcleo; en un morph espera donde está, porque mandarlo al reactor
+      // primero sería justo el teletransporte que el morph viene a sacar.
+      const wx = from ? from[i * 3 + 0] : core[0];
+      const wy = from ? from[i * 3 + 1] : core[1];
+      const wz = from ? from[i * 3 + 2] : core[2];
+      out[i * 3 + 0] = wx;
+      out[i * 3 + 1] = wy;
+      out[i * 3 + 2] = wz;
       if (outState) outState[i] = AGENT_STATE.CORE;
-    } else if (isFirstColorWave && layerElapsed < timings.packetDuration) {
+    } else if (!from && isFirstColorWave && layerElapsed < timings.packetDuration) {
       const eased = easeInOutCubic(Math.min(Math.max(layerElapsed / timings.packetDuration, 0), 1));
       swirlOffset(eased, i, timings.packetSwirlTurns, timings.packetSwirlMaxRadius, axes, swirlScratch);
       out[i * 3 + 0] = core[0] + (wave0Landing[0] - core[0]) * eased + swirlScratch[0];
@@ -260,7 +278,7 @@ export function writeNanobotFrame(
       out[i * 3 + 2] = core[2] + (wave0Landing[2] - core[2]) * eased + swirlScratch[2];
       // La "bola" viaja entera: todos sus agentes están en movimiento.
       if (outState) outState[i] = movingState;
-    } else if (isFirstColorWave) {
+    } else if (!from && isFirstColorWave) {
       const burstElapsed = layerElapsed - timings.packetDuration;
       const localT = (burstElapsed - delayFraction[i] * timings.burstStaggerSpan) / timings.burstTravelDuration;
       const eased = easeInOutCubic(Math.min(Math.max(localT, 0), 1));
@@ -273,9 +291,12 @@ export function writeNanobotFrame(
       const localT = (layerElapsed - delayFraction[i] * timings.layerStaggerSpan) / timings.travelDuration;
       const eased = easeInOutCubic(Math.min(Math.max(localT, 0), 1));
       swirlOffset(eased, i, timings.swirlTurns, timings.swirlMaxRadius, axes, swirlScratch);
-      out[i * 3 + 0] = core[0] + (points[i * 3 + 0] - core[0]) * eased + swirlScratch[0];
-      out[i * 3 + 1] = core[1] + (points[i * 3 + 1] - core[1]) * eased + swirlScratch[1];
-      out[i * 3 + 2] = core[2] + (points[i * 3 + 2] - core[2]) * eased + swirlScratch[2];
+      const sx = from ? from[i * 3 + 0] : core[0];
+      const sy = from ? from[i * 3 + 1] : core[1];
+      const sz = from ? from[i * 3 + 2] : core[2];
+      out[i * 3 + 0] = sx + (points[i * 3 + 0] - sx) * eased + swirlScratch[0];
+      out[i * 3 + 1] = sy + (points[i * 3 + 1] - sy) * eased + swirlScratch[1];
+      out[i * 3 + 2] = sz + (points[i * 3 + 2] - sz) * eased + swirlScratch[2];
       if (outState) outState[i] = progressState(eased, movingState);
     }
   }

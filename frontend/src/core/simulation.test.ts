@@ -28,10 +28,12 @@ interface Recorded {
     revealedColorWaves: number;
   } | null;
   formationSettledMs: number[];
+  /** Copia de las posiciones del último cuadro (el buffer real se reusa). */
+  lastPositions: Float32Array | null;
 }
 
 function makeSim(settings?: Partial<SimSettings>) {
-  const rec: Recorded = { calls: [], lastUpdate: null, formationSettledMs: [] };
+  const rec: Recorded = { calls: [], lastUpdate: null, formationSettledMs: [], lastPositions: null };
   let swarmCount = 0;
   const positions = new Float32Array(60000 * 3);
 
@@ -46,9 +48,10 @@ function makeSim(settings?: Partial<SimSettings>) {
 
   const swarmMesh: NanobotMeshApi = {
     setCount(count) { rec.calls.push(`mesh.setCount(${count})`); },
-    updateFromPositions(_p, count, roles, _t, visibleRoles, _w, revealedColorWaves) {
+    updateFromPositions(p, count, roles, _t, visibleRoles, _w, revealedColorWaves) {
       rec.calls.push(`mesh.update(${count},${revealedColorWaves})`);
       rec.lastUpdate = { count, roles, visibleRoles, revealedColorWaves };
+      rec.lastPositions = p.slice(0, count * 3);
     },
     setVisible(v) { rec.calls.push(`mesh.setVisible(${v})`); },
     setColorClusters() { rec.calls.push("mesh.setColorClusters"); },
@@ -488,5 +491,220 @@ describe("cola de tareas (SwarmDirector)", () => {
     const d = sim.director.describe();
     expect(d[0]).toBe("exoesqueleto: done");
     expect(d[1]).toBe("relleno: running");
+  });
+});
+
+// Fase 30: la métrica de cobertura. Lo que se afirma acá no es que el
+// campo exista, sino que MIDE algo: más nanobots tienen que cubrir más
+// volumen de la misma figura. Si diera un número fijo, estos tests lo
+// dicen.
+describe("cobertura de la figura (VoxelGrid)", () => {
+  it("en reposo no hay cobertura que informar", () => {
+    const { sim } = makeSim();
+    sim.step(0.1);
+    expect(sim.state.coverage).toBeNull();
+  });
+
+  it("formar una figura calcula la cobertura", () => {
+    const { sim } = makeSim({ count: 2000 });
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.2);
+    const c = sim.state.coverage;
+    expect(c).not.toBeNull();
+    expect(c!.total).toBeGreaterThan(0);
+    expect(c!.covered).toBeGreaterThan(0);
+    expect(c!.fraction).toBeGreaterThan(0);
+    expect(c!.fraction).toBeLessThanOrEqual(1);
+  });
+
+  it("MÁS nanobots cubren MÁS: la métrica responde a la cantidad", () => {
+    const pocos = makeSim({ count: 300 });
+    pocos.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(pocos.sim, FULL_LAUNCH + 0.2);
+
+    const muchos = makeSim({ count: 8000 });
+    muchos.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(muchos.sim, FULL_LAUNCH + 0.2);
+
+    expect(muchos.sim.state.coverage!.fraction).toBeGreaterThan(pocos.sim.state.coverage!.fraction);
+  });
+
+  it("la figura de referencia es la misma sin importar cuántos agentes haya", () => {
+    // `total` describe la FIGURA, no el enjambre: si cambiara con el
+    // conteo, comparar cobertura entre dos cantidades no querría decir
+    // nada.
+    const a = makeSim({ count: 300 });
+    a.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(a.sim, FULL_LAUNCH + 0.2);
+
+    const b = makeSim({ count: 8000 });
+    b.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(b.sim, FULL_LAUNCH + 0.2);
+
+    expect(b.sim.state.coverage!.total).toBe(a.sim.state.coverage!.total);
+  });
+
+  it("volver al núcleo borra la cobertura: ya no hay figura que medir", () => {
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    expect(sim.state.coverage).not.toBeNull();
+
+    sim.returnToCore();
+    advance(sim, 20);
+    expect(sim.state.coverage).toBeNull();
+  });
+
+  it("una forma desconocida no rompe nada: cobertura null", () => {
+    const { sim } = makeSim();
+    sim.formShape("no-existe-123", [{ color: 0xff0000, weight: 1 }]);
+    expect(() => advance(sim, FULL_LAUNCH + 5)).not.toThrow();
+    expect(sim.state.coverage).toBeNull();
+  });
+});
+
+// Fase 30b: morph directo. El usuario lo eligió como comportamiento por
+// defecto: al pedir otra figura, los agentes viajan desde donde están en
+// vez de volver al reactor y rearrancar.
+describe("morph directo", () => {
+  const CORE: readonly [number, number, number] = [-8, 8, -8];
+
+  function enElNucleo(pos: Float32Array, count: number): number {
+    let n = 0;
+    for (let i = 0; i < count; i++) {
+      if (pos[i * 3] === CORE[0] && pos[i * 3 + 1] === CORE[1] && pos[i * 3 + 2] === CORE[2]) n++;
+    }
+    return n;
+  }
+
+  it("desde el REPOSO los agentes salen del núcleo (comportamiento de siempre)", () => {
+    const { sim, rec, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.1);
+    // Las capas que todavía no fueron reveladas esperan dentro del núcleo.
+    expect(enElNucleo(rec.lastPositions!, settings.count)).toBeGreaterThan(0);
+  });
+
+  it("pedir otra figura SIN volver al núcleo no manda a nadie de vuelta al reactor", () => {
+    const { sim, rec, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    expect(sim.state.nanobotPhase).toBe("settled");
+
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.1);
+    // Antes del morph, las capas no reveladas se teletransportaban al
+    // reactor y la figura anterior desaparecía de golpe.
+    expect(enElNucleo(rec.lastPositions!, settings.count)).toBe(0);
+  });
+
+  it("los agentes arrancan CERCA de donde estaban, no en cualquier lado", () => {
+    const { sim, rec, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    const antes = rec.lastPositions!.slice();
+
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.05);
+    const despues = rec.lastPositions!;
+
+    // Cada posición nueva tiene que coincidir con ALGUNA vieja (recién
+    // arrancado el morph casi nadie se movió todavía). Se compara contra
+    // el conjunto, no índice a índice: la correspondencia por vóxel
+    // reasigna qué agente va a qué destino.
+    const viejas = new Set<string>();
+    for (let i = 0; i < settings.count; i++) {
+      viejas.add(`${antes[i * 3].toFixed(2)},${antes[i * 3 + 1].toFixed(2)},${antes[i * 3 + 2].toFixed(2)}`);
+    }
+    let coinciden = 0;
+    for (let i = 0; i < settings.count; i++) {
+      const k = `${despues[i * 3].toFixed(2)},${despues[i * 3 + 1].toFixed(2)},${despues[i * 3 + 2].toFixed(2)}`;
+      if (viejas.has(k)) coinciden++;
+    }
+    expect(coinciden / settings.count).toBeGreaterThan(0.8);
+  });
+
+  it("tras volver al núcleo, la figura siguiente vuelve a salir del reactor", () => {
+    const { sim, rec, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    sim.returnToCore();
+    advance(sim, 20);
+    expect(sim.state.nanobotPhase).toBe("idle");
+
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + 0.1);
+    expect(enElNucleo(rec.lastPositions!, settings.count)).toBeGreaterThan(0);
+  });
+
+  it("el morph termina igual: todos asentados en la figura nueva", () => {
+    const { sim, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    expect(sim.state.nanobotPhase).toBe("settled");
+    expect(sim.state.stateCounts[AGENT_STATE.ATTACHED]).toBe(settings.count);
+  });
+});
+
+// Este bloque existe por un fallo que los tests NO detectaron y sí se vio
+// en pantalla: al pedir la figura nueva, la malla se ocultaba durante los
+// ~2 s del relanzamiento del exoesqueleto y la figura anterior
+// DESAPARECÍA, quedando sólo el reactor. Los tests de morph miraban las
+// posiciones al arrancar la animación, no la visibilidad de la ventana de
+// espera. Un morph que hace desaparecer la figura no es un morph.
+describe("morph: la figura anterior no desaparece mientras espera", () => {
+  it("NO se oculta la malla al pedir otra figura sin volver al núcleo", () => {
+    const { sim, rec } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+
+    rec.calls.length = 0;
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, MICROBOT_EXO_DURATION * 0.5);
+
+    expect(rec.calls).not.toContain("mesh.setVisible(false)");
+  });
+
+  it("la sigue dibujando durante la espera, con la figura VIEJA", () => {
+    const { sim, rec, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    const antes = rec.lastPositions!.slice();
+
+    sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
+    advance(sim, MICROBOT_EXO_DURATION * 0.5);
+
+    // Se sigue dibujando...
+    expect(rec.lastPositions).not.toBeNull();
+    expect(rec.lastUpdate!.count).toBe(settings.count);
+    // ...y quieta, exactamente donde estaba.
+    for (let i = 0; i < 30; i++) expect(rec.lastPositions![i]).toBeCloseTo(antes[i], 5);
+  });
+
+  it("desde el REPOSO sí se oculta: no hay figura anterior que preservar", () => {
+    const { sim, rec } = makeSim();
+    rec.calls.length = 0;
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    expect(rec.calls).toContain("mesh.setVisible(false)");
+  });
+
+  it("tras volver al núcleo se vuelve a dibujar el enjambre en reposo, no la figura retenida", () => {
+    const { sim, rec } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    const figura = rec.lastPositions!.slice();
+    sim.returnToCore();
+    advance(sim, 20);
+
+    advance(sim, 1);
+    // En reposo la malla SÍ se sigue actualizando (con el enjambre en
+    // descanso, oculto). Lo que no puede pasar es que siga mostrando la
+    // figura vieja congelada.
+    expect(rec.calls).toContain("mesh.setVisible(false)");
+    let iguales = 0;
+    for (let i = 0; i < 30; i++) if (rec.lastPositions![i] === figura[i]) iguales++;
+    expect(iguales).toBeLessThan(30);
   });
 });
