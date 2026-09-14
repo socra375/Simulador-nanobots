@@ -5,6 +5,7 @@ import { resolveShapeName, listSupportedNames, registerCustomScan } from "./shap
 import { extractColorClustersFromFile, type ColorCluster } from "./image-color";
 import { buildVisualHullPoints, type ScanPhotos } from "./visual-hull";
 import { AGENT_STATE_NAMES } from "./swarm/agent-store";
+import { type SwarmDirector } from "./swarm/director";
 
 export interface UiState extends SwarmParams {
   count: number;
@@ -131,6 +132,39 @@ export function addAgentStatePanel(gui: GUI): (readCounts: () => Uint32Array) =>
     }
     const next = text === "" ? "sin agentes" : text.trimEnd();
     // Escribir el mismo texto igual ensucia el layout del navegador.
+    if (next === lastText) return;
+    lastText = next;
+    list.textContent = next;
+  };
+}
+
+/**
+ * Cola de tareas del director (Fase 29). Mismo criterio que el panel de
+ * estados: recibe un lector y se repinta pocas veces por segundo. Es lo
+ * que hace que la cola sea observable y no un registro interno que nadie
+ * mira.
+ */
+export function addTaskQueuePanel(gui: GUI): (readDirector: () => SwarmDirector) => void {
+  const folder = gui.addFolder("Cola de tareas");
+  const list = document.createElement("div");
+  list.style.padding = "6px 10px";
+  list.style.fontSize = "11px";
+  list.style.lineHeight = "1.6";
+  list.style.whiteSpace = "pre";
+  list.style.opacity = "0.85";
+  list.textContent = "sin tareas";
+  folder.domElement.appendChild(list);
+
+  let lastPaint = -Infinity;
+  let lastText = "";
+
+  return (readDirector) => {
+    const now = performance.now();
+    if (now - lastPaint < STATE_PANEL_INTERVAL_MS) return;
+    lastPaint = now;
+
+    const lines = readDirector().describe();
+    const next = lines.length ? lines.join("\n") : "sin tareas";
     if (next === lastText) return;
     lastText = next;
     list.textContent = next;
