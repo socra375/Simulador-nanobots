@@ -6,6 +6,8 @@ import {
   type SwarmDirector,
 } from "./director";
 import { layerIndexAt } from "../core/kinematics";
+import { taskExecutor, TASK_EXECUTOR } from "./director";
+import { BOT_TYPE } from "./bot-types";
 
 const EXO = 2.2;
 const LAYER = 2.0;
@@ -226,5 +228,31 @@ describe("describe() para el panel", () => {
       "color 1: running",
       "color 2: pending",
     ]);
+  });
+});
+
+describe("qué tipo de bot ejecuta cada tarea (spec §17)", () => {
+  it("la estructura la arman los Microbots", () => {
+    expect(taskExecutor(TASK_TYPE.CREATE_STRUCTURE)).toBe(BOT_TYPE.MICROBOT);
+  });
+
+  it("el relleno lo hacen los Nanobots", () => {
+    expect(taskExecutor(TASK_TYPE.FILL_STRUCTURE)).toBe(BOT_TYPE.NANOBOT);
+  });
+
+  it("el color lo aplican los Material Bots", () => {
+    expect(taskExecutor(TASK_TYPE.APPLY_COLOR)).toBe(BOT_TYPE.MATERIAL);
+  });
+
+  it("TODA tarea existente tiene un tipo asignado", () => {
+    // Si alguien agrega un tipo de tarea y se olvida de la tabla, esto lo
+    // agarra en vez de dejar un undefined circulando.
+    for (const type of Object.values(TASK_TYPE)) {
+      expect(taskExecutor(type)).toBeTypeOf("number");
+    }
+  });
+
+  it("la tabla cubre exactamente los tipos de tarea que existen, ni uno más", () => {
+    expect(Object.keys(TASK_EXECUTOR).sort()).toEqual(Object.values(TASK_TYPE).sort());
   });
 });

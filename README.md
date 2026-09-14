@@ -199,6 +199,73 @@ voxel/
   realmente los nanobots. Responde a "¿me alcanzan los agentes para esta
   figura?", que antes sólo se podía adivinar mirando.
 
+### Tipos de bot
+
+Seis tipos, con función, color de identidad y tamaño propios. Cuatro
+mapean a agentes que **ya existían** — el sistema le puso nombre al eje
+que el enjambre ya tenía, no agregó una capa paralela:
+
+| Tipo | Color | Mapea a | ¿Existe hoy? |
+|---|---|---|---|
+| Microbot | azul | nodos del exoesqueleto | sí |
+| Union Bot | dorado | vigas del exoesqueleto (unen nodos, MST) | sí* |
+| Nanobot | verde | rol DETALLE | sí |
+| Material Bot | turquesa | rol COLOR (lleva el material del objeto) | sí |
+| Repair Bot | rojo | — | **no**: falta el despacho de agentes a los huecos |
+| Transform Bot | morado | — | **no**: el morph lo hace el enjambre entero |
+
+\* Sólo en formas con exoesqueleto de vigas (cubo, carro…). Las formas
+humanoides usan hueso macizo y dan 0 Union Bots — el panel lo aclara para
+que ese cero no se lea como un fallo.
+
+Los dos tipos sin agentes se muestran igual, con el motivo escrito.
+Ocultarlos haría creer que no están previstos; mostrarlos sin aclaración
+haría creer que funcionan.
+
+**Identidad ≠ material.** El color de identidad dice de qué TIPO es el
+bot; el color del objeto dice de qué está hecho lo que se construye, y lo
+reparten los Material Bots. La lógica nunca pregunta por el color para
+decidir qué hace un agente: pregunta por su tipo. Un `if (esRojo)
+reparar()` sería un bug esperando a que alguien cambie la paleta.
+
+**Regla dura**: los Material Bots pintan todas las capas **menos** la
+estructura. El Microbot conserva su azul, porque si la estructura base
+pudiera repintarse se perdería la única referencia visual constante para
+distinguir estructura de recubrimiento. Tiene bloque de tests propio.
+
+La paleta vive en un solo archivo (`swarm/bot-config.ts`) y se puede
+cambiar en caliente.
+
+### Modo de inspección
+
+- **Zoom especial**: baja el límite de acercamiento de 6 a 0,8 y achica el
+  campo de visión. No es subir el zoom máximo: el zoom normal a propósito
+  no alcanza para ver el detalle.
+- **Inspección de bots**: modelo 3D grande de cada tipo, con su ficha. Los
+  datos que todavía no existen (material aplicado, energía, conexiones) se
+  muestran como *"no disponible en esta fase"*, nunca inventados.
+- **Ver capas**: separa estructura / conexiones / detalle / material en
+  vertical para entender cómo se apila el objeto. Sólo afecta cómo se
+  dibuja — la simulación no cambia.
+
+### Forma hexagonal y nivel de detalle
+
+Los bots son prismas hexagonales. Medido contra la versión anterior de
+esferas, en la misma escena y el mismo entorno:
+
+| | triángulos |
+|---|---:|
+| esferas (16×12 segmentos) | 1.136.376 |
+| hexágonos | 154.296 |
+
+7,4× menos. La forma que pedía la especificación y el objetivo de
+rendimiento apuntaban para el mismo lado.
+
+El LOD tiene tres niveles y es **uno para toda la población**, no uno por
+agente: si cada agente eligiera el suyo habría que partir la población en
+tres mallas y reordenar instancias en cada movimiento de cámara, que es
+justo el costo que el instanciado evita.
+
 ### Morph directo
 
 Pedir otra figura sin volver al núcleo **no** manda los agentes de vuelta
@@ -453,5 +520,11 @@ entre lo que funciona y lo que no existe:
 - Los tipos de tarea `REPAIR`, `TRANSFORM`, `DISASSEMBLE` y
   `APPLY_MATERIAL`. **No están declarados a propósito**: un tipo de tarea
   sin nada que lo ejecute es una lista de enums que finge un sistema.
-  Entran cuando lleguen sus consumidores, sin reescribir el director.
+  Entran cuando lleguen sus consumidores, sin reescribir el director. Los
+  TIPOS DE BOT `REPAIR` y `TRANSFORM` sí están declarados (el store y el
+  director tienen que reconocerlos), pero no se les inventan agentes: el
+  conteo da 0 y el panel dice por qué.
+- Selección de un agente individual con clic para ver su ficha. Hoy la
+  inspección es por TIPO, no por agente: elegir un agente concreto
+  requiere raycasting contra instancias, que es trabajo aparte.
 - Comandos en lenguaje natural.

@@ -7,6 +7,8 @@ import { buildVisualHullPoints, type ScanPhotos } from "./visual-hull";
 import { AGENT_STATE_NAMES } from "./swarm/agent-store";
 import { type SwarmDirector } from "./swarm/director";
 import { type CoverageInfo } from "./core/simulation";
+import { BOT_TYPES } from "./swarm/bot-types";
+import { botVisual } from "./swarm/bot-config";
 
 export interface UiState extends SwarmParams {
   count: number;
@@ -204,6 +206,126 @@ export function addCoveragePanel(gui: GUI): (readCoverage: () => CoverageInfo | 
     lastText = next;
     line.textContent = next;
   };
+}
+
+function hexColor(value: number): string {
+  return `#${value.toString(16).padStart(6, "0")}`;
+}
+
+/**
+ * Desglose del enjambre por TIPO de bot (Fase 31), con su color de
+ * identificación al lado.
+ *
+ * Los tipos que todavía no tienen agentes se muestran igual, pero con el
+ * motivo escrito. Ocultarlos daría a entender que no existen; mostrarlos
+ * sin aclaración daría a entender que funcionan.
+ */
+export function addBotTypePanel(gui: GUI): (readCounts: () => Uint32Array) => void {
+  const folder = gui.addFolder("Tipos de bot");
+  const list = document.createElement("div");
+  list.style.padding = "6px 10px";
+  list.style.fontSize = "11px";
+  list.style.lineHeight = "1.7";
+  folder.domElement.appendChild(list);
+
+  const valueCells: HTMLSpanElement[] = [];
+  for (const info of BOT_TYPES) {
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.gap = "6px";
+
+    const dot = document.createElement("span");
+    dot.style.width = "9px";
+    dot.style.height = "9px";
+    dot.style.borderRadius = "2px";
+    dot.style.flex = "0 0 auto";
+    dot.style.background = hexColor(botVisual(info.type).identityColor);
+    row.appendChild(dot);
+
+    const name = document.createElement("span");
+    name.textContent = info.name;
+    name.style.flex = "1 1 auto";
+    name.style.opacity = info.implemented ? "0.9" : "0.5";
+    name.title = `${info.role} — ${info.fn}`;
+    row.appendChild(name);
+
+    const value = document.createElement("span");
+    value.style.opacity = "0.75";
+    value.textContent = "0";
+    row.appendChild(value);
+    valueCells.push(value);
+
+    list.appendChild(row);
+
+    const aclaracion = info.implemented ? info.note : info.pendingReason;
+    if (aclaracion) {
+      const note = document.createElement("div");
+      note.textContent = aclaracion;
+      note.style.fontSize = "10px";
+      note.style.opacity = "0.45";
+      note.style.margin = "-2px 0 4px 15px";
+      note.style.lineHeight = "1.35";
+      list.appendChild(note);
+    }
+  }
+
+  let lastPaint = -Infinity;
+  const lastValues = BOT_TYPES.map(() => -1);
+
+  return (readCounts) => {
+    const now = performance.now();
+    if (now - lastPaint < STATE_PANEL_INTERVAL_MS) return;
+    lastPaint = now;
+
+    const counts = readCounts();
+    for (let i = 0; i < BOT_TYPES.length; i++) {
+      const n = counts[BOT_TYPES[i].type] ?? 0;
+      if (n === lastValues[i]) continue;
+      lastValues[i] = n;
+      valueCells[i].textContent = BOT_TYPES[i].implemented ? String(n) : "sin agentes";
+    }
+  };
+}
+
+export interface InspectionCallbacks {
+  onToggleZoom: () => boolean;
+  onToggleInspector: () => boolean;
+  onToggleLayers: () => boolean;
+}
+
+/**
+ * Carpeta "Inspección": los tres interruptores del modo de observación
+ * (Fase 33). Van juntos porque son la misma herramienta vista desde tres
+ * ángulos — acercarse, mirar un tipo, y separar las capas.
+ */
+export function addInspectionFolder(gui: GUI, callbacks: InspectionCallbacks): void {
+  const folder = gui.addFolder("Inspección");
+
+  const tip = document.createElement("div");
+  tip.style.cssText = "font-size:10px;opacity:0.5;line-height:1.35;padding:4px 10px";
+  tip.textContent =
+    "El Zoom especial deja acercarse mucho más que el zoom normal, y ahí se distingue el hexágono y el tipo de cada bot.";
+  folder.domElement.appendChild(tip);
+
+  const acciones = {
+    zoom: () => {
+      const on = callbacks.onToggleZoom();
+      zoomCtrl.name(on ? "Zoom especial: ACTIVO" : "Zoom especial");
+    },
+    inspector: () => {
+      const on = callbacks.onToggleInspector();
+      inspCtrl.name(on ? "Inspección de bots: ABIERTA" : "Inspección de bots");
+    },
+    capas: () => {
+      const on = callbacks.onToggleLayers();
+      capasCtrl.name(on ? "Ver capas: ABIERTO" : "Ver capas");
+    },
+  };
+
+  const zoomCtrl = folder.add(acciones, "zoom").name("Zoom especial");
+  const inspCtrl = folder.add(acciones, "inspector").name("Inspección de bots");
+  const capasCtrl = folder.add(acciones, "capas").name("Ver capas");
 }
 
 // Carpeta "Comandos": el usuario escribe el nombre de un objeto, adjunta

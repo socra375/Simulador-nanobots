@@ -1,6 +1,9 @@
 import * as THREE from "three";
 import { NANOBOT_ROLE } from "./shapes";
 import { DEFAULT_DOMINANT_COLOR, MAX_COLOR_CLUSTERS, type ColorCluster } from "./image-color";
+import { BOT_TYPE } from "./swarm/bot-types";
+import { botVisual } from "./swarm/bot-config";
+import { createBotGeometries, LOD_LEVEL, type BotGeometrySet, type LodLevel } from "./rendering/bot-models";
 
 // Geometría y material por ROL de nanobot (ver shapes/types.ts). Desde la
 // Fase 27 hay exactamente dos: el exoesqueleto lo arma la población de
@@ -50,17 +53,24 @@ const UNSNAP_DISTANCE_SQ = 1.2 * 1.2;
 // RESTAURARLO: mientras la capa de COLOR viaja desde el núcleo, DETALLE
 // pierde su color (pasa a gris) para que el color de la foto termine
 // predominando al llegar.
-const DETAIL_COLOR = 0x1c8f5a;
+// El color de identidad del tipo NANOBOT sale de la config central
+// (swarm/bot-config.ts), no de una constante suelta acá: la spec pide un
+// solo lugar donde cambiar la paleta.
+const DETAIL_COLOR = botVisual(BOT_TYPE.NANOBOT).identityColor;
 const DETAIL_EMISSIVE = 0x7dffb3;
 const SKELETON_GRAYSCALE_COLOR = 0x555555;
 const SKELETON_GRAYSCALE_EMISSIVE = 0x2a2a2a;
 
 // Índice = NANOBOT_ROLE.{DETAIL,COLOR}. COLOR es levemente más grande que
 // DETALLE a propósito: se solapa más entre sí para tapar huecos/grietas en
-// vez de dejar el fondo negro visible entre esfera y esfera.
-const ROLE_GEOMETRIES: THREE.BufferGeometry[] = [
-  new THREE.SphereGeometry(0.55, 16, 12), // detalle
-  new THREE.SphereGeometry(0.6, 16, 12), // color (capa de pintura final)
+// vez de dejar el fondo visible entre bot y bot.
+//
+// Fase 32: de esferas a prismas HEXAGONALES, con tres niveles de detalle
+// cada uno. Además de ser lo que pide la spec, sale más barato: la esfera
+// tenía ~350 triángulos por instancia y el hexágono tiene ~20.
+const ROLE_GEOMETRY_SETS: BotGeometrySet[] = [
+  createBotGeometries(0.55, 0.42), // detalle
+  createBotGeometries(0.6, 0.46), // color (capa de material final)
 ];
 
 function buildRoleMaterial(role: number): THREE.Material {
@@ -87,6 +97,11 @@ function buildRoleMaterial(role: number): THREE.Material {
   });
 }
 
+export interface LayerDisplay {
+  visible: boolean;
+  offsetY: number;
+}
+
 export interface NanobotSwarmMesh {
   group: THREE.Group;
   setCount: (count: number) => void;
@@ -109,6 +124,23 @@ export interface NanobotSwarmMesh {
   // (mientras COLOR viaja hacia su posición, para que su color termine
   // predominando al llegar). false: lo restaura. No afecta a COLOR.
   setSkeletonGrayscale: (active: boolean) => void;
+  /**
+   * Cambia el nivel de detalle de TODAS las mallas de la población.
+   * Reasigna la geometría ya construida; no construye nada, así que se
+   * puede llamar en un movimiento de cámara sin costo perceptible. El
+   * instanceMatrix no se toca: las instancias siguen donde estaban.
+   */
+  setLodLevel: (level: LodLevel) => void;
+  /**
+   * Visibilidad y desplazamiento vertical por capa (vista de capas).
+   *
+   * Es puramente de PRESENTACIÓN: no toca posiciones de agentes ni estado
+   * de simulación. La visibilidad de cada capa se aplica sobre `.visible`
+   * de la malla, que es un eje independiente del conteo de instancias con
+   * el que se maneja el revelado progresivo — por eso las dos cosas
+   * conviven sin pisarse.
+   */
+  setLayerDisplay: (detail: LayerDisplay, material: LayerDisplay) => void;
 }
 
 // Un InstancedMesh por rol (detalle/color) más uno por ola de color extra,
@@ -130,7 +162,11 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   // de mallas de ensureCapacity(): setColorClusters()/setSkeletonGrayscale()
   // mutan su color en caliente, así que recrearlos perdería el estado
   // visual actual (la figura cambiaría de color sola al subir el conteo).
-  const roleMaterials = ROLE_GEOMETRIES.map((_, role) => buildRoleMaterial(role));
+  // Nivel de detalle vigente para TODAS las mallas de esta población.
+  let lodLevel: LodLevel = LOD_LEVEL.MID;
+  const geometryFor = (role: number): THREE.BufferGeometry => ROLE_GEOMETRY_SETS[role].byLevel[lodLevel];
+
+  const roleMaterials = ROLE_GEOMETRY_SETS.map((_, role) => buildRoleMaterial(role));
   const waveMaterials: THREE.Material[] = [roleMaterials[NANOBOT_ROLE.COLOR]];
   for (let w = 1; w < MAX_COLOR_CLUSTERS; w++) waveMaterials.push(buildRoleMaterial(NANOBOT_ROLE.COLOR));
 
@@ -186,10 +222,10 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
       colorWaveMeshes[w].dispose();
     }
 
-    instancedMeshes = ROLE_GEOMETRIES.map((geometry, role) => makeMesh(geometry, roleMaterials[role], capacity));
+    instancedMeshes = ROLE_GEOMETRY_SETS.map((_, role) => makeMesh(geometryFor(role), roleMaterials[role], capacity));
     colorWaveMeshes = [instancedMeshes[NANOBOT_ROLE.COLOR]];
     for (let w = 1; w < MAX_COLOR_CLUSTERS; w++) {
-      colorWaveMeshes.push(makeMesh(ROLE_GEOMETRIES[NANOBOT_ROLE.COLOR], waveMaterials[w], capacity));
+      colorWaveMeshes.push(makeMesh(geometryFor(NANOBOT_ROLE.COLOR), waveMaterials[w], capacity));
     }
     meshArrays = instancedMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
     waveArrays = colorWaveMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
@@ -198,7 +234,7 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
 
   // Buffers reusados cuadro a cuadro por updateFromPositions — su largo
   // depende de la CANTIDAD DE MALLAS (fija), no de la capacidad.
-  const localCounters = new Array<number>(ROLE_GEOMETRIES.length).fill(0);
+  const localCounters = new Array<number>(ROLE_GEOMETRY_SETS.length).fill(0);
   const waveLocalCounters = new Array<number>(MAX_COLOR_CLUSTERS).fill(0);
 
   function setCount(count: number) {
@@ -366,7 +402,49 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     }
   }
 
+  function setLayerDisplay(detail: LayerDisplay, material: LayerDisplay) {
+    const detailMesh = instancedMeshes[NANOBOT_ROLE.DETAIL];
+    detailMesh.visible = detail.visible;
+    detailMesh.position.y = detail.offsetY;
+
+    // La capa de material son el mesh del rol COLOR y todas las olas.
+    // colorWaveMeshes[0] ES instancedMeshes[COLOR] (misma referencia, ver
+    // ensureCapacity), así que alcanza con recorrer las olas.
+    for (const mesh of colorWaveMeshes) {
+      mesh.visible = material.visible;
+      mesh.position.y = material.offsetY;
+    }
+    instancedMeshes[NANOBOT_ROLE.COLOR].visible = material.visible;
+    instancedMeshes[NANOBOT_ROLE.COLOR].position.y = material.offsetY;
+  }
+
+  function setLodLevel(level: LodLevel) {
+    if (level === lodLevel) return;
+    lodLevel = level;
+    // Sólo se reasigna la referencia: las geometrías de los tres niveles
+    // ya están construidas desde el arranque, y el instanceMatrix de cada
+    // malla no se toca.
+    for (let role = 0; role < instancedMeshes.length; role++) {
+      instancedMeshes[role].geometry = geometryFor(role);
+    }
+    // La ola 0 es el MISMO objeto que instancedMeshes[COLOR] (ver
+    // ensureCapacity), así que se arranca en 1 para no reasignarla dos
+    // veces.
+    for (let w = 1; w < colorWaveMeshes.length; w++) {
+      colorWaveMeshes[w].geometry = geometryFor(NANOBOT_ROLE.COLOR);
+    }
+  }
+
   setCount(0);
 
-  return { group, setCount, updateFromPositions, setVisible, setColorClusters, setSkeletonGrayscale };
+  return {
+    group,
+    setCount,
+    updateFromPositions,
+    setVisible,
+    setColorClusters,
+    setSkeletonGrayscale,
+    setLodLevel,
+    setLayerDisplay,
+  };
 }

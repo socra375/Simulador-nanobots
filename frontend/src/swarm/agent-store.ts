@@ -26,6 +26,8 @@
 // - `velocity` tampoco: vive en C++ y ningún consumidor de JS la necesita.
 //   Espejarla sería duplicar 720 KB para nadie.
 
+import { BOT_TYPE } from "./bot-types";
+
 export const AGENT_STATE = {
   /** Todavía dentro del núcleo: su capa no se reveló. */
   CORE: 0,
@@ -75,6 +77,7 @@ export interface AgentRef {
   readonly colorWave: number;
   readonly layer: number;
   readonly state: number;
+  readonly botType: number;
   readonly delayFraction: number;
   readonly targetX: number;
   readonly targetY: number;
@@ -95,6 +98,12 @@ export interface AgentStore {
   readonly target: Float32Array;
   /** Propiedad del store; uno de AGENT_STATE por agente. */
   readonly state: Uint8Array;
+  /**
+   * Propiedad del store; uno de BOT_TYPE por agente (Fase 31). Un byte
+   * por agente en su propio TypedArray, igual que `state`: sumar un campo
+   * al store NO es sumar un objeto por agente.
+   */
+  readonly botType: Uint8Array;
 
   /**
    * Apunta el store a los arrays de una formación recién calculada. NO
@@ -118,6 +127,18 @@ export interface AgentStore {
   fillState(state: AgentState): void;
 
   /**
+   * Deriva el tipo de bot de cada agente a partir de su rol de formación.
+   *
+   * Los tipos NO son un eje nuevo y paralelo: son el nombre de lo que el
+   * enjambre ya hacía. DETALLE son los Nanobots; la capa que lleva el
+   * color del objeto son los Material Bots.
+   */
+  assignTypesFromRoles(colorRole: number): void;
+
+  /** Cuenta agentes por tipo en `out` (largo BOT_TYPE_COUNT), sin asignar. */
+  countByType(out: Uint32Array): Uint32Array;
+
+  /**
    * Cuenta agentes por estado en `out` (largo 8), sin asignar. Devuelve
    * el mismo array para poder encadenar.
    */
@@ -134,6 +155,7 @@ export function createAgentStore(): AgentStore {
   let delayFraction: Float32Array = EMPTY_F32;
   let target: Float32Array = EMPTY_F32;
   let state = new Uint8Array(0);
+  let botType = new Uint8Array(0);
 
   // Flyweight: un solo objeto re-apuntado, nunca uno por agente.
   let cursor = 0;
@@ -143,6 +165,7 @@ export function createAgentStore(): AgentStore {
     get colorWave() { return colorWave[cursor] ?? 0; },
     get layer() { return layer[cursor] ?? 0; },
     get state() { return state[cursor] ?? AGENT_STATE.IDLE; },
+    get botType() { return botType[cursor] ?? BOT_TYPE.NANOBOT; },
     get delayFraction() { return delayFraction[cursor] ?? 0; },
     get targetX() { return target[cursor * 3 + 0] ?? 0; },
     get targetY() { return target[cursor * 3 + 1] ?? 0; },
@@ -154,6 +177,11 @@ export function createAgentStore(): AgentStore {
     state = new Uint8Array(n);
   }
 
+  function ensureTypeCapacity(n: number): void {
+    if (botType.length >= n) return;
+    botType = new Uint8Array(n);
+  }
+
   return {
     get count() { return count; },
     get role() { return role; },
@@ -162,6 +190,7 @@ export function createAgentStore(): AgentStore {
     get delayFraction() { return delayFraction; },
     get target() { return target; },
     get state() { return state; },
+    get botType() { return botType; },
 
     adoptFormation(args): void {
       count = args.count;
@@ -172,6 +201,11 @@ export function createAgentStore(): AgentStore {
       target = args.target;
       ensureStateCapacity(count);
       state.fill(AGENT_STATE.CORE, 0, count);
+      ensureTypeCapacity(count);
+      // Por defecto todos son Nanobots; adoptFormation no conoce el código
+      // del rol COLOR (vive en shapes) y pedírselo acá acoplaría el store a
+      // las formas. Lo afina assignTypesFromRoles.
+      botType.fill(BOT_TYPE.NANOBOT, 0, count);
     },
 
     reset(nextCount, nextRole, nextTarget): void {
@@ -183,11 +217,26 @@ export function createAgentStore(): AgentStore {
       target = nextTarget;
       ensureStateCapacity(count);
       state.fill(AGENT_STATE.IDLE, 0, count);
+      ensureTypeCapacity(count);
+      botType.fill(BOT_TYPE.NANOBOT, 0, count);
     },
 
     fillState(next): void {
       ensureStateCapacity(count);
       state.fill(next, 0, count);
+    },
+
+    assignTypesFromRoles(colorRole): void {
+      ensureTypeCapacity(count);
+      for (let i = 0; i < count; i++) {
+        botType[i] = role[i] === colorRole ? BOT_TYPE.MATERIAL : BOT_TYPE.NANOBOT;
+      }
+    },
+
+    countByType(out): Uint32Array {
+      out.fill(0);
+      for (let i = 0; i < count; i++) out[botType[i]]++;
+      return out;
     },
 
     countByState(out): Uint32Array {
