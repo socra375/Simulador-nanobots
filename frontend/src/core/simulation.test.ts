@@ -9,6 +9,7 @@ import {
   type SwarmApi,
 } from "./simulation";
 import { DEFAULT_NANOBOT_TIMINGS, makeSwirlAxes } from "./kinematics";
+import { AGENT_STATE } from "../swarm/agent-store";
 
 // Arnés de la máquina de estados. Antes de la Fase 27c esto era
 // literalmente intesteable: todo vivía en una closure de main() sin
@@ -315,5 +316,89 @@ describe("robustez", () => {
     const { sim } = makeSim({ count: 0 });
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
     expect(() => advance(sim, FULL_LAUNCH + 10)).not.toThrow();
+  });
+});
+
+// Fase 28: el desglose por estado es lo que hace que el AgentStore NO sea
+// decorativo — el panel lo muestra en vivo. Estos tests afirman que de
+// verdad evoluciona con la animación, no que exista el campo.
+function total(counts: Uint32Array): number {
+  let sum = 0;
+  for (let i = 0; i < counts.length; i++) sum += counts[i];
+  return sum;
+}
+
+describe("desglose por estado (AgentStore)", () => {
+
+  it("en reposo todos los agentes están en IDLE", () => {
+    const { sim, settings } = makeSim();
+    sim.step(0.1);
+    const counts = sim.state.stateCounts;
+    expect(counts[AGENT_STATE.IDLE]).toBe(settings.count);
+  });
+
+  it("al arrancar la formación todos están en el núcleo, no asentados", () => {
+    const { sim, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    // Los nanobots esperan al exoesqueleto: todavía no voló ninguno.
+    advance(sim, FULL_LAUNCH);
+    const counts = sim.state.stateCounts;
+    expect(counts[AGENT_STATE.CORE] + counts[AGENT_STATE.TRAVELING]).toBe(settings.count);
+    expect(counts[AGENT_STATE.ATTACHED]).toBe(0);
+  });
+
+  it("a mitad de la formación hay agentes en vuelo Y agentes ya asentados", () => {
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 1.5);
+    const counts = sim.state.stateCounts;
+    const enVuelo = counts[AGENT_STATE.TRAVELING] + counts[AGENT_STATE.ASSEMBLING];
+    expect(enVuelo).toBeGreaterThan(0);
+    expect(counts[AGENT_STATE.ATTACHED]).toBeGreaterThan(0);
+  });
+
+  it("al terminar la formación TODOS quedan asentados", () => {
+    const { sim, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    expect(sim.state.nanobotPhase).toBe("settled");
+    expect(sim.state.stateCounts[AGENT_STATE.ATTACHED]).toBe(settings.count);
+  });
+
+  it("durante el repliegue los agentes en vuelo cuentan como RETURNING, no TRAVELING", () => {
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    sim.returnToCore();
+    advance(sim, DEFAULT_NANOBOT_TIMINGS.layerDuration * 0.5);
+    const counts = sim.state.stateCounts;
+    expect(counts[AGENT_STATE.RETURNING]).toBeGreaterThan(0);
+    expect(counts[AGENT_STATE.TRAVELING]).toBe(0);
+  });
+
+  it("terminado el repliegue vuelven todos a IDLE", () => {
+    const { sim, settings } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    sim.returnToCore();
+    advance(sim, 20);
+    expect(sim.state.nanobotPhase).toBe("idle");
+    expect(sim.state.stateCounts[AGENT_STATE.IDLE]).toBe(settings.count);
+  });
+
+  it("el desglose suma la cantidad ANIMADA, no la capacidad del buffer", () => {
+    // 500 primero y 120 después: el buffer de estado se dimensionó para
+    // 500 y no se encoge. Si countByState recorriera el buffer entero en
+    // vez de los agentes activos, la suma daría 500.
+    const { sim } = makeSim({ count: 500 });
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    expect(total(sim.state.stateCounts)).toBe(500);
+
+    sim.returnToCore();
+    advance(sim, 20);
+    sim.setNanobotCount(120);
+    advance(sim, 0.2);
+    expect(total(sim.state.stateCounts)).toBe(120);
   });
 });

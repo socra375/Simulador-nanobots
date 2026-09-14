@@ -52,6 +52,26 @@ async function attachFakePhoto(page: Page) {
   await fileInput.setInputFiles({ name: "objeto.png", mimeType: "image/png", buffer: pngBuffer });
 }
 
+// Fase 28: desglose en vivo por estado de agente, alimentado por el
+// AgentStore (ver src/swarm/agent-store.ts). Es la prueba de que el store
+// no es un módulo decorativo: si dejara de escribirse, este panel se
+// congela y estos tests fallan.
+async function readAgentStatePanel(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const guis = Array.from(document.querySelectorAll(".lil-gui"));
+    const folder = guis.find(
+      (g) => g.querySelector(":scope > .title")?.textContent === "Estado de los agentes",
+    );
+    if (!folder) return "(sin panel)";
+    // El ÚLTIMO div directo, no el primero: el primero es el título de la
+    // carpeta (mismo criterio que readCommandsStatus).
+    const divs = Array.from(folder.children).filter(
+      (c) => c.tagName === "DIV" && !c.classList.contains("children") && !c.classList.contains("title"),
+    );
+    return divs.length ? (divs[divs.length - 1].textContent ?? "") : "(sin contenido)";
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await page.waitForLoadState("networkidle");
@@ -275,4 +295,45 @@ test("pedir otra figura durante la animación de regreso al núcleo (espiral) no
 
   await page.waitForTimeout(1500);
   expect(errors).toEqual([]);
+});
+
+test("el panel de estado muestra el desglose del enjambre y cambia al formar", async ({ page }) => {
+  // En headless (SwiftShader) el tope de dt hace que una formación de ~12s
+  // nominales tarde bastante más en reloj de pared — artefacto del entorno,
+  // documentado desde la Fase 26. El timeout por test del config son 30s y
+  // acota el test ENTERO, así que hay que subirlo acá.
+  test.setTimeout(300_000);
+  // En reposo: todos los agentes en "reposo" (IDLE), ninguno asentado.
+  await expect.poll(() => readAgentStatePanel(page), { timeout: 20000 }).toMatch(/^reposo: \d+$/);
+
+  await attachFakePhoto(page);
+  await setObjectName(page, "cubo");
+  await clickCommandButton(page, "Formar objeto");
+  await expect.poll(() => readCommandsStatus(page)).toBe("Formando: cubo");
+
+  // Al terminar la formación TODOS quedan asentados. El timeout es
+  // generoso a propósito: en headless (SwiftShader) el tope de dt hace que
+  // una formación de ~12s nominales tarde bastante más en reloj de pared —
+  // artefacto del entorno, documentado desde la Fase 26.
+  await expect
+    .poll(() => readAgentStatePanel(page), { timeout: 180000 })
+    .toMatch(/^asentado: \d+$/);
+
+  // Y el desglose suma la cantidad configurada, no la capacidad del buffer.
+  const asentados = Number((await readAgentStatePanel(page)).replace(/\D/g, ""));
+  expect(asentados).toBe(3000);
+});
+
+test("el panel de estado vuelve a reposo tras volver al núcleo", async ({ page }) => {
+  test.setTimeout(300_000);
+  await attachFakePhoto(page);
+  await setObjectName(page, "esfera");
+  await clickCommandButton(page, "Formar objeto");
+  await expect.poll(() => readCommandsStatus(page)).toBe("Formando: esfera");
+  await page.waitForTimeout(3000);
+
+  await clickCommandButton(page, "Volver al núcleo");
+  await expect
+    .poll(() => readAgentStatePanel(page), { timeout: 180000 })
+    .toMatch(/^reposo: \d+$/);
 });

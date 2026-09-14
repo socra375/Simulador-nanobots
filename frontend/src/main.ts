@@ -4,7 +4,7 @@ import { createMicrobotSwarmMesh } from "./microbot-mesh";
 import { Swarm } from "./swarm";
 import { createReactor } from "./reactor";
 import { FORMATION_CENTER } from "./shapes";
-import { createControlPanel, type UiState } from "./ui";
+import { createControlPanel, addAgentStatePanel, type UiState } from "./ui";
 import { loadConfig, saveConfig, type SwarmConfig } from "./config-client";
 import { type ColorCluster } from "./image-color";
 import { createMetrics } from "./core/metrics";
@@ -113,6 +113,12 @@ async function main() {
     onMicrobotCountChange: (count: number) => sim.setMicrobotCount(count),
   });
 
+  // Fase 28: el desglose por estado sale del AgentStore, que se llena en
+  // el mismo recorrido por agente que ya escribe las posiciones. El lector
+  // se crea UNA vez acá (no por cuadro) y el panel decide cuándo llamarlo.
+  const paintAgentStates = addAgentStatePanel(gui);
+  const readStateCounts = () => sim.state.stateCounts;
+
   const loop = createFrameLoop(
     (dt) => {
       const frameStart = performance.now();
@@ -132,6 +138,7 @@ async function main() {
         sim.state.microbotPhase === "hidden" ? 0 : sim.state.microbotCount,
       );
       metrics.setRenderInfo(renderer.info.render.calls, renderer.info.render.triangles);
+      paintAgentStates(readStateCounts);
     },
     {
       onError: (err) => console.error("Error en el loop de animación; se detiene el render:", err),
