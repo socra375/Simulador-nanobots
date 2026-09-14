@@ -31,6 +31,8 @@
 // porque la ventana sobre el reloj compartido y el `cancel` ya son
 // generales.
 
+import { BOT_TYPE, type BotType } from "./bot-types";
+
 export const TASK_TYPE = {
   /** Exoesqueleto de Microbots saliendo del núcleo. Reloj: microbot. */
   CREATE_STRUCTURE: "CREATE_STRUCTURE",
@@ -115,6 +117,32 @@ export interface SwarmDirector {
   isStructureDone(): boolean;
   /** Resumen corto por tarea, para el panel. */
   describe(): string[];
+}
+
+/**
+ * Qué TIPO de bot ejecuta cada tarea (spec §17).
+ *
+ * Es una tabla y no un `switch` repartido por el código para que agregar
+ * un tipo de tarea sea una línea, y para que la relación tarea->tipo se
+ * pueda leer de un vistazo en vez de reconstruirla leyendo handlers.
+ *
+ * Sólo están las cuatro tareas que existen. CONNECT_STRUCTURE, REPAIR,
+ * TRANSFORM y APPLY_MATERIAL como tareas propias entran cuando entren sus
+ * handlers; el tipo de bot ya está declarado esperándolas.
+ */
+export const TASK_EXECUTOR: Record<TaskType, BotType> = {
+  [TASK_TYPE.CREATE_STRUCTURE]: BOT_TYPE.MICROBOT,
+  [TASK_TYPE.FILL_STRUCTURE]: BOT_TYPE.NANOBOT,
+  [TASK_TYPE.APPLY_COLOR]: BOT_TYPE.MATERIAL,
+  // El repliegue lo hace el enjambre entero, no un tipo especializado.
+  // Se marca con NANOBOT porque son la mayoría, y queda anotado para que
+  // nadie lo lea como una decisión de diseño que no es.
+  [TASK_TYPE.RETURN_TO_CORE]: BOT_TYPE.NANOBOT,
+};
+
+/** Tipo de bot que ejecuta una tarea. */
+export function taskExecutor(type: TaskType): BotType {
+  return TASK_EXECUTOR[type];
 }
 
 const TASK_LABELS: Record<TaskType, string> = {
