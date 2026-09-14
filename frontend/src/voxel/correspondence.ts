@@ -52,6 +52,20 @@ export function buildMorphSource(
   previous: Float32Array,
   previousCount: number,
   core: readonly [number, number, number],
+  /**
+   * Centro del cubo de vóxeles en coordenadas de mundo. NO tiene default a
+   * propósito: sin él, este módulo pasaba coordenadas de mundo crudas a
+   * `worldToVoxel`, que sólo acepta [-half, +half]. En producción los
+   * puntos vienen trasladados a FORMATION_CENTER = [4, 2, 4] con
+   * half = 5.5, así que todo lo que tuviera x > 5.5 o z > 5.5 daba -1 y
+   * caía al camino de sobrantes: el morph seguía funcionando, pero media
+   * figura perdía la localidad que este módulo existe para dar. Los tests
+   * no lo veían porque generaban nubes centradas en el origen.
+   *
+   * Obligarlo en la firma hace que el compilador exija decidirlo en cada
+   * llamada, en vez de que el default equivocado pase inadvertido.
+   */
+  center: readonly [number, number, number],
   res: number = DEFAULT_VOXEL_RES,
   half: number = SHAPE_HALF_EXTENT,
 ): MorphSource {
@@ -63,9 +77,9 @@ export function buildMorphSource(
   const buckets = new Map<number, number[]>();
   const libres: number[] = [];
   for (let p = 0; p < previousCount; p++) {
-    const vx = worldToVoxel(previous[p * 3 + 0], res, half);
-    const vy = worldToVoxel(previous[p * 3 + 1], res, half);
-    const vz = worldToVoxel(previous[p * 3 + 2], res, half);
+    const vx = worldToVoxel(previous[p * 3 + 0] - center[0], res, half);
+    const vy = worldToVoxel(previous[p * 3 + 1] - center[1], res, half);
+    const vz = worldToVoxel(previous[p * 3 + 2] - center[2], res, half);
     if (vx < 0 || vy < 0 || vz < 0) {
       // Fuera del cubo (p. ej. todavía cerca del reactor): sirve igual
       // como origen, sólo que sin localidad.
@@ -93,9 +107,9 @@ export function buildMorphSource(
     const tx = targets[i * 3 + 0];
     const ty = targets[i * 3 + 1];
     const tz = targets[i * 3 + 2];
-    const vx = worldToVoxel(tx, res, half);
-    const vy = worldToVoxel(ty, res, half);
-    const vz = worldToVoxel(tz, res, half);
+    const vx = worldToVoxel(tx - center[0], res, half);
+    const vy = worldToVoxel(ty - center[1], res, half);
+    const vz = worldToVoxel(tz - center[2], res, half);
 
     let p = -1;
     if (vx >= 0 && vy >= 0 && vz >= 0) {

@@ -3,6 +3,8 @@ import { buildMorphSource } from "./correspondence";
 import { SHAPE_HALF_EXTENT } from "../shapes";
 
 const CORE: readonly [number, number, number] = [-8, 8, -8];
+/** Las nubes de estos tests están centradas en el origen. */
+const ORIGIN: readonly [number, number, number] = [0, 0, 0];
 
 function dist(a: Float32Array, ai: number, b: Float32Array, bi: number): number {
   const dx = a[ai * 3] - b[bi * 3];
@@ -22,11 +24,65 @@ function cloud(n: number, seed: number, spread = SHAPE_HALF_EXTENT * 0.8): Float
   return out;
 }
 
+// REGRESIÓN (Fase 39). Este módulo recibía coordenadas de mundo crudas y
+// se las pasaba a `worldToVoxel`, que sólo acepta [-half, +half]. En
+// producción los puntos vienen trasladados a FORMATION_CENTER = [4, 2, 4]
+// con half = 5.5, así que todo lo que tuviera x > 5.5 o z > 5.5 daba -1 y
+// caía al camino de sobrantes, sin localidad. Los 10 tests de acá no lo
+// veían porque generaban nubes centradas en el origen: por eso este test
+// usa una nube TRASLADADA, que es el caso real.
+describe("buildMorphSource con la figura fuera del origen", () => {
+  const CENTRO: readonly [number, number, number] = [4, 2, 4];
+
+  function trasladada(n: number, seed: number): Float32Array {
+    const c = cloud(n, seed);
+    for (let i = 0; i < n; i++) {
+      c[i * 3 + 0] += CENTRO[0];
+      c[i * 3 + 1] += CENTRO[1];
+      c[i * 3 + 2] += CENTRO[2];
+    }
+    return c;
+  }
+
+  it("conserva la localidad cuando la figura NO está en el origen", () => {
+    const n = 400;
+    const previous = trasladada(n, 11);
+    // Los destinos son los mismos puntos en otro orden: la
+    // correspondencia perfecta existe y debería encontrarse.
+    const targets = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const j = (i * 7 + 3) % n;
+      targets[i * 3 + 0] = previous[j * 3 + 0];
+      targets[i * 3 + 1] = previous[j * 3 + 1];
+      targets[i * 3 + 2] = previous[j * 3 + 2];
+    }
+
+    const bien = buildMorphSource(targets, n, previous, n, CORE, CENTRO);
+    // Con el centro correcto, casi todos los destinos encuentran un
+    // origen en su propia celda o muy cerca.
+    expect(bien.matchedNearby).toBeGreaterThan(n * 0.9);
+
+    // Y pasando el origen (el bug) la localidad se desploma: la mitad de
+    // la figura cae fuera del cubo.
+    const mal = buildMorphSource(targets, n, previous, n, CORE, [0, 0, 0]);
+    expect(mal.matchedNearby).toBeLessThan(bien.matchedNearby * 0.8);
+  });
+
+  it("cada destino sigue teniendo un origen, aun con el centro corrido", () => {
+    const n = 120;
+    const previous = trasladada(n, 5);
+    const targets = trasladada(n, 9);
+    const { from } = buildMorphSource(targets, n, previous, n, CORE, CENTRO);
+    expect(from).toHaveLength(n * 3);
+    for (let i = 0; i < from.length; i++) expect(Number.isNaN(from[i])).toBe(false);
+  });
+});
+
 describe("buildMorphSource", () => {
   it("devuelve un origen por destino", () => {
     const targets = cloud(100, 1);
     const previous = cloud(100, 2);
-    const { from } = buildMorphSource(targets, 100, previous, 100, CORE);
+    const { from } = buildMorphSource(targets, 100, previous, 100, CORE, ORIGIN);
     expect(from).toHaveLength(300);
     expect(Array.from(from).every((v) => Number.isFinite(v))).toBe(true);
   });
@@ -38,7 +94,7 @@ describe("buildMorphSource", () => {
     const n = 200;
     const targets = cloud(n, 3);
     const previous = cloud(n, 4);
-    const { from } = buildMorphSource(targets, n, previous, n, CORE);
+    const { from } = buildMorphSource(targets, n, previous, n, CORE, ORIGIN);
 
     const usados = new Set<string>();
     for (let i = 0; i < n; i++) {
@@ -53,7 +109,7 @@ describe("buildMorphSource", () => {
     const n = 1500;
     const targets = cloud(n, 5);
     const previous = cloud(n, 6);
-    const { from } = buildMorphSource(targets, n, previous, n, CORE);
+    const { from } = buildMorphSource(targets, n, previous, n, CORE, ORIGIN);
 
     let conMorph = 0;
     let crudo = 0;
@@ -68,7 +124,7 @@ describe("buildMorphSource", () => {
     const n = 500;
     const targets = cloud(n, 7);
     const previous = Float32Array.from(targets); // misma nube
-    const { from } = buildMorphSource(targets, n, previous, n, CORE);
+    const { from } = buildMorphSource(targets, n, previous, n, CORE, ORIGIN);
 
     let total = 0;
     for (let i = 0; i < n; i++) total += dist(from, i, targets, i);
@@ -78,7 +134,7 @@ describe("buildMorphSource", () => {
   it("con más destinos que agentes viejos, los sobrantes salen del núcleo", () => {
     const targets = cloud(50, 8);
     const previous = cloud(10, 9);
-    const { from } = buildMorphSource(targets, 50, previous, 10, CORE);
+    const { from } = buildMorphSource(targets, 50, previous, 10, CORE, ORIGIN);
 
     let desdeNucleo = 0;
     for (let i = 0; i < 50; i++) {
@@ -90,7 +146,7 @@ describe("buildMorphSource", () => {
   it("con más agentes viejos que destinos, sobran agentes y no se rompe nada", () => {
     const targets = cloud(20, 10);
     const previous = cloud(200, 11);
-    const { from, matchedNearby } = buildMorphSource(targets, 20, previous, 200, CORE);
+    const { from, matchedNearby } = buildMorphSource(targets, 20, previous, 200, CORE, ORIGIN);
     expect(from).toHaveLength(60);
     // Habiendo agentes de sobra, NINGÚN destino debería salir del núcleo.
     for (let i = 0; i < 20; i++) expect(from[i * 3]).not.toBe(CORE[0]);
@@ -103,7 +159,7 @@ describe("buildMorphSource", () => {
 
   it("sin agentes viejos, TODO sale del núcleo (es una formación normal)", () => {
     const targets = cloud(30, 12);
-    const { from } = buildMorphSource(targets, 30, new Float32Array(0), 0, CORE);
+    const { from } = buildMorphSource(targets, 30, new Float32Array(0), 0, CORE, ORIGIN);
     for (let i = 0; i < 30; i++) {
       expect(from[i * 3]).toBe(CORE[0]);
       expect(from[i * 3 + 1]).toBe(CORE[1]);
@@ -115,13 +171,13 @@ describe("buildMorphSource", () => {
     const targets = cloud(10, 13);
     // Todos los viejos lejísimos, fuera de la grilla.
     const previous = new Float32Array(10 * 3).fill(SHAPE_HALF_EXTENT * 10);
-    const { from } = buildMorphSource(targets, 10, previous, 10, CORE);
+    const { from } = buildMorphSource(targets, 10, previous, 10, CORE, ORIGIN);
     // Ninguno debería caer al núcleo: había agentes disponibles.
     for (let i = 0; i < 10; i++) expect(from[i * 3]).toBe(SHAPE_HALF_EXTENT * 10);
   });
 
   it("0 destinos no rompe", () => {
-    const { from } = buildMorphSource(new Float32Array(0), 0, cloud(10, 14), 10, CORE);
+    const { from } = buildMorphSource(new Float32Array(0), 0, cloud(10, 14), 10, CORE, ORIGIN);
     expect(from).toHaveLength(0);
   });
 
@@ -130,7 +186,7 @@ describe("buildMorphSource", () => {
     const targets = cloud(n, 15);
     const previous = cloud(n, 16);
     const t0 = Date.now();
-    const { from } = buildMorphSource(targets, n, previous, n, CORE);
+    const { from } = buildMorphSource(targets, n, previous, n, CORE, ORIGIN);
     expect(from).toHaveLength(n * 3);
     expect(Date.now() - t0).toBeLessThan(5000);
   });
