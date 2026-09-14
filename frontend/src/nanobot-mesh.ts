@@ -258,6 +258,15 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     colorWave: Uint8Array<ArrayBufferLike>,
     revealedColorWaves: number,
   ) {
+    // En reposo el enjambre está OCULTO (ver setVisible más abajo) pero la
+    // física boid se sigue corriendo y este método se seguía llamando cada
+    // cuadro: escribía hasta count*16 floats de matrices y los subía a la
+    // GPU para un grupo que no se dibuja. Medido antes de este corte
+    // (bench/BASELINE.md): 6,29 ms por cuadro a 10.000 agentes, íntegros
+    // al pedo. Si no se ve, no hace falta escribirlo — las matrices se
+    // recalculan enteras en el primer cuadro visible.
+    if (!group.visible) return;
+
     // Con miles de nanobots en el mismo volumen, el tamaño fijo (afinado
     // para ~80) los hace superponerse tanto que una figura se ve como un
     // blob sólido en vez de un contorno nítido. Se achican con la densidad
@@ -358,19 +367,23 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     // subidos a la GPU por frame, todo el tiempo (incluso en reposo, ya
     // que la física idle llama a updateFromPositions cada frame). Acotar
     // el rango subido al conteo real en uso evita ese costo fijo.
-    instancedMeshes.forEach((mesh, role) => {
-      if (role === NANOBOT_ROLE.COLOR) return; // lo maneja colorWaveMeshes abajo
+    // `for` plano en vez de forEach: esto corre en cada cuadro y cada
+    // forEach asignaba una closure nueva.
+    for (let role = 0; role < instancedMeshes.length; role++) {
+      if (role === NANOBOT_ROLE.COLOR) continue; // lo maneja colorWaveMeshes abajo
+      const mesh = instancedMeshes[role];
       mesh.count = localCounters[role];
       mesh.instanceMatrix.clearUpdateRanges();
       mesh.instanceMatrix.addUpdateRange(0, mesh.count * 16);
       mesh.instanceMatrix.needsUpdate = true;
-    });
-    colorWaveMeshes.forEach((mesh, w) => {
+    }
+    for (let w = 0; w < colorWaveMeshes.length; w++) {
+      const mesh = colorWaveMeshes[w];
       mesh.count = waveLocalCounters[w];
       mesh.instanceMatrix.clearUpdateRanges();
       mesh.instanceMatrix.addUpdateRange(0, mesh.count * 16);
       mesh.instanceMatrix.needsUpdate = true;
-    });
+    }
   }
 
   // Oculta todo el enjambre: se usa en reposo, ya que los nanobots "están

@@ -118,10 +118,23 @@ function addCommandsFolder(gui: GUI, callbacks: UiCallbacks): void {
   status.style.cssText = "font-size:11px;color:#4be3ff;padding:2px 6px;min-height:14px;";
 
   let photoObjectUrl: string | null = null;
+  // Antes solo se revocaba la URL ANTERIOR al adjuntar una foto nueva, así
+  // que la última siempre quedaba viva (el navegador mantiene el blob en
+  // memoria hasta que se revoca o se cierra la pestaña). Revocando apenas
+  // la imagen quedó decodificada no queda ninguna colgada, y el preview se
+  // sigue viendo igual porque ya no necesita la URL.
+  function releasePhotoUrl(): void {
+    if (!photoObjectUrl) return;
+    URL.revokeObjectURL(photoObjectUrl);
+    photoObjectUrl = null;
+  }
+  preview.addEventListener("load", releasePhotoUrl);
+  preview.addEventListener("error", releasePhotoUrl);
+
   fileInput.addEventListener("change", () => {
     const file = fileInput.files?.[0];
     if (!file) return;
-    if (photoObjectUrl) URL.revokeObjectURL(photoObjectUrl);
+    releasePhotoUrl();
     photoObjectUrl = URL.createObjectURL(file);
     preview.src = photoObjectUrl;
     preview.style.display = "block";
