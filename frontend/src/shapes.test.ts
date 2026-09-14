@@ -88,27 +88,16 @@ describe("formShapeWithRoles", () => {
         expect(formation).not.toBeNull();
         expect(formation!.points.length).toBe(count * 3);
         expect(formation!.roles.length).toBe(count);
-        expect(formation!.relationSpans.length).toBe(count * 6);
         expect(formation!.colorWave.length).toBe(count);
         expect(formation!.points.some((v) => Number.isNaN(v))).toBe(false);
       }
     }
   });
 
-  it("los agentes ESTRUCTURA/RELACION quedan en 0 (el exoesqueleto ahora lo arma Microbots, ver buildExoskeleton)", () => {
+  it("solo existen los roles DETALLE y COLOR (el exoesqueleto lo arma Microbots, ver buildExoskeleton)", () => {
     const formation = formShapeWithRoles("esfera", 500)!;
     for (const role of formation.roles) {
-      expect(role === NANOBOT_ROLE.STRUCTURE || role === NANOBOT_ROLE.RELATION).toBe(false);
-    }
-  });
-
-  it("los agentes ESTRUCTURA/DETALLE no traen relationSpans (quedan en 0)", () => {
-    const formation = formShapeWithRoles("esfera", 300)!;
-    for (let i = 0; i < 300; i++) {
-      if (formation.roles[i] === NANOBOT_ROLE.RELATION) continue;
-      for (let k = 0; k < 6; k++) {
-        expect(formation.relationSpans[i * 6 + k]).toBe(0);
-      }
+      expect([NANOBOT_ROLE.DETAIL, NANOBOT_ROLE.COLOR]).toContain(role);
     }
   });
 
@@ -116,19 +105,15 @@ describe("formShapeWithRoles", () => {
     expect(formShapeWithRoles("no-existe", 50)).toBeNull();
   });
 
-  it("COLOR es un 75% FIJO del total y DETALLE absorbe el 25% restante (ESTRUCTURA/RELACION quedan en 0)", () => {
+  it("COLOR es un 75% FIJO del total y DETALLE absorbe el 25% restante", () => {
     const formation = formShapeWithRoles("esfera", 1000)!;
-    let structure = 0, relation = 0, detail = 0, color = 0;
+    let detail = 0, color = 0;
     for (const role of formation.roles) {
-      expect([NANOBOT_ROLE.STRUCTURE, NANOBOT_ROLE.RELATION, NANOBOT_ROLE.DETAIL, NANOBOT_ROLE.COLOR]).toContain(role);
-      if (role === NANOBOT_ROLE.STRUCTURE) structure++;
-      else if (role === NANOBOT_ROLE.RELATION) relation++;
-      else if (role === NANOBOT_ROLE.DETAIL) detail++;
+      expect([NANOBOT_ROLE.DETAIL, NANOBOT_ROLE.COLOR]).toContain(role);
+      if (role === NANOBOT_ROLE.DETAIL) detail++;
       else color++;
     }
-    expect(structure + relation + detail + color).toBe(1000);
-    expect(structure).toBe(0);
-    expect(relation).toBe(0);
+    expect(detail + color).toBe(1000);
     // COLOR: 75% FIJO del total; DETALLE se lleva el 25% restante entero,
     // ya que el exoesqueleto (antes ESTRUCTURA/RELACION) ahora lo arma
     // Microbots por separado (ver buildExoskeleton).

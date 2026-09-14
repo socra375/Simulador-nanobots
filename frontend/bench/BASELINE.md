@@ -106,3 +106,22 @@ El heap sigue clavado en 61,04 MB sin importar el conteo: es la reserva
 fija de `instanceMatrix` a `MAX = 60.000`. La capacidad adaptativa que
 ataca eso se movió a la Fase 27, donde el arnés de caracterización la
 protege.
+
+---
+
+# Después de la Fase 27 (quitar los roles muertos)
+
+**Heap: 61,0 MB → 54,2 MB.** Es la primera mejora medible del programa, y
+no vino de optimizar nada: vino de **borrar código que no se ejecutaba**.
+
+Los roles `STRUCTURE` y `RELATION` de Nanobots tenían 0 agentes asignados
+desde la Fase 15, pero igual reservaban un `InstancedMesh` cada uno a
+`MAX = 60.000` (2 × 60.000 × 16 floats ≈ 7,7 MB) y un buffer
+`relationSpans` de `count*6` floats por formación que no se escribía
+nunca. Los draw calls no cambiaron (23), justamente porque esas dos
+mallas tenían `count = 0` y nunca se dibujaban — lo que confirma que era
+peso muerto puro.
+
+Lo que queda por atacar del heap es la reserva fija de las 5 mallas
+restantes: con 3.000 agentes se sigue reservando capacidad para 60.000.
+Eso es la capacidad adaptativa, pendiente.

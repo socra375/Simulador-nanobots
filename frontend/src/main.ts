@@ -104,12 +104,12 @@ const DEFAULT_STATE: UiState = {
 };
 
 type Mode = "idle" | "forming";
-type RoleVisibility = readonly [boolean, boolean, boolean, boolean];
-const ALL_ROLES_VISIBLE: RoleVisibility = [true, true, true, true];
+type RoleVisibility = readonly [boolean, boolean];
+const ALL_ROLES_VISIBLE: RoleVisibility = [true, true];
 // Mutable y reusada cuadro a cuadro mientras se forma/repliega: solo
-// cambia el último elemento (si la 1ra ola de Color ya está revelada), y
-// el literal equivalente asignaba un array nuevo en cada cuadro.
-const formingRoleVisibility: [boolean, boolean, boolean, boolean] = [false, false, true, false];
+// cambia el elemento de COLOR (si la 1ra ola ya está revelada), y el
+// literal equivalente asignaba un array nuevo en cada cuadro.
+const formingRoleVisibility: [boolean, boolean] = [true, false];
 
 async function main() {
   const container = document.getElementById("app")!;
@@ -170,7 +170,6 @@ async function main() {
   // sentido mientras se está formando una figura; en reposo el enjambre
   // está oculto así que el contenido no importa visualmente.
   let currentRoles: Uint8Array<ArrayBufferLike> = new Uint8Array(state.count).fill(NANOBOT_ROLE.DETAIL);
-  let currentRelationSpans: Float32Array = new Float32Array(state.count * 6);
   // Punto final (fijo) de cada agente si hay una figura formada; en reposo
   // queda todo en cero. Le permite a nanobot-mesh.ts dibujar cada nanobot
   // exactamente ahí una vez asentado.
@@ -306,7 +305,6 @@ async function main() {
   function applyIdleTargets() {
     swarm.setAgentTargets(idleCluster(state.count, reactorCenter));
     currentRoles = new Uint8Array(state.count).fill(NANOBOT_ROLE.DETAIL);
-    currentRelationSpans = new Float32Array(state.count * 6);
     currentFormationTargets = new Float32Array(state.count * 3);
   }
 
@@ -321,7 +319,6 @@ async function main() {
     if (!formation) return;
     currentFormation = formation;
     currentRoles = formation.roles;
-    currentRelationSpans = formation.relationSpans;
     currentFormationTargets = formation.points;
     currentColorWave = formation.colorWave;
     currentColorClusters = colorClusters;
@@ -441,7 +438,6 @@ async function main() {
           nanobotRenderPositions,
           nanobotAnimCount,
           currentRoles,
-          currentRelationSpans,
           currentFormationTargets,
           ALL_ROLES_VISIBLE,
           currentColorWave,
@@ -563,12 +559,11 @@ async function main() {
       // (capa 1), para que el color real de la foto termine predominando
       // en vez de competir con el verde fijo del rol.
       swarmMesh.setSkeletonGrayscale(layerIndex >= 1);
-      formingRoleVisibility[3] = layerIndex >= 1;
+      formingRoleVisibility[1] = layerIndex >= 1;
       swarmMesh.updateFromPositions(
         nanobotRenderPositions,
         nanobotAnimCount,
         currentRoles,
-        currentRelationSpans,
         currentFormationTargets,
         formingRoleVisibility,
         currentColorWave,
@@ -605,7 +600,6 @@ async function main() {
         swarm.getPositions(),
         swarm.getCount(),
         currentRoles,
-        currentRelationSpans,
         currentFormationTargets,
         ALL_ROLES_VISIBLE,
         currentColorWave,
