@@ -11,9 +11,13 @@ import {
   addTaskQueuePanel,
   addCoveragePanel,
   addBotTypePanel,
+  addMaterialPanel,
   addInspectionFolder,
   type UiState,
+  type MaterialPanelInfo,
 } from "./ui";
+import { MATERIAL_PHASE_LABELS } from "./material/material-animation";
+import { MATERIAL_SOURCE_LABELS } from "./material/material-map";
 import { loadConfig, saveConfig, type SwarmConfig } from "./config-client";
 import { type ColorCluster } from "./image-color";
 import { createMetrics } from "./core/metrics";
@@ -174,6 +178,21 @@ async function main() {
   const paintBotTypes = addBotTypePanel(gui);
   const readTypeCounts = () => sim.state.typeCounts;
 
+  // Fase 42: regiones de material, paleta, y de dónde salió el color.
+  const paintMaterial = addMaterialPanel(gui, (on) => sim.setRegionDebug(on));
+  const readMaterial = (): MaterialPanelInfo | null => {
+    const map = sim.state.materialMap;
+    if (!map) return null;
+    return {
+      regions: map.regions.length,
+      slots: map.slots,
+      materialCount: map.materialCount,
+      palette: map.palette,
+      phase: MATERIAL_PHASE_LABELS[sim.state.materialPhase],
+      sourceLabel: MATERIAL_SOURCE_LABELS[map.source],
+    };
+  };
+
   // Fase 32: nivel de detalle por distancia de cámara. Un nivel para toda
   // la población, no uno por agente — eso es lo que mantiene UNA malla
   // instanciada por rol en vez de partirla en tres y reordenar instancias
@@ -272,6 +291,7 @@ async function main() {
       paintTaskQueue(readDirector);
       paintCoverage(readCoverage);
       paintBotTypes(readTypeCounts);
+      paintMaterial(readMaterial);
       inspector.setCounts(sim.state.typeCounts);
       inspector.render(dt);
     },

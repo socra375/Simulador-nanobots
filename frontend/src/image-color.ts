@@ -129,21 +129,49 @@ export function pickColorClusters(
 
   // Buckets no vacíos, con su color promedio real (no el centro geométrico
   // del bucket) — insumo para el merge por proximidad de abajo.
-  const nonEmpty: Array<{ count: number; r: number; g: number; b: number }> = [];
+  const nonEmpty: ColorBucket[] = [];
   for (let i = 0; i < bucketCount; i++) {
     if (counts[i] === 0) continue;
     nonEmpty.push({ count: counts[i], r: sumR[i] / counts[i], g: sumG[i] / counts[i], b: sumB[i] / counts[i] });
   }
   if (nonEmpty.length === 0) return [{ color: DEFAULT_DOMINANT_COLOR, weight: 1 }];
 
-  // Merge greedy por proximidad: se procesan los buckets de mayor a menor
-  // peso; cada uno sin asignar todavía abre un cluster nuevo y absorbe a
-  // todos los que queden a menos de CLUSTER_MERGE_DISTANCE (ponderando el
-  // color promedio por cantidad de pixeles de cada bucket absorbido).
-  nonEmpty.sort((a, b) => b.count - a.count);
+  return mergeColorBuckets(nonEmpty, maxClusters);
+}
+
+/** Un bucket de color con su peso, la entrada de `mergeColorBuckets`. */
+export interface ColorBucket {
+  count: number;
+  r: number;
+  g: number;
+  b: number;
+}
+
+/**
+ * Merge greedy por proximidad: se procesan los buckets de mayor a menor
+ * peso; cada uno sin asignar todavía abre un cluster nuevo y absorbe a
+ * todos los que queden a menos de `mergeDistance` (ponderando el color
+ * promedio por cantidad de cada bucket absorbido). Devuelve hasta
+ * `maxClusters` clusters ordenados de mayor a menor, con los pesos
+ * re-normalizados para que sumen 1.
+ *
+ * Está separado de `pickColorClusters` porque tiene DOS consumidores con
+ * preguntas distintas: los pixeles de una foto (que primero descartan
+ * fondo blanco/negro y transparente) y los colores de una nube de puntos
+ * ya reconstruida (donde un negro o un blanco son la rueda y la carrocería
+ * del objeto, no fondo — ver material/material-map.ts). Lo que comparten
+ * es exactamente esto y nada más.
+ */
+export function mergeColorBuckets(
+  buckets: ColorBucket[],
+  maxClusters: number = MAX_COLOR_CLUSTERS,
+  mergeDistance: number = CLUSTER_MERGE_DISTANCE,
+): ColorCluster[] {
+  if (buckets.length === 0) return [{ color: DEFAULT_DOMINANT_COLOR, weight: 1 }];
+  const nonEmpty = [...buckets].sort((a, b) => b.count - a.count);
   const clusters: Array<{ count: number; sumR: number; sumG: number; sumB: number }> = [];
   const absorbed = new Uint8Array(nonEmpty.length);
-  const mergeDistSq = CLUSTER_MERGE_DISTANCE * CLUSTER_MERGE_DISTANCE;
+  const mergeDistSq = mergeDistance * mergeDistance;
 
   for (let i = 0; i < nonEmpty.length; i++) {
     if (absorbed[i]) continue;

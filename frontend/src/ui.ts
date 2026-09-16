@@ -216,6 +216,90 @@ export function addCoveragePanel(gui: GUI): (readCoverage: () => CoverageInfo | 
   };
 }
 
+/**
+ * Panel de material (Fase 42): las regiones espaciales, la paleta, y de
+ * dónde salió cada color.
+ *
+ * LO QUE ESTE PANEL DICE Y OTROS NO DIRÍAN: si el reparto de color es
+ * OBSERVADO (la foto sabe dónde va cada tono) o APROXIMADO (sólo se conoce
+ * la paleta y las bandas son una decisión de presentación). Mostrar tres
+ * colores bonitos sin decir cuál de los dos casos es sería exactamente la
+ * clase de dato inventado que el resto del proyecto evita.
+ *
+ * El interruptor de DEBUG pinta cada región de un color distinto (spec
+ * §25). Es sólo de presentación: no toca el mapa de material ni el estado
+ * de ningún agente, y se apaga del todo.
+ */
+export function addMaterialPanel(
+  gui: GUI,
+  onDebugChange: (on: boolean) => void,
+): (read: () => MaterialPanelInfo | null) => void {
+  const folder = gui.addFolder("Material y regiones");
+
+  const line = document.createElement("div");
+  line.style.padding = "6px 10px 2px";
+  line.style.fontSize = "11px";
+  line.style.lineHeight = "1.6";
+  line.style.whiteSpace = "pre-wrap";
+  line.style.opacity = "0.85";
+  line.textContent = "sin figura";
+  folder.domElement.appendChild(line);
+
+  const swatches = document.createElement("div");
+  swatches.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;padding:2px 10px 8px";
+  folder.domElement.appendChild(swatches);
+
+  const debugState = { regiones: false };
+  folder.add(debugState, "regiones").name("depurar regiones").onChange((v: boolean) => onDebugChange(v));
+
+  let lastPaint = -Infinity;
+  let lastText = "";
+  let lastPalette = "";
+
+  return (read) => {
+    const now = performance.now();
+    if (now - lastPaint < STATE_PANEL_INTERVAL_MS) return;
+    lastPaint = now;
+
+    const info = read();
+    const next = info
+      ? [
+          `${info.regions} ${info.regions === 1 ? "región" : "regiones"} · ${info.slots} ${info.slots === 1 ? "tanda" : "tandas"}`,
+          `${info.materialCount} Material Bots`,
+          info.phase,
+          info.sourceLabel,
+        ].join("\n")
+      : "sin figura";
+    if (next !== lastText) {
+      lastText = next;
+      line.textContent = next;
+    }
+
+    const key = info ? info.palette.join(",") : "";
+    if (key !== lastPalette) {
+      lastPalette = key;
+      swatches.replaceChildren();
+      for (const color of info?.palette ?? []) {
+        const chip = document.createElement("span");
+        chip.title = hexColor(color);
+        chip.style.cssText = `width:16px;height:16px;border-radius:3px;border:1px solid rgba(255,255,255,0.25);background:${hexColor(color)}`;
+        swatches.appendChild(chip);
+      }
+    }
+  };
+}
+
+export interface MaterialPanelInfo {
+  readonly regions: number;
+  readonly slots: number;
+  readonly materialCount: number;
+  readonly palette: readonly number[];
+  /** Etapa actual, ya en texto. */
+  readonly phase: string;
+  /** "color por posición" vs "paleta repartida en bandas (aproximado)". */
+  readonly sourceLabel: string;
+}
+
 function hexColor(value: number): string {
   return `#${value.toString(16).padStart(6, "0")}`;
 }

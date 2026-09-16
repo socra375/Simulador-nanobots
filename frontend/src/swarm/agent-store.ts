@@ -9,7 +9,7 @@
 //
 // QUÉ HAY Y QUÉ NO, a propósito:
 //
-// - `role`, `colorWave`, `layer`, `delayFraction` y `target` son arrays
+// - `role`, `region`, `layer`, `delayFraction` y `target` son arrays
 //   que la simulación YA manejaba sueltos. Acá tienen un solo hogar y una
 //   sola API, sin copiarlos: se re-apunta a los arrays de la formación,
 //   igual que antes (copiarlos costaría ~1 MB por figura a 60.000 y
@@ -74,7 +74,7 @@ export const AGENT_STATE_NAMES: readonly string[] = [
 export interface AgentRef {
   readonly index: number;
   readonly role: number;
-  readonly colorWave: number;
+  readonly region: number;
   readonly layer: number;
   readonly state: number;
   readonly botType: number;
@@ -85,13 +85,24 @@ export interface AgentRef {
 }
 
 const EMPTY_U8 = new Uint8Array(0);
+const EMPTY_I16 = new Int16Array(0);
 const EMPTY_F32 = new Float32Array(0);
 
 export interface AgentStore {
   /** Agentes con datos válidos ahora mismo. */
   readonly count: number;
   readonly role: Uint8Array<ArrayBufferLike>;
-  readonly colorWave: Uint8Array<ArrayBufferLike>;
+  /**
+   * Región de material del agente, o NO_REGION (-1) si no lleva material
+   * (ver material/material-map.ts).
+   *
+   * FASE 42: esto era `colorWave`, "a qué ola de color pertenece". La ola
+   * decidía el color, y como cada ola muestreaba la figura entera, los
+   * colores salían intercalados. La región decide sólo CUÁNDO se activa:
+   * el color sale de la posición. Es Int16 y no Uint8 porque un objeto con
+   * muchas manchas puede pasar de 255 regiones.
+   */
+  readonly region: Int16Array;
   readonly layer: Uint8Array<ArrayBufferLike>;
   readonly delayFraction: Float32Array;
   /** count*3, ya trasladados al centro de la figura. */
@@ -114,7 +125,7 @@ export interface AgentStore {
   adoptFormation(args: {
     count: number;
     role: Uint8Array<ArrayBufferLike>;
-    colorWave: Uint8Array<ArrayBufferLike>;
+    region: Int16Array;
     layer: Uint8Array<ArrayBufferLike>;
     delayFraction: Float32Array;
     target: Float32Array;
@@ -150,7 +161,7 @@ export interface AgentStore {
 export function createAgentStore(): AgentStore {
   let count = 0;
   let role: Uint8Array<ArrayBufferLike> = EMPTY_U8;
-  let colorWave: Uint8Array<ArrayBufferLike> = EMPTY_U8;
+  let region: Int16Array = EMPTY_I16;
   let layer: Uint8Array<ArrayBufferLike> = EMPTY_U8;
   let delayFraction: Float32Array = EMPTY_F32;
   let target: Float32Array = EMPTY_F32;
@@ -162,7 +173,7 @@ export function createAgentStore(): AgentStore {
   const ref: AgentRef = {
     get index() { return cursor; },
     get role() { return role[cursor] ?? 0; },
-    get colorWave() { return colorWave[cursor] ?? 0; },
+    get region() { return region[cursor] ?? -1; },
     get layer() { return layer[cursor] ?? 0; },
     get state() { return state[cursor] ?? AGENT_STATE.IDLE; },
     get botType() { return botType[cursor] ?? BOT_TYPE.NANOBOT; },
@@ -185,7 +196,7 @@ export function createAgentStore(): AgentStore {
   return {
     get count() { return count; },
     get role() { return role; },
-    get colorWave() { return colorWave; },
+    get region() { return region; },
     get layer() { return layer; },
     get delayFraction() { return delayFraction; },
     get target() { return target; },
@@ -195,7 +206,7 @@ export function createAgentStore(): AgentStore {
     adoptFormation(args): void {
       count = args.count;
       role = args.role;
-      colorWave = args.colorWave;
+      region = args.region;
       layer = args.layer;
       delayFraction = args.delayFraction;
       target = args.target;
@@ -211,7 +222,7 @@ export function createAgentStore(): AgentStore {
     reset(nextCount, nextRole, nextTarget): void {
       count = nextCount;
       role = nextRole;
-      colorWave = EMPTY_U8;
+      region = EMPTY_I16;
       layer = EMPTY_U8;
       delayFraction = EMPTY_F32;
       target = nextTarget;

@@ -67,18 +67,18 @@ describe("ShapeDef.bones decide la rama del exoesqueleto", () => {
   });
 });
 
-describe("ShapeDef.colorParts decide de dónde salen las olas de color", () => {
+describe("ShapeDef.colorParts decide de dónde sale la paleta de material", () => {
   const rojo = 0xff0000;
   const azul = 0x0000ff;
 
-  it("sin `colorParts`, las olas usan los clusters de la foto", () => {
+  it("sin `colorParts`, la paleta sale de los clusters de la foto y no hay color por punto", () => {
     registerShape({ name: "sinpartes", aliases: [], generate: sphereLike });
     const f = formShapeWithRoles("sinpartes", 400, [0, 0, 0], [
       { color: rojo, weight: 0.5 },
       { color: azul, weight: 0.5 },
     ])!;
-    expect(f.colorWaveCount).toBe(2);
     expect(f.colorClusters.map((c) => c.color)).toEqual([rojo, azul]);
+    expect(f.pointColors).toBeNull();
   });
 
   it("con `colorParts`, se ignoran los clusters de la foto y mandan los tonos fijos", () => {
@@ -93,7 +93,9 @@ describe("ShapeDef.colorParts decide de dónde salen las olas de color", () => {
       ],
     });
     const f = formShapeWithRoles("conpartes", 400, [0, 0, 0], [{ color: rojo, weight: 1 }])!;
-    expect(f.colorWaveCount).toBe(2);
+    // Y ahora además cada punto lleva el color de SU parte: el color pasa
+    // a ser información espacial, no un reparto por olas.
+    expect(f.pointColors).not.toBeNull();
     expect(f.colorClusters.map((c) => c.color)).toEqual([verde, azul]);
     expect(f.colorClusters.map((c) => c.color)).not.toContain(rojo);
   });

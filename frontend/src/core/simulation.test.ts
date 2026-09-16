@@ -25,21 +25,20 @@ interface Recorded {
     count: number;
     roles: Uint8Array<ArrayBufferLike>;
     visibleRoles: readonly [boolean, boolean];
-    revealedColorWaves: number;
   } | null;
   formationSettledMs: number[];
   /** Copia de las posiciones del último cuadro (el buffer real se reusa). */
   lastPositions: Float32Array | null;
   /** Último cuadro del exoesqueleto: nodos, vigas y quién es quién. */
   lastMicro: { points: Float32Array; spans: Float32Array; isBeam: Uint8Array; count: number } | null;
-  /** Último color por agente que recibió la malla (Fase 40). */
-  lastPointColors: Uint8Array | null;
+  /** Último tint por agente que recibió la malla (Fase 42). */
+  lastTint: Float32Array | null;
 }
 
 function makeSim(settings?: Partial<SimSettings>, reactor?: { pulseColor(c: number): void; resetColor(): void }) {
   const rec: Recorded = {
     calls: [], lastUpdate: null, formationSettledMs: [], lastPositions: null, lastMicro: null,
-    lastPointColors: null,
+    lastTint: null,
   };
   let swarmCount = 0;
   const positions = new Float32Array(60000 * 3);
@@ -55,16 +54,15 @@ function makeSim(settings?: Partial<SimSettings>, reactor?: { pulseColor(c: numb
 
   const swarmMesh: NanobotMeshApi = {
     setCount(count) { rec.calls.push(`mesh.setCount(${count})`); },
-    updateFromPositions(p, count, roles, _t, visibleRoles, _w, revealedColorWaves) {
-      rec.calls.push(`mesh.update(${count},${revealedColorWaves})`);
-      rec.lastUpdate = { count, roles, visibleRoles, revealedColorWaves };
+    updateFromPositions(p, count, roles, _t, visibleRoles) {
+      rec.calls.push(`mesh.update(${count},${visibleRoles[1] ? 1 : 0})`);
+      rec.lastUpdate = { count, roles, visibleRoles };
       rec.lastPositions = p.slice(0, count * 3);
     },
     setVisible(v) { rec.calls.push(`mesh.setVisible(${v})`); },
-    setColorClusters() { rec.calls.push("mesh.setColorClusters"); },
-    setPointColors(colors) {
-      rec.calls.push(`mesh.setPointColors(${colors ? colors.length / 3 : "null"})`);
-      rec.lastPointColors = colors;
+    setInstanceTint(tint) {
+      rec.calls.push(`mesh.setInstanceTint(${tint ? "buffer" : "null"})`);
+      rec.lastTint = tint;
     },
     setSkeletonGrayscale(a) { rec.calls.push(`mesh.grayscale(${a})`); },
   };
@@ -111,6 +109,17 @@ function advance(sim: Simulation, seconds: number): void {
 }
 
 const FULL_LAUNCH = MICROBOT_EXO_DURATION + 0.2;
+/**
+ * Con qué holgura avanzar para dar por terminada la animación de Nanobots.
+ *
+ * Fase 42: el vuelo son 2 capas (relleno + material) y después viene la
+ * cola de material (asentamiento + activación + hasta 6 tandas solapadas),
+ * que en el peor caso suma ~5,2 s más. Antes alcanzaba con
+ * `layerDuration * 3`; ahora eso queda CORTO y la figura se quedaría en
+ * "forming". Se sobra a propósito: estos tests preguntan "¿terminó?", no
+ * "¿cuánto tardó exactamente?".
+ */
+const NANOBOT_FULL = DEFAULT_NANOBOT_TIMINGS.layerDuration * 2 + 6;
 
 describe("estado inicial", () => {
   it("arranca en reposo, con el exoesqueleto oculto y sin figura", () => {
@@ -185,7 +194,7 @@ describe("formar una figura", () => {
 
   it("al asentarse reporta la duración total de la construcción", () => {
     h.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(h.sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(h.sim, FULL_LAUNCH + NANOBOT_FULL);
     expect(h.sim.state.nanobotPhase).toBe("settled");
     expect(h.rec.formationSettledMs).toHaveLength(1);
     expect(h.rec.formationSettledMs[0]).toBeGreaterThan(0);
@@ -193,7 +202,7 @@ describe("formar una figura", () => {
 
   it("una vez asentado no vuelve a tocar el buffer de instancias", () => {
     h.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(h.sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(h.sim, FULL_LAUNCH + NANOBOT_FULL);
     h.rec.calls.length = 0;
     advance(h.sim, 1);
     expect(h.rec.calls.filter((c) => c.startsWith("mesh.update"))).toHaveLength(0);
@@ -204,7 +213,7 @@ describe("volver al núcleo", () => {
   it("repliega ambas poblaciones y al terminar vuelve a reposo", () => {
     const { sim, rec } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     sim.returnToCore();
     expect(sim.state.nanobotPhase).toBe("retracting");
     expect(sim.state.microbotPhase).toBe("retracting");
@@ -240,7 +249,7 @@ describe("cambiar la cantidad de Nanobots", () => {
   it("durante un repliegue se DIFIERE y se aplica al terminar", () => {
     const { sim, rec } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     sim.returnToCore();
 
     rec.calls.length = 0;
@@ -256,7 +265,7 @@ describe("cambiar la cantidad de Nanobots", () => {
   it("con una figura asentada, rehace la formación al nuevo tamaño", () => {
     const { sim, rec } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     expect(sim.state.nanobotPhase).toBe("settled");
 
     sim.setNanobotCount(1200);
@@ -303,7 +312,7 @@ describe("interrumpir un repliegue con una figura nueva", () => {
     sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
     expect(sim.state.currentShapeName).toBe("estrella");
     expect(sim.state.nanobotPhase).toBe("idle"); // vuelve a esperar al exoesqueleto
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     expect(sim.state.nanobotPhase).toBe("settled");
   });
 });
@@ -384,7 +393,7 @@ describe("desglose por estado (AgentStore)", () => {
   it("al terminar la formación TODOS quedan asentados", () => {
     const { sim, settings } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     expect(sim.state.nanobotPhase).toBe("settled");
     expect(sim.state.stateCounts[AGENT_STATE.ATTACHED]).toBe(settings.count);
   });
@@ -392,18 +401,37 @@ describe("desglose por estado (AgentStore)", () => {
   it("durante el repliegue los agentes en vuelo cuentan como RETURNING, no TRAVELING", () => {
     const { sim } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     sim.returnToCore();
-    advance(sim, DEFAULT_NANOBOT_TIMINGS.layerDuration * 0.5);
+    // FASE 42: el repliegue ya no arranca moviendo gente. Primero el
+    // material se revierte a agentes (el reloj baja por la cola de
+    // material, donde nadie se mueve) y RECIÉN AHÍ empieza la espiral —
+    // que es la secuencia que pide la spec §22. Por eso hay que avanzar
+    // más allá de esa cola para ver a alguien volviendo.
+    advance(sim, 6);
     const counts = sim.state.stateCounts;
     expect(counts[AGENT_STATE.RETURNING]).toBeGreaterThan(0);
     expect(counts[AGENT_STATE.TRAVELING]).toBe(0);
   });
 
+  it("al empezar el repliegue nadie se mueve todavía: primero se revierte el material", () => {
+    // El contrapunto del test de arriba, y la razón por la que hizo falta
+    // cambiarlo: durante la cola de material el objeto se queda ENTERO en
+    // su lugar mientras el material vuelve a ser agentes.
+    const { sim } = makeSim();
+    sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
+    sim.returnToCore();
+    advance(sim, 0.4);
+    const counts = sim.state.stateCounts;
+    expect(counts[AGENT_STATE.ATTACHED]).toBe(sim.state.nanobotAnimCount);
+    expect(counts[AGENT_STATE.RETURNING]).toBe(0);
+  });
+
   it("terminado el repliegue vuelven todos a IDLE", () => {
     const { sim, settings } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     sim.returnToCore();
     advance(sim, 20);
     expect(sim.state.nanobotPhase).toBe("idle");
@@ -416,7 +444,7 @@ describe("desglose por estado (AgentStore)", () => {
     // vez de los agentes activos, la suma daría 500.
     const { sim } = makeSim({ count: 500 });
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     expect(total(sim.state.stateCounts)).toBe(500);
 
     sim.returnToCore();
@@ -475,10 +503,18 @@ describe("cola de tareas (SwarmDirector)", () => {
     advance(sim, FULL_LAUNCH + 0.3);
     expect(sim.director.active?.type).toBe(TASK_TYPE.FILL_STRUCTURE);
 
+    // Los Material Bots cubriendo la superficie: siguen siendo bots, el
+    // material todavía no se aplicó.
     advance(sim, DEFAULT_NANOBOT_TIMINGS.layerDuration);
+    expect(sim.director.active?.type).toBe(TASK_TYPE.SPREAD_MATERIAL);
+
+    // Y recién después de asentarse (0,45 s) y activarse (0,9 s), la
+    // primera tanda. El reloj va en 2,3: hay que pasar los 5,35 s en que
+    // arranca (2 capas de vuelo = 4 s, más las dos etapas de arriba).
+    advance(sim, 3.5);
     expect(sim.director.active?.type).toBe(TASK_TYPE.APPLY_COLOR);
 
-    advance(sim, DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, NANOBOT_FULL);
     expect(sim.state.nanobotPhase).toBe("settled");
     expect(sim.director.active).toBeNull();
     expect(sim.director.tasks.every((t) => t.status === TASK_STATUS.DONE)).toBe(true);
@@ -502,7 +538,7 @@ describe("cola de tareas (SwarmDirector)", () => {
   it("formar otra figura sin volver al núcleo reemplaza la cola entera", () => {
     const { sim } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     const idsViejos = sim.director.tasks.map((t) => t.id);
 
     sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
@@ -576,7 +612,7 @@ describe("cobertura de la figura (VoxelGrid)", () => {
   it("volver al núcleo borra la cobertura: ya no hay figura que medir", () => {
     const { sim } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     expect(sim.state.coverage).not.toBeNull();
 
     sim.returnToCore();
@@ -617,7 +653,7 @@ describe("morph directo", () => {
   it("pedir otra figura SIN volver al núcleo no manda a nadie de vuelta al reactor", () => {
     const { sim, rec, settings } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     expect(sim.state.nanobotPhase).toBe("settled");
 
     sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
@@ -630,7 +666,7 @@ describe("morph directo", () => {
   it("los agentes arrancan CERCA de donde estaban, no en cualquier lado", () => {
     const { sim, rec, settings } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     const antes = rec.lastPositions!.slice();
 
     sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
@@ -656,7 +692,7 @@ describe("morph directo", () => {
   it("tras volver al núcleo, la figura siguiente vuelve a salir del reactor", () => {
     const { sim, rec, settings } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     sim.returnToCore();
     advance(sim, 20);
     expect(sim.state.nanobotPhase).toBe("idle");
@@ -669,9 +705,9 @@ describe("morph directo", () => {
   it("el morph termina igual: todos asentados en la figura nueva", () => {
     const { sim, settings } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     expect(sim.state.nanobotPhase).toBe("settled");
     expect(sim.state.stateCounts[AGENT_STATE.ATTACHED]).toBe(settings.count);
   });
@@ -687,7 +723,7 @@ describe("morph: la figura anterior no desaparece mientras espera", () => {
   it("NO se oculta la malla al pedir otra figura sin volver al núcleo", () => {
     const { sim, rec } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
 
     rec.calls.length = 0;
     sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
@@ -699,7 +735,7 @@ describe("morph: la figura anterior no desaparece mientras espera", () => {
   it("la sigue dibujando durante la espera, con la figura VIEJA", () => {
     const { sim, rec, settings } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     const antes = rec.lastPositions!.slice();
 
     sim.formShape("estrella", [{ color: 0x00ff00, weight: 1 }]);
@@ -722,7 +758,7 @@ describe("morph: la figura anterior no desaparece mientras espera", () => {
   it("tras volver al núcleo se vuelve a dibujar el enjambre en reposo, no la figura retenida", () => {
     const { sim, rec } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(sim, FULL_LAUNCH + NANOBOT_FULL);
     const figura = rec.lastPositions!.slice();
     sim.returnToCore();
     advance(sim, 20);
@@ -753,26 +789,30 @@ describe("parpadeo del núcleo (Material Bots)", () => {
     expect(h.pulses).toHaveLength(0);
   });
 
-  it("no parpadea durante el exoesqueleto ni el relleno: todavía no hay color", () => {
+  it("no parpadea mientras los bots todavía están cubriendo la superficie", () => {
+    // FASE 42: la ventana de "sin parpadeo" se alargó. Antes terminaba al
+    // acabar el relleno; ahora incluye el vuelo de los Material Bots, su
+    // asentamiento y su activación — todo ese rato se ven BOTS, no
+    // material, así que el núcleo no tiene nada que entregar todavía.
     const h = makeSimConReactor();
     h.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(h.sim, FULL_LAUNCH + 0.2); // capa 0 = relleno
+    advance(h.sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 2);
     expect(h.pulses).toHaveLength(0);
   });
 
-  it("parpadea al entrar la primera ola de color, con SU color", () => {
+  it("parpadea al entrar la primera tanda de material, con SU color", () => {
     const h = makeSimConReactor();
     h.sim.formShape("cubo", [{ color: 0x123456, weight: 1 }]);
-    advance(h.sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration + 0.2);
+    advance(h.sim, FULL_LAUNCH + NANOBOT_FULL);
     expect(h.pulses).toContain(0x123456);
   });
 
-  it("parpadea UNA vez por ola, no cada cuadro", () => {
+  it("parpadea UNA vez por tanda, no cada cuadro", () => {
     // El parpadeo dura casi un segundo; relanzarlo 60 veces por segundo lo
     // dejaría clavado en el primer destello.
     const h = makeSimConReactor();
     h.sim.formShape("cubo", [{ color: 0x111111, weight: 1 }]);
-    advance(h.sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(h.sim, FULL_LAUNCH + NANOBOT_FULL);
     const capasDeColor = h.sim.director.tasks.filter((t) => t.type === TASK_TYPE.APPLY_COLOR).length;
     expect(h.pulses.length).toBeLessThanOrEqual(capasDeColor);
     expect(h.pulses.length).toBeGreaterThan(0);
@@ -781,7 +821,7 @@ describe("parpadeo del núcleo (Material Bots)", () => {
   it("vuelve al azul de identidad al volver al núcleo", () => {
     const h = makeSimConReactor();
     h.sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    advance(h.sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3);
+    advance(h.sim, FULL_LAUNCH + NANOBOT_FULL);
     const antes = h.resets();
     h.sim.returnToCore();
     advance(h.sim, 20);
@@ -793,7 +833,7 @@ describe("parpadeo del núcleo (Material Bots)", () => {
     // sin three.js.
     const { sim } = makeSim();
     sim.formShape("cubo", [{ color: 0xff0000, weight: 1 }]);
-    expect(() => advance(sim, FULL_LAUNCH + DEFAULT_NANOBOT_TIMINGS.layerDuration * 3)).not.toThrow();
+    expect(() => advance(sim, FULL_LAUNCH + NANOBOT_FULL)).not.toThrow();
   });
 });
 

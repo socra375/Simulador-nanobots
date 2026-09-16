@@ -6,7 +6,7 @@ function formationLike(count: number) {
   return {
     count,
     role: new Uint8Array(count),
-    colorWave: new Uint8Array(count),
+    region: new Int16Array(count),
     layer: new Uint8Array(count),
     delayFraction: new Float32Array(count),
     target: new Float32Array(count * 3),
@@ -90,7 +90,7 @@ describe("accesor por agente (flyweight)", () => {
     const store = createAgentStore();
     const f = formationLike(5);
     f.role[3] = 1;
-    f.colorWave[3] = 2;
+    f.region[3] = 2;
     f.layer[3] = 3;
     f.delayFraction[3] = 0.5;
     f.target[3 * 3 + 0] = 7;
@@ -101,7 +101,7 @@ describe("accesor por agente (flyweight)", () => {
     const a = store.at(3);
     expect(a.index).toBe(3);
     expect(a.role).toBe(1);
-    expect(a.colorWave).toBe(2);
+    expect(a.region).toBe(2);
     expect(a.layer).toBe(3);
     expect(a.delayFraction).toBeCloseTo(0.5, 6);
     expect([a.targetX, a.targetY, a.targetZ]).toEqual([7, 8, 9]);

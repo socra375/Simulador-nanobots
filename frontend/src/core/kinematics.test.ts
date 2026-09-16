@@ -4,6 +4,7 @@ import {
   easeInOutCubic,
   GROUP_SETTLE_FRACTION,
   groupWindow,
+  planLayers,
   layerIndexAt,
   makeSwirlAxes,
   swirlOffset,
@@ -68,6 +69,11 @@ function buildPlan(): LayerPlan {
     layerOf: Uint8Array.from(f.layerOf),
     delayFraction: Float32Array.from(f.delayFraction),
     layerCount: f.layerCount,
+    // El fixture se grabó antes de que existieran las etapas de material
+    // (Fase 42), así que su total ERA el vuelo entero. Se declara acá en
+    // vez de regrabar el fixture: regrabarlo contra el código nuevo
+    // destruiría justamente lo que este test prueba.
+    travelDuration: f.totalDuration,
     totalDuration: f.totalDuration,
     wave0Landing: [f.wave0Landing[0], f.wave0Landing[1], f.wave0Landing[2]],
   };
@@ -469,5 +475,83 @@ describe("writeMicrobotFrame: salida escalonada de nodos y vigas", () => {
         for (const v of outSpans) expect(Number.isNaN(v)).toBe(false);
       }
     }
+  });
+});
+
+// Fase 42 — el escalonado de salida dejó de ser el orden del array.
+describe("planLayers: el orden de salida es ESPACIAL (spec §15)", () => {
+  const CORE: Vec3 = [-8, 8, -8];
+  const N = 400;
+
+  function nube(): { roles: Uint8Array; points: Float32Array } {
+    const roles = new Uint8Array(N);
+    const points = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) {
+      roles[i] = i % 4 === 0 ? 0 : 1; // 1 = material
+      // Posición DELIBERADAMENTE desalineada del índice: la coordenada va
+      // y vuelve, así que ordenar por índice no da el mismo orden que
+      // ordenar por distancia.
+      const t = Math.sin(i * 1.7) * 5;
+      points[i * 3 + 0] = t;
+      points[i * 3 + 1] = Math.cos(i * 2.3) * 4;
+      points[i * 3 + 2] = Math.sin(i * 0.9) * 3;
+    }
+    return { roles, points };
+  }
+
+  it("delayFraction crece con la distancia al núcleo, no con el índice", () => {
+    const { roles, points } = nube();
+    const plan = planLayers(roles, points, N, 1, 2, [0, 0, 0], CORE, 2);
+    const d = (i: number) =>
+      Math.hypot(points[i * 3] - CORE[0], points[i * 3 + 1] - CORE[1], points[i * 3 + 2] - CORE[2]);
+
+    // Ordenados POR delayFraction, las distancias tienen que salir
+    // crecientes. Comparar sólo pares con i < j no sirve: el orden por
+    // índice cumple esa versión del test por construcción, así que un
+    // `delayFraction[i] = i / (count-1)` pasaría igual — verificado
+    // mutando el código.
+    for (const layer of [0, 1]) {
+      const deLaCapa = [...Array(N).keys()].filter((i) => plan.layerOf[i] === layer);
+      deLaCapa.sort((a, b) => plan.delayFraction[a] - plan.delayFraction[b]);
+      for (let k = 1; k < deLaCapa.length; k++) {
+        expect(d(deLaCapa[k])).toBeGreaterThanOrEqual(d(deLaCapa[k - 1]) - 1e-3);
+      }
+    }
+
+    // Y el orden espacial NO coincide con el orden de creación: si
+    // coincidiera, el test de arriba no probaría nada.
+    const capa1 = [...Array(N).keys()].filter((i) => plan.layerOf[i] === 1);
+    const porDelay = [...capa1].sort((a, b) => plan.delayFraction[a] - plan.delayFraction[b]);
+    expect(porDelay).not.toEqual(capa1);
+  });
+
+  it("delayFraction queda SIEMPRE en [0,1]", () => {
+    // Regresión: el mínimo se guardaba en float64 y el valor en un
+    // Float32Array, así que el mínimo podía quedar por encima del valor
+    // almacenado y dar una fracción negativa. Exactamente un agente por
+    // figura salía disparado en el primer cuadro del repliegue mientras el
+    // resto seguía quieto.
+    const { roles, points } = nube();
+    const plan = planLayers(roles, points, N, 1, 2, [0, 0, 0], CORE, 2);
+    for (let i = 0; i < N; i++) {
+      expect(plan.delayFraction[i]).toBeGreaterThanOrEqual(0);
+      expect(plan.delayFraction[i]).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("el vuelo son SIEMPRE dos capas, y el total incluye la cola de material", () => {
+    const { roles, points } = nube();
+    const plan = planLayers(roles, points, N, 1, 2, [0, 0, 0], CORE, 3.5);
+    expect(plan.layerCount).toBe(2);
+    expect(plan.travelDuration).toBe(4);
+    expect(plan.totalDuration).toBeCloseTo(7.5, 6);
+  });
+
+  it("una figura degenerada (todos a la misma distancia) no rompe: salen todos juntos", () => {
+    const roles = new Uint8Array(10).fill(1);
+    const points = new Float32Array(30);
+    for (let i = 0; i < 10; i++) points[i * 3] = 1;
+    const plan = planLayers(roles, points, 10, 1, 2, [0, 0, 0], CORE, 0);
+    for (let i = 0; i < 10; i++) expect(plan.delayFraction[i]).toBe(0);
   });
 });
