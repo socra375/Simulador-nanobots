@@ -383,15 +383,18 @@ test("la cola de tareas refleja el avance real de la formación", async ({ page 
     .poll(() => readTaskQueuePanel(page), { timeout: 20000 })
     .toMatch(/^exoesqueleto: (pending|running)\nuniones: (pending|running)$/);
 
-  // Cumplido el exoesqueleto aparecen el relleno y las olas.
+  // Cumplido el exoesqueleto aparecen el relleno y las etapas de material.
   await expect
     .poll(() => readTaskQueuePanel(page), { timeout: 60000 })
     .toMatch(/exoesqueleto: done\nuniones: done[\s\S]*relleno:/);
 
   // Y al final TODO queda cumplido, sin ninguna tarea colgada.
+  // Fase 42: las etiquetas cambiaron. "color N" (una por ola) pasó a ser
+  // "cobertura" (los Material Bots cubriendo la superficie) más
+  // "material N" (una por tanda de activación de regiones).
   await expect
     .poll(() => readTaskQueuePanel(page), { timeout: 180000 })
-    .toMatch(/^(?:(?:exoesqueleto|uniones|relleno|color \d+): done\n?)+$/);
+    .toMatch(/^(?:(?:exoesqueleto|uniones|relleno|cobertura|material \d+): done\n?)+$/);
 
   await clickCommandButton(page, "Volver al núcleo");
   await expect.poll(() => readTaskQueuePanel(page), { timeout: 60000 }).toMatch(/repliegue:/);

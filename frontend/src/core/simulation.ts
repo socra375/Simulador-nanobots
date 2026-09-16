@@ -276,9 +276,18 @@ export interface Simulation {
   readonly renderPositions: Float32Array;
 }
 
-/** 0xRRGGBB -> tripla 0..1, el espacio en el que trabaja el tint. */
-function hexToUnit(hex: number): [number, number, number] {
-  return [((hex >> 16) & 0xff) / 255, ((hex >> 8) & 0xff) / 255, (hex & 0xff) / 255];
+/**
+ * 0xRRGGBB -> tripla 0..1 en `out`, el espacio en el que trabaja el tint.
+ *
+ * Escribe en un buffer del llamador porque esto se consulta una vez por
+ * cuadro: devolver un array nuevo sería una asignación por cuadro para
+ * nada.
+ */
+function hexToUnit(hex: number, out: [number, number, number]): [number, number, number] {
+  out[0] = ((hex >> 16) & 0xff) / 255;
+  out[1] = ((hex >> 8) & 0xff) / 255;
+  out[2] = (hex & 0xff) / 255;
+  return out;
 }
 
 export function createSimulation(deps: SimulationDeps): Simulation {
@@ -316,7 +325,11 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   let regionDebug = false;
   // Última tanda para la que se disparó el parpadeo del núcleo.
   let lastPulsedSlot = -1;
-  const MATERIAL_IDENTITY = hexToUnit(botVisual(BOT_TYPE.MATERIAL).identityColor);
+  // Se relee de la config en cada refresco, no se congela al arrancar: la
+  // paleta de identidad es configurable en caliente (setBotIdentityColor),
+  // y una copia congelada acá haría que cambiarla no tuviera efecto sobre
+  // los bots que todavía no se transformaron.
+  const materialIdentity: [number, number, number] = [0, 0, 0];
   const nanobotRenderPositions = new Float32Array(deps.maxNanobots * 3);
   // Estado por agente en Structure-of-Arrays. Se escribe dentro del mismo
   // recorrido que calcula las posiciones (ver writeNanobotFrame), así que
@@ -614,7 +627,8 @@ export function createSimulation(deps: SimulationDeps): Simulation {
    */
   function refreshMaterialTint(elapsed: number): boolean {
     if (!materialMap) return false;
-    return writeMaterialTint(materialTint, materialMap, materialTimeline, elapsed, MATERIAL_IDENTITY, regionDebug);
+    hexToUnit(botVisual(BOT_TYPE.MATERIAL).identityColor, materialIdentity);
+    return writeMaterialTint(materialTint, materialMap, materialTimeline, elapsed, materialIdentity, regionDebug);
   }
 
   function goIdle(): void {
