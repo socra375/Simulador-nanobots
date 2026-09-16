@@ -571,6 +571,21 @@ aprendió midiendo, y que conviene no volver a adivinar:
 | tras arreglar 6 bugs de estabilidad | 61,0 MB | nada: eran arreglos de corrección, no de memoria |
 | tras borrar roles muertos | 54,2 MB | borrar código que no se ejecutaba |
 | tras capacidad adaptativa de las mallas | 33,5 MB | dejar de reservar para agentes inexistentes |
+| tras el material por regiones (Fase 42-43) | 34-37 MB | cuatro `InstancedMesh` menos (las mallas por ola), contra el tint por instancia que sí ocupa |
+
+Y una lección sobre el TIEMPO DE CUADRO, no sobre el heap. El material por
+regiones escribía el tint de cada agente y lo subía a la GPU en cada
+cuadro: a 10.000 agentes el cuadro al formar pasó de 25,06 ms (línea base)
+a 33,84 ms. El arreglo no fue optimizar el cálculo sino no hacerlo — el
+tint sólo puede cambiar durante el parpadeo y la transformación; en el
+vuelo, el asentamiento y una vez completo es constante. Medido después:
+**18,70 ms**, por debajo de la línea base. A 3.000 agentes quedan +1,5 ms
+contra la línea base, y eso sí es el costo real de las etapas nuevas.
+
+Un detalle que conviene no repetir: sacar las cuatro mallas por ola **no**
+bajó los draw calls (19/21/23 antes y después). Las mallas sin usar ya
+dibujaban cero instancias. Lo que se ganó son cuatro objetos menos y sus
+`instanceMatrix`, no llamadas de dibujo.
 
 Las dos mejoras reales de memoria vinieron de **sacar** cosas, no de
 agregar optimizaciones. En cambio las "optimizaciones" intuitivas
