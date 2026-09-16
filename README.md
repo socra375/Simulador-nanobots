@@ -584,10 +584,22 @@ el tope de `dt` del loop hacen que una formación de ~12 s nominales tarde
 bastante más en reloj de pared. Es un artefacto del entorno de medición,
 no un problema del simulador.
 
-## Imagen → 3D: de una foto al objeto construido (Fases 38-41)
+## Imagen → 3D: de una foto al objeto construido (Fases 38-43)
 
 El panel **"Imagen → 3D"** toma UNA sola imagen y la convierte en un
 objeto que el enjambre construye, con los colores reales de la foto.
+
+**La reconstrucción se ve EN LA ESCENA, no en el menú (Fase 43).** Al
+terminar de reconstruir, la nube de puntos aparece donde se arma todo, en
+el mismo lugar y a la misma escala en que la va a construir el enjambre,
+y se la puede girar con los controles de cámara de siempre. Antes salía
+proyectada en una miniatura de 240 px dentro de la carpeta del panel, que
+es justamente donde no se puede hacer lo único que importa de una
+reconstrucción 3D: mirarla desde otro ángulo y ver si el volumen cerró.
+Las etapas 2D —imagen, máscara, profundidad, procedencia— sí se quedan en
+el panel, porque son imágenes. La vista previa es sólo presentación: no
+crea agentes, no toca la simulación, y se apaga sola en cuanto el enjambre
+empieza a construir.
 
 ```
 imagen -> máscara -> profundidad -> nube 3D con color
@@ -676,12 +688,15 @@ las asuma:
   ESTIMACIÓN, y la UI lo dice siempre. El sistema informa qué fracción de
   la geometría se vio de verdad y cuánta infirió. Con confianza baja
   rotula el resultado como "Reconstrucción aproximada".
-- **El escaneo 3D por 4 fotos sobre-aproxima.** Es un visual hull: las
-  concavidades que no se ven desde ninguna de las 4 vistas quedan
-  rellenas. Tampoco hay alineación automática entre fotos, así que el
-  encuadre y el zoom tienen que ser consistentes en las 4 tomas — eso es
-  una limitación de la técnica, no del código, y la UI lo avisa antes de
-  intentarlo.
+- **El escaneo por 4 fotos se retiró (Fase 43).** Era un visual hull, y
+  pedía algo que en la práctica casi nadie lograba: cuatro tomas del mismo
+  objeto con el MISMO encuadre, zoom y distancia, sobre fondo liso. Con
+  cualquier desalineación la reconstrucción salía peor que la de una sola
+  imagen, que ya cubre el caso. El tallado por siluetas sigue en
+  `visual-hull.ts` y sus tests siguen corriendo: son la prueba de que la
+  grilla de vóxeles generalizada (`voxel/grid.ts`) da exactamente los
+  mismos vóxeles que la implementación a mano que reemplazó. Lo que se
+  quitó es la carpeta de UI y la carga de las 4 fotos.
 - **La física corre sólo en reposo.** Al formar una figura los agentes se
   mueven por animación scripted, no por convergencia física.
 - **No hay medición de FPS real con GPU.** Los números de arriba son

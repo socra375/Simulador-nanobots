@@ -193,6 +193,21 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
   let colorArray: Float32Array = new Float32Array(0);
   // Tint por agente (count*3 floats), o null si no hay figura con material.
   let instanceTint: Float32Array | null = null;
+  /**
+   * Si el tint cambió desde la última vez que se copió al buffer de
+   * instancias. Copiar y SUBIR count*3 floats por cuadro cuando el
+   * contenido es idéntico es trabajo puro para nadie — medido: a 10.000
+   * agentes valía ~9 ms por cuadro durante el vuelo, donde todos los
+   * Material Bots llevan el mismo color de identidad constante.
+   */
+  let tintDirty = true;
+  /**
+   * Con qué visibilidad del rol COLOR se escribieron los colores por
+   * última vez. Si cambia, la COMPACTACIÓN de instancias cambia y hay que
+   * reescribirlos aunque el tint sea el mismo: el agente que estaba en el
+   * índice local 0 ya no es el mismo agente.
+   */
+  let tintWrittenVisible = false;
   // Estado de histéresis por agente (1 = ya "encajado" en su target fijo).
   // Se reinicia en setCount porque los índices pueden pasar a representar
   // otro agente distinto tras un cambio de cantidad.
@@ -248,6 +263,8 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     colorMesh.instanceColor = createInstanceColorBuffer(capacity);
     meshArrays = instancedMeshes.map((mesh) => mesh.instanceMatrix.array as Float32Array);
     colorArray = colorMesh.instanceColor.array as Float32Array;
+    // Buffer nuevo, en blanco: lo que hubiera escrito antes se perdió.
+    tintDirty = true;
     snapped = new Uint8Array(capacity);
   }
 
@@ -309,6 +326,8 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     // (proporcional a count^(-1/3)) así más cantidad aporta más detalle.
     const scale = Math.min(1, Math.cbrt(SCALE_BASELINE_COUNT / count));
     localCounters.fill(0);
+    const materialVisible = visibleRoles[NANOBOT_ROLE.COLOR];
+    const writeColors = instanceTint !== null && (tintDirty || materialVisible !== tintWrittenVisible);
 
     for (let i = 0; i < count; i++) {
       const role = roles[i];
@@ -321,7 +340,7 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
       // El tint, en el MISMO recorrido que ya calcula la matriz: tres
       // floats más por agente, sin un segundo pase. Si la figura no trae
       // tint el buffer se queda en blanco y manda el material.
-      if (role === NANOBOT_ROLE.COLOR && instanceTint) {
+      if (role === NANOBOT_ROLE.COLOR && writeColors && instanceTint) {
         colorArray[localIndex * 3 + 0] = instanceTint[i * 3 + 0];
         colorArray[localIndex * 3 + 1] = instanceTint[i * 3 + 1];
         colorArray[localIndex * 3 + 2] = instanceTint[i * 3 + 2];
@@ -366,13 +385,18 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
     // el rango subido al conteo real en uso evita ese costo fijo.
     // `for` plano en vez de forEach: esto corre en cada cuadro y cada
     // forEach asignaba una closure nueva.
+    if (writeColors) {
+      tintDirty = false;
+      tintWrittenVisible = materialVisible;
+    }
+
     for (let role = 0; role < instancedMeshes.length; role++) {
       const mesh = instancedMeshes[role];
       mesh.count = localCounters[role];
       mesh.instanceMatrix.clearUpdateRanges();
       mesh.instanceMatrix.addUpdateRange(0, mesh.count * 16);
       mesh.instanceMatrix.needsUpdate = true;
-      if (role === NANOBOT_ROLE.COLOR && instanceTint && mesh.instanceColor) {
+      if (role === NANOBOT_ROLE.COLOR && writeColors && mesh.instanceColor) {
         mesh.instanceColor.clearUpdateRanges();
         mesh.instanceColor.addUpdateRange(0, mesh.count * 3);
         mesh.instanceColor.needsUpdate = true;
@@ -392,6 +416,7 @@ export function createNanobotSwarmMesh(maxCount: number): NanobotSwarmMesh {
    */
   function setInstanceTint(tint: Float32Array | null) {
     instanceTint = tint;
+    tintDirty = true;
     if (tint) return;
     // Volver a blanco: el neutro del producto. Si quedaran los valores
     // viejos escritos, teñirían la figura siguiente.

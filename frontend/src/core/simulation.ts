@@ -28,6 +28,7 @@ import { buildMorphSource } from "../voxel/correspondence";
 import { buildMaterialMap, type MaterialMap } from "../material/material-map";
 import {
   materialPhaseAt,
+  materialTintIsStatic,
   planMaterialTimeline,
   writeMaterialTint,
   MATERIAL_PHASE,
@@ -323,6 +324,12 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   let materialTimeline: MaterialTimeline = planMaterialTimeline(NANOBOT_LAYER_DURATION * 2, 1);
   const materialTint = new Float32Array(deps.maxNanobots * 3).fill(1);
   let regionDebug = false;
+  /**
+   * Última etapa de material para la que ya se escribió el tint. Mientras
+   * la etapa es estática (vuelo, asentamiento, completo) el tint no cambia
+   * de un cuadro al otro, así que alcanza con haberlo escrito una vez.
+   */
+  let tintWrittenForPhase = -1;
   // Última tanda para la que se disparó el parpadeo del núcleo.
   let lastPulsedSlot = -1;
   // Se relee de la config en cada refresco, no se congela al arrancar: la
@@ -614,6 +621,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     });
 
     lastPulsedSlot = -1;
+    tintWrittenForPhase = -1;
     // El tint arranca en el color de IDENTIDAD del Material Bot: al llegar
     // a la superficie se ven bots, no material (spec §8). El material
     // aparece después, región por región.
@@ -628,7 +636,23 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   function refreshMaterialTint(elapsed: number): boolean {
     if (!materialMap) return false;
     hexToUnit(botVisual(BOT_TYPE.MATERIAL).identityColor, materialIdentity);
+    tintWrittenForPhase = materialPhaseAt(elapsed, materialTimeline);
     return writeMaterialTint(materialTint, materialMap, materialTimeline, elapsed, materialIdentity, regionDebug);
+  }
+
+  /**
+   * El tint del cuadro, saltándose el trabajo cuando no puede haber
+   * cambiado. Devuelve true si hay que volver a subirlo a la GPU.
+   */
+  function refreshMaterialTintIfNeeded(elapsed: number): boolean {
+    if (!materialMap) return false;
+    if (materialTintIsStatic(elapsed, materialTimeline)) {
+      // Estático: sólo hace falta escribirlo al ENTRAR a esta etapa.
+      if (materialPhaseAt(elapsed, materialTimeline) === tintWrittenForPhase) return false;
+      refreshMaterialTint(elapsed);
+      return true;
+    }
+    return refreshMaterialTint(elapsed);
   }
 
   function goIdle(): void {
@@ -870,7 +894,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       // El tint sólo se recalcula mientras puede cambiar: una vez que todo
       // el material está puesto, el buffer ya dice lo correcto y volver a
       // escribirlo cuadro a cuadro sería trabajo puro para nadie.
-      if (refreshMaterialTint(nanobotElapsed)) swarmMesh.setInstanceTint(materialTint);
+      if (refreshMaterialTintIfNeeded(nanobotElapsed)) swarmMesh.setInstanceTint(materialTint);
       swarmMesh.updateFromPositions(
         nanobotRenderPositions,
         nanobotAnimCount,
@@ -986,6 +1010,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     setRegionDebug(on: boolean): void {
       if (on === regionDebug) return;
       regionDebug = on;
+      tintWrittenForPhase = -1;
       refreshMaterialTint(nanobotElapsed);
       swarmMesh.setInstanceTint(materialMap ? materialTint : null);
       // Y REDIBUJAR. Con la figura ya asentada, step() no hace nada (el

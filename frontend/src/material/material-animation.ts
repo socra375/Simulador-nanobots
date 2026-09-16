@@ -109,6 +109,25 @@ export function planMaterialTimeline(travelEnd: number, slots: number): Material
   };
 }
 
+/**
+ * ¿El tint puede cambiar de un cuadro al otro en este instante?
+ *
+ * Sólo durante la ACTIVACIÓN (parpadeo) y la FORMACIÓN (el material
+ * avanzando). Mientras los bots vuelan y mientras se asientan, todos
+ * llevan el mismo color de identidad constante; una vez completo, todos
+ * llevan su material final. En esos tramos reescribir count*3 floats por
+ * cuadro y volver a subirlos a la GPU es trabajo puro para nadie — medido:
+ * a 10.000 agentes el cuadro al formar pasó de 25 a 34 ms por hacerlo.
+ *
+ * El llamador igual tiene que escribirlo UNA vez al entrar a cada etapa
+ * estática, porque el valor constante de "asentado" no es el mismo que el
+ * de "completo".
+ */
+export function materialTintIsStatic(elapsed: number, t: MaterialTimeline): boolean {
+  const phase = materialPhaseAt(elapsed, t);
+  return phase === MATERIAL_PHASE.SPREAD || phase === MATERIAL_PHASE.SETTLE || phase === MATERIAL_PHASE.COMPLETE;
+}
+
 export function materialPhaseAt(elapsed: number, t: MaterialTimeline): MaterialPhase {
   if (elapsed < t.travelEnd) return MATERIAL_PHASE.SPREAD;
   if (elapsed < t.settleEnd) return MATERIAL_PHASE.SETTLE;

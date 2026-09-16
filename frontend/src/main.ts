@@ -16,6 +16,7 @@ import {
   type UiState,
   type MaterialPanelInfo,
 } from "./ui";
+import { createCloudPreview } from "./rendering/cloud-preview";
 import { MATERIAL_PHASE_LABELS } from "./material/material-animation";
 import { MATERIAL_SOURCE_LABELS } from "./material/material-map";
 import { loadConfig, saveConfig, type SwarmConfig } from "./config-client";
@@ -109,6 +110,11 @@ async function main() {
   microbotMesh.setVisible(false);
   scene.add(microbotMesh.group);
 
+  // Fase 43: la nube reconstruida se ve EN LA ESCENA, no en una miniatura
+  // del menú. Es sólo presentación: no crea agentes ni toca la simulación.
+  const cloudPreview = createCloudPreview(FORMATION_CENTER);
+  scene.add(cloudPreview.group);
+
   const reactor = createReactor();
   scene.add(reactor.group);
   const reactorCenter = reactor.position.toArray() as [number, number, number];
@@ -154,9 +160,19 @@ async function main() {
       sim.applyParams();
       gui.controllersRecursive().forEach((c) => c.updateDisplay());
     },
-    onFormShape: (shapeName: string, colorClusters: ColorCluster[]) => sim.formShape(shapeName, colorClusters),
+    onFormShape: (shapeName: string, colorClusters: ColorCluster[]) => {
+      // Con el enjambre en marcha la vista previa sobra: dos nubes
+      // superpuestas no se leen.
+      cloudPreview.hide();
+      sim.formShape(shapeName, colorClusters);
+    },
+    onPreviewCloud: (points: Float32Array, colors: Uint8Array | null, count: number) =>
+      cloudPreview.show(points, colors, count),
     readNanobotCount: () => state.count,
-    onReturnToCore: () => sim.returnToCore(),
+    onReturnToCore: () => {
+      cloudPreview.hide();
+      sim.returnToCore();
+    },
     onMicrobotCountChange: (count: number) => sim.setMicrobotCount(count),
   });
 

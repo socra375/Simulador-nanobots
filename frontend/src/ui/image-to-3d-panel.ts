@@ -36,10 +36,19 @@ import type { ReconstructionResult } from "../vision/reconstruction-result";
 export const AGENT_BUDGET = 60000;
 
 export interface ImageTo3DCallbacks {
-  /** El mismo callback que usan "Comandos" y el escaneo de 4 fotos. */
+  /** El mismo callback que usa "Comandos". */
   onFormShape: (shapeName: string, colorClusters: ColorCluster[]) => void;
   /** Cuántos nanobots hay configurados, para avisar si no alcanzan. */
   readNanobotCount: () => number;
+  /**
+   * Muestra la nube reconstruida EN LA ESCENA, o la esconde con null.
+   *
+   * La reconstrucción es un objeto 3D: mirarlo proyectado en una
+   * miniatura del menú no deja hacer lo único que importa —girarlo y ver
+   * si el volumen cerró—. Las etapas 2D (imagen, máscara, profundidad)
+   * sí se quedan en el panel, porque son imágenes.
+   */
+  onPreviewCloud: (points: Float32Array, colors: Uint8Array | null, count: number) => void;
 }
 
 type StageView = "imagen" | "mascara" | "profundidad" | "procedencia";
@@ -296,7 +305,10 @@ export function addImageTo3DFolder(gui: GUI, callbacks: ImageTo3DCallbacks): voi
         stageCtrl.setValue("mascara");
         drawStage();
         paintStats();
-        status.textContent = `Listo: ${core.stats.surfaceVoxels} vóxeles de superficie.`;
+        // La nube, en la escena: es lo que el enjambre va a construir, en
+        // el mismo lugar y a la misma escala.
+        callbacks.onPreviewCloud(core.cloud.points, core.cloud.colors, core.cloud.count);
+        status.textContent = `Listo: ${core.stats.surfaceVoxels} vóxeles de superficie. Girá la cámara para verla en la escena.`;
       } catch (err) {
         status.textContent = err instanceof Error ? err.message : "Falló la reconstrucción.";
       } finally {
@@ -318,6 +330,9 @@ export function addImageTo3DFolder(gui: GUI, callbacks: ImageTo3DCallbacks): voi
         // del color por punto, que es otra cosa y viaja aparte.
         const clusters = await extractColorClustersFromFile(file);
         status.textContent = "Construyendo con el enjambre...";
+        // La vista previa se apaga: de acá en más lo que hay que mirar son
+        // los bots, y dos nubes superpuestas no se leen.
+        callbacks.onPreviewCloud(new Float32Array(0), null, 0);
         callbacks.onFormShape(name, clusters);
       } finally {
         busy = false;
