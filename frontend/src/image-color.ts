@@ -9,6 +9,8 @@
 //   parte que sí toca el DOM (Image + canvas) para conseguir esos pixeles
 //   a partir del File adjuntado.
 
+import { loadImageBufferSquare } from "./vision/image-buffer";
+
 const QUANT_LEVELS = 8; // por canal -> 8^3 = 512 buckets de color
 const QUANT_STEP = 256 / QUANT_LEVELS;
 const MIN_ALPHA = 128;
@@ -176,42 +178,22 @@ export function pickColorClusters(
   });
 }
 
-// Wrapper compartido: carga el File de imagen adjuntado, lo dibuja en un
-// canvas chico (más rápido que procesar la foto a resolución completa) y
-// le pasa los pixeles resultantes a `pick`. Nunca rechaza la promesa: ante
-// cualquier error (imagen corrupta, canvas no disponible) cae al fallback
-// dado en vez de bloquear "Formar objeto".
-function extractFromFile<T>(file: File, fallback: T, pick: (data: Uint8ClampedArray) => T): Promise<T> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    const cleanup = () => URL.revokeObjectURL(url);
-
-    img.onload = () => {
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = CANVAS_SAMPLE_SIZE;
-        canvas.height = CANVAS_SAMPLE_SIZE;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          resolve(fallback);
-          return;
-        }
-        ctx.drawImage(img, 0, 0, CANVAS_SAMPLE_SIZE, CANVAS_SAMPLE_SIZE);
-        const { data } = ctx.getImageData(0, 0, CANVAS_SAMPLE_SIZE, CANVAS_SAMPLE_SIZE);
-        resolve(pick(data));
-      } catch {
-        resolve(fallback);
-      } finally {
-        cleanup();
-      }
-    };
-    img.onerror = () => {
-      cleanup();
-      resolve(fallback);
-    };
-    img.src = url;
-  });
+// Carga el File adjuntado a un canvas chico (32x32: el histograma sólo
+// cuenta píxeles, la resolución completa no aporta nada) y le pasa los
+// pixeles a `pick`. Nunca rechaza: ante cualquier error cae al fallback
+// en vez de bloquear "Formar objeto". El cargador es el compartido de
+// vision/image-buffer.ts (Fase 38) — antes había una segunda copia acá.
+async function extractFromFile<T>(
+  file: File,
+  fallback: T,
+  pick: (data: Uint8ClampedArray) => T,
+): Promise<T> {
+  try {
+    const { pixels } = await loadImageBufferSquare(file, CANVAS_SAMPLE_SIZE);
+    return pick(pixels);
+  } catch {
+    return fallback;
+  }
 }
 
 export function extractDominantColorFromFile(file: File): Promise<number> {

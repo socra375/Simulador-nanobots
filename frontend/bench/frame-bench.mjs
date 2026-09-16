@@ -80,7 +80,14 @@ async function measure(page, seconds) {
 
 async function main() {
   const { url, counts } = parseArgs(process.argv.slice(2));
-  const browser = await chromium.launch({ executablePath: CHROMIUM_PATH });
+  // Mismos flags que playwright.config.ts: algunos builds recientes de
+  // Chromium quitaron el headless "old" que Playwright usa por defecto, y
+  // sin --use-gl=swiftshader no hay WebGL en un entorno sin GPU. Sin esto
+  // el bench ni siquiera abre el navegador.
+  const browser = await chromium.launch({
+    executablePath: CHROMIUM_PATH,
+    args: ["--headless=new", "--use-gl=swiftshader", "--enable-webgl", "--ignore-gpu-blocklist"],
+  });
   const rows = [];
 
   try {
@@ -99,7 +106,7 @@ async function main() {
       const idle = await measure(page, 3);
 
       await page
-        .locator('input[type="file"]:not([data-scan-slot])')
+        .locator('input[type="file"][data-command-slot]')
         .setInputFiles({ name: "bench.png", mimeType: "image/png", buffer: TINY_PNG });
       const gui = await findGui(page, "Comandos");
       const nameInput = gui.locator(".controller.string input");

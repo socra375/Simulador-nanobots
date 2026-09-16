@@ -23,6 +23,7 @@ import { createSwarmDirector, type SwarmDirector } from "../swarm/director";
 import { BOT_TYPE, BOT_TYPE_COUNT } from "../swarm/bot-types";
 import { getShape, shapeRevision } from "../shapes/registry";
 import { validateCoverage, voxelizePoints, type VoxelGrid } from "../voxel/grid";
+import { findComponents, type ComponentReport } from "../voxel/validate";
 import { buildMorphSource } from "../voxel/correspondence";
 
 // Simulación del enjambre (Fase 27c).
@@ -71,6 +72,13 @@ const ORIGIN: readonly [number, number, number] = [0, 0, 0];
 // porque "escaneo" se re-registra en cada reconstrucción 3D (ver
 // registerCustomScan) y la referencia vieja ya no describiría la figura.
 const referenceGrids = new Map<string, VoxelGrid>();
+// Tope del caché. Sin él crecía sin límite: hay 17 formas registradas y
+// "escaneo" suma una entrada por cada reconstrucción 3D. A res 48 cada
+// entrada son 216 KB, así que 24 entradas son ~5 MB — despreciable al
+// lado del heap de 33,5 MB, y acotado. Se expulsa la más vieja (el Map de
+// JS conserva el orden de inserción), que para este uso es la forma que
+// hace más tiempo que no se pide.
+const REFERENCE_GRID_CACHE_MAX = 24;
 
 // La física boid corre SOLO en reposo (Fase 18), así que este peso de
 // seek es el único que se usa: al formar, la posición la maneja por
@@ -116,6 +124,8 @@ export interface NanobotMeshApi {
   ): void;
   setVisible(visible: boolean): void;
   setColorClusters(clusters: ColorCluster[]): void;
+  /** Color del objeto por agente, o null para volver al color por olas. */
+  setPointColors(colors: Uint8Array | null): void;
   setSkeletonGrayscale(active: boolean): void;
 }
 
@@ -175,6 +185,21 @@ export interface CoverageInfo {
   readonly covered: number;
   /** Celdas que tiene la figura de referencia. */
   readonly total: number;
+  /**
+   * Índices de celda de la figura que ningún agente ocupa (spec §20).
+   *
+   * Hasta la Fase 39 `validateCoverage` los calculaba y `measureCoverage`
+   * los tiraba. Retenerlos no cuesta nada —es el mismo recorrido— y son
+   * exactamente la entrada que va a consumir la reparación cuando el
+   * Repair Bot exista. Hoy su consumidor es el informe de validación.
+   */
+  readonly missing: Int32Array;
+  /**
+   * En cuántas piezas separadas quedó la figura construida (spec §20).
+   * Un objeto que sale en cinco pedazos flotando es un resultado malo, y
+   * hasta acá no había forma de notarlo.
+   */
+  readonly components: ComponentReport;
 }
 
 export interface SimState {
@@ -417,11 +442,24 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     let ideal = referenceGrids.get(key);
     if (!ideal) {
       ideal = voxelizePoints(def.generate(COVERAGE_REFERENCE_COUNT), COVERAGE_REFERENCE_COUNT, ORIGIN);
+      if (referenceGrids.size >= REFERENCE_GRID_CACHE_MAX) {
+        const oldest = referenceGrids.keys().next();
+        if (!oldest.done) referenceGrids.delete(oldest.value);
+      }
       referenceGrids.set(key, ideal);
     }
     const real = voxelizePoints(points, count, FORMATION_CENTER);
     const report = validateCoverage(ideal, real);
-    return { fraction: report.coverage, covered: report.covered, total: report.target };
+    return {
+      fraction: report.coverage,
+      covered: report.covered,
+      total: report.target,
+      missing: report.missing,
+      // Sobre la grilla REAL, no la ideal: la pregunta es en cuántas
+      // piezas quedó lo que el enjambre construye, no la figura de
+      // referencia (que por definición es de una sola pieza).
+      components: findComponents(real),
+    };
   }
 
   function startFormation(name: string, colorClusters: ColorCluster[]): void {
@@ -473,6 +511,11 @@ export function createSimulation(deps: SimulationDeps): Simulation {
             morphHold.positions,
             morphHold.count,
             reactorCenter as [number, number, number],
+            // El cubo de vóxeles va centrado donde está la figura, no en
+            // el origen: los destinos vienen trasladados a
+            // FORMATION_CENTER, y sin esto la mitad caía fuera del cubo y
+            // perdía la localidad que la correspondencia busca dar.
+            FORMATION_CENTER,
           ).from
         : null;
     // La retención cumplió su función: de acá en más dibuja la animación.
@@ -497,6 +540,10 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     // la foto); para "cabeza" son los tonos fijos por parte anatómica.
     // shapes decide cuál corresponde, acá sólo se lee el resultado.
     swarmMesh.setColorClusters(formation.colorClusters);
+    // Fase 40: si la figura trae el color real de la foto punto por punto
+    // (hoy, el escaneo desde imagen), cada Material Bot lleva el suyo. Si
+    // no, null vuelve al color por olas del histograma.
+    swarmMesh.setPointColors(formation.pointColors);
   }
 
   function goIdle(): void {
@@ -507,6 +554,7 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     applyIdleTargets();
     swarmMesh.setVisible(false);
     swarmMesh.setSkeletonGrayscale(false);
+    swarmMesh.setPointColors(null);
     currentShapeName = null;
     microbotExo = null;
     microbotPhase = "hidden";

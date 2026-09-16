@@ -492,6 +492,67 @@ el tope de `dt` del loop hacen que una formación de ~12 s nominales tarde
 bastante más en reloj de pared. Es un artefacto del entorno de medición,
 no un problema del simulador.
 
+## Imagen → 3D: de una foto al objeto construido (Fases 38-41)
+
+El panel **"Imagen → 3D"** toma UNA sola imagen y la convierte en un
+objeto que el enjambre construye, con los colores reales de la foto.
+
+```
+imagen -> máscara -> profundidad -> nube 3D con color
+       -> vóxeles -> cáscara -> forma registrada -> enjambre
+```
+
+Cada etapa vive en `frontend/src/vision/` como funciones puras sobre
+TypedArrays (vitest corre en node, sin DOM), y el orquestador es
+`pipeline.ts`.
+
+| Etapa | Cómo | Dónde |
+|---|---|---|
+| Separar objeto de fondo | Canal alpha si la imagen lo trae; si no, flood fill desde el borde con umbral LOCAL entre vecinos (tolera fondos en degradé) | `vision/segmentation.ts` |
+| Estimar profundidad | Transformada de distancia (infla la silueta) + corrección por sombreado | `vision/depth-estimator.ts` |
+| Reconstruir en 3D | Extrusión / profundidad / profundidad+simetría, con un color por punto | `vision/reconstruction.ts` |
+| Voxelizar y validar | `VoxelGrid` con color y procedencia; componentes conexas | `voxel/grid.ts`, `voxel/validate.ts` |
+| Construir | El mismo `SwarmDirector` de siempre: nodos → uniones → relleno → color | `swarm/director.ts` |
+
+**No hay ninguna IA.** La profundidad es un proveedor intercambiable
+(`vision/depth-provider.ts`) con dos implementaciones reales —inflado de
+silueta y espesor constante—, cada una declarando su propio techo de
+confianza. La interfaz está lista para enchufar un modelo; **no se
+escribió un proveedor externo vacío**, porque un provider sin servicio
+detrás devuelve lo mismo que el local.
+
+### Geometría vista vs geometría inferida
+
+Una foto muestra UNA cara. Cada punto lleva de dónde salió:
+
+- **observada** — la cara que mira a la cámara, con el color de su píxel.
+- **interpolada** — el relleno entre las dos caras; no se vio, pero está
+  acotado por ellas.
+- **inferida** — la cara de atrás y lo que completa la simetría. Es la
+  parte que es una suposición.
+
+El panel muestra la fracción observada y la confianza baja cuando la nube
+es mayoría suposición. Mezclarlas en una nube indistinta sería presentar
+como observado algo que se inventó.
+
+### Resolución
+
+La escalera es **48 / 64 / 96 / 128**, y se corta ahí por el **presupuesto
+de agentes, no por memoria**: a 128³ la cáscara de un objeto que llena el
+encuadre pasa los 60.000 vóxeles y el enjambre no podría construirla
+entera. El panel muestra el conteo real y avisa antes de construir.
+
+### Rendimiento
+
+Lo pesado corre en un **Web Worker** (`vision/pipeline.worker.ts`) para no
+trabar el render. Si el Worker no arranca, el pipeline **cae a ejecución
+en línea** llamando a la misma función: se paga con un tirón de unos
+cuadros, no con una función rota, y el panel dice en qué hilo corrió.
+
+Medido con una foto de 192×192 a resolución 64³: segmentación 9 ms,
+profundidad 27 ms, reconstrucción 13 ms, voxelización 30 ms, validación
+64 ms.
+
 ## Limitaciones conocidas
 
 Cosas que el proyecto **no** hace, dichas explícitamente para que nadie
@@ -500,9 +561,15 @@ las asuma:
 - **La física no es nanométrica.** Es un modelo de boids (cohesión,
   separación, alineación) a escala visual. No hay fuerzas de van der
   Waals, ni movimiento browniano, ni química.
-- **La forma no sale de la foto.** La foto adjuntada sirve como
+- **La forma no sale de la foto en "Comandos".** Ahí la foto sirve como
   confirmación de UX y para extraer olas de color; la geometría viene de
-  los generadores de `shapes/`. No hay modelo de visión.
+  los generadores de `shapes/`. Para reconstruir geometría desde una
+  imagen está el panel "Imagen → 3D" (ver arriba).
+- **Una sola imagen no alcanza para una reconstrucción exacta.** No
+  contiene información de profundidad: lo que se obtiene es una
+  ESTIMACIÓN, y la UI lo dice siempre. El sistema informa qué fracción de
+  la geometría se vio de verdad y cuánta infirió. Con confianza baja
+  rotula el resultado como "Reconstrucción aproximada".
 - **El escaneo 3D por 4 fotos sobre-aproxima.** Es un visual hull: las
   concavidades que no se ven desde ninguna de las 4 vistas quedan
   rellenas. Tampoco hay alineación automática entre fotos, así que el
@@ -534,7 +601,17 @@ entre lo que funciona y lo que no existe:
   TIPOS DE BOT `REPAIR` y `TRANSFORM` sí están declarados (el store y el
   director tienen que reconocerlos), pero no se les inventan agentes: el
   conteo da 0 y el panel dice por qué.
-- Selección de un agente individual con clic para ver su ficha. Hoy la
-  inspección es por TIPO, no por agente: elegir un agente concreto
-  requiere raycasting contra instancias, que es trabajo aparte.
+- Selección de un agente individual con clic para ver su ficha, y lo
+  mismo para un vóxel. Hoy la inspección es por TIPO, no por agente:
+  elegir uno concreto requiere raycasting contra instancias, y el
+  `instanceId` que devolvería es el índice local compactado del cuadro,
+  no el agente — hace falta además un mapa inverso.
+- Malla de triángulos y simplificador. La representación intermedia es
+  una nube de puntos a propósito: el enjambre consume posiciones y la
+  voxelización sale de la nube, así que una malla sería un subsistema que
+  después nadie usa.
+- Estimación de material (metal, plástico, vidrio…). Sin un modelo de
+  visión sólo se podría devolver "desconocido" siempre, que es el módulo
+  decorativo que el proyecto evita. Entra con el proveedor externo.
+- Pausar el pipeline etapa por etapa.
 - Comandos en lenguaje natural.

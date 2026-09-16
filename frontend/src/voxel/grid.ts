@@ -12,10 +12,15 @@
 // vóxel, esos tests lo dicen.
 //
 // Memoria: res 48 -> 110.592 celdas -> 108 KB con `occupied` solo, 216 KB
-// con `density`. `material`, `colorIdx` y `botId` NO se reservan por
-// adelantado: hoy no hay nada que los escriba (materiales y reparación son
-// fases posteriores), y reservar 4 arrays "por si acaso" es exactamente el
+// con `density`. `material` y `botId` siguen SIN reservarse: hoy no hay
+// nada que los escriba, y reservar arrays "por si acaso" es exactamente el
 // scaffold decorativo que el brief prohíbe. Se agregan con su consumidor.
+//
+// `color` sí entró (Fase 39) porque ya tiene consumidor: la reconstrucción
+// desde imagen produce un color por punto, y ese color tiene que
+// sobrevivir a la voxelización para llegar al enjambre. Es OPCIONAL: sólo
+// lo reserva `voxelizePointsWithColor`, así que las grillas de cobertura y
+// del visual hull siguen pesando exactamente lo mismo que antes.
 
 import { SHAPE_HALF_EXTENT } from "../shapes";
 
@@ -33,6 +38,24 @@ export interface VoxelGrid {
    * Sólo lo llena `voxelizePoints`; el tallado por siluetas deja 0/1.
    */
   readonly density: Uint8Array;
+  /**
+   * res³*3 bytes RGB del material del objeto, o undefined si esta grilla
+   * no lleva color. Es el color de LO QUE SE CONSTRUYE, no el de ningún
+   * bot: la identidad de cada tipo de agente vive en bot-config.ts y no se
+   * mezcla con esto (spec §13).
+   */
+  readonly color?: Uint8Array;
+  /**
+   * res³ bytes: de dónde salió la geometría de esta celda (ver
+   * POINT_ORIGIN en vision/reconstruction-result.ts). Opcional, igual que
+   * `color`.
+   *
+   * Sobrevive a la voxelización a propósito: la pregunta honesta —"qué
+   * parte de lo que el enjambre va a construir se VIO de verdad"— hay que
+   * responderla sobre la cáscara final, no sobre la nube previa, donde el
+   * relleno interior sesgaría el número.
+   */
+  readonly origin?: Uint8Array;
 }
 
 /** Índice lineal de una celda. Mismo orden que usaba carveVisualHull. */
@@ -85,36 +108,157 @@ export function voxelizePoints(
 }
 
 /**
+ * Igual que `voxelizePoints` pero conservando un color por celda.
+ *
+ * Cuando varios puntos caen en la misma celda, el color es el PROMEDIO de
+ * todos: quedarse con el último daría un resultado dependiente del orden
+ * de recorrido, y con el primero se perdería el detalle de las zonas
+ * densas, que son justamente las que más puntos aportan.
+ */
+export function voxelizePointsWithColor(
+  points: Float32Array,
+  colors: Uint8Array,
+  count: number,
+  center: readonly [number, number, number],
+  res: number = DEFAULT_VOXEL_RES,
+  half: number = SHAPE_HALF_EXTENT,
+  /** Procedencia por punto (opcional). Ver `VoxelGrid.origin`. */
+  origins: Uint8Array | null = null,
+): VoxelGrid {
+  const cells = res * res * res;
+  const grid = createVoxelGrid(res, half);
+  const color = new Uint8Array(cells * 3);
+  // 255 = "todavía sin dato". Se queda con el MÍNIMO de la celda, y como
+  // POINT_ORIGIN va de más a menos confiable (observada=0), eso equivale a
+  // "si algún punto de esta celda se vio, la celda se vio". Quedarse con
+  // el máximo marcaría como inventado algo que la foto sí mostró.
+  const origin = origins ? new Uint8Array(cells).fill(255) : null;
+  // Acumuladores aparte: el promedio no entra en un byte sin desbordar.
+  const sumR = new Float64Array(cells);
+  const sumG = new Float64Array(cells);
+  const sumB = new Float64Array(cells);
+  const n = new Uint32Array(cells);
+
+  for (let i = 0; i < count; i++) {
+    const vx = worldToVoxel(points[i * 3 + 0] - center[0], res, half);
+    if (vx < 0) continue;
+    const vy = worldToVoxel(points[i * 3 + 1] - center[1], res, half);
+    if (vy < 0) continue;
+    const vz = worldToVoxel(points[i * 3 + 2] - center[2], res, half);
+    if (vz < 0) continue;
+    const at = voxelIndex(vx, vy, vz, res);
+    grid.occupied[at] = 1;
+    if (grid.density[at] < 255) grid.density[at]++;
+    sumR[at] += colors[i * 3 + 0];
+    sumG[at] += colors[i * 3 + 1];
+    sumB[at] += colors[i * 3 + 2];
+    n[at]++;
+    if (origin && origins && origins[i] < origin[at]) origin[at] = origins[i];
+  }
+  for (let at = 0; at < cells; at++) {
+    if (n[at] === 0) continue;
+    color[at * 3 + 0] = Math.round(sumR[at] / n[at]);
+    color[at * 3 + 1] = Math.round(sumG[at] / n[at]);
+    color[at * 3 + 2] = Math.round(sumB[at] / n[at]);
+  }
+  return origin ? { ...grid, color, origin } : { ...grid, color };
+}
+
+/** ¿Es una celda de superficie? Ocupada con al menos un vecino vacío. */
+function isSurfaceCell(occupied: Uint8Array, vx: number, vy: number, vz: number, res: number): boolean {
+  if (!occupied[voxelIndex(vx, vy, vz, res)]) return false;
+  if (vx === 0 || vx === res - 1 || vy === 0 || vy === res - 1 || vz === 0 || vz === res - 1) return true;
+  return (
+    !occupied[voxelIndex(vx - 1, vy, vz, res)] ||
+    !occupied[voxelIndex(vx + 1, vy, vz, res)] ||
+    !occupied[voxelIndex(vx, vy - 1, vz, res)] ||
+    !occupied[voxelIndex(vx, vy + 1, vz, res)] ||
+    !occupied[voxelIndex(vx, vy, vz - 1, res)] ||
+    !occupied[voxelIndex(vx, vy, vz + 1, res)]
+  );
+}
+
+/**
  * Centros de las celdas de SUPERFICIE: ocupadas con al menos uno de sus 6
  * vecinos vacío, o pegadas al borde de la grilla. Es literalmente el
  * segundo pase que `carveVisualHull` tenía adentro.
+ *
+ * Dos pasadas (contar y llenar) en vez de acumular en un `number[]` de JS:
+ * a res 48 daba lo mismo, pero las celdas de superficie escalan como ~6·res²
+ * y a res 128 serían ~100.000 puntos, o sea ~300.000 números boxeados en un
+ * array que crece por realloc, sólo para copiarlos después a un
+ * Float32Array. Contar primero cuesta un recorrido más y ninguna basura.
  */
 export function surfacePoints(grid: VoxelGrid): Float32Array {
   const { res, half, occupied } = grid;
-  const out: number[] = [];
+  let n = 0;
+  for (let vz = 0; vz < res; vz++)
+    for (let vy = 0; vy < res; vy++)
+      for (let vx = 0; vx < res; vx++)
+        if (isSurfaceCell(occupied, vx, vy, vz, res)) n++;
+
+  const out = new Float32Array(n * 3);
+  let at = 0;
   for (let vz = 0; vz < res; vz++) {
     for (let vy = 0; vy < res; vy++) {
       for (let vx = 0; vx < res; vx++) {
-        if (!occupied[voxelIndex(vx, vy, vz, res)]) continue;
-        const onBoundary = vx === 0 || vx === res - 1 || vy === 0 || vy === res - 1 || vz === 0 || vz === res - 1;
-        const isSurface =
-          onBoundary ||
-          !occupied[voxelIndex(vx - 1, vy, vz, res)] ||
-          !occupied[voxelIndex(vx + 1, vy, vz, res)] ||
-          !occupied[voxelIndex(vx, vy - 1, vz, res)] ||
-          !occupied[voxelIndex(vx, vy + 1, vz, res)] ||
-          !occupied[voxelIndex(vx, vy, vz - 1, res)] ||
-          !occupied[voxelIndex(vx, vy, vz + 1, res)];
-        if (!isSurface) continue;
-        out.push(
-          voxelWorldCoord(vx, res, half),
-          voxelWorldCoord(vy, res, half),
-          voxelWorldCoord(vz, res, half),
-        );
+        if (!isSurfaceCell(occupied, vx, vy, vz, res)) continue;
+        out[at++] = voxelWorldCoord(vx, res, half);
+        out[at++] = voxelWorldCoord(vy, res, half);
+        out[at++] = voxelWorldCoord(vz, res, half);
       }
     }
   }
-  return new Float32Array(out);
+  return out;
+}
+
+export interface ColoredSurface {
+  readonly points: Float32Array;
+  readonly colors: Uint8Array;
+  /** Procedencia por punto, o null si la grilla no la lleva. */
+  readonly origin: Uint8Array | null;
+  readonly count: number;
+}
+
+/**
+ * La cáscara con su color. El recorrido es el mismo que `surfacePoints`;
+ * lo único que se agrega es copiar el color de cada celda.
+ *
+ * Si la grilla no lleva color, los colores salen en blanco en vez de
+ * inventarse: el llamador puede distinguir "gris" de "no hay dato".
+ */
+export function surfacePointsWithColor(grid: VoxelGrid): ColoredSurface {
+  const { res, half, occupied, color, origin: cellOrigin } = grid;
+  let n = 0;
+  for (let vz = 0; vz < res; vz++)
+    for (let vy = 0; vy < res; vy++)
+      for (let vx = 0; vx < res; vx++)
+        if (isSurfaceCell(occupied, vx, vy, vz, res)) n++;
+
+  const points = new Float32Array(n * 3);
+  const colors = new Uint8Array(n * 3);
+  const origin = cellOrigin ? new Uint8Array(n) : null;
+  if (!color) colors.fill(255);
+  let at = 0;
+  for (let vz = 0; vz < res; vz++) {
+    for (let vy = 0; vy < res; vy++) {
+      for (let vx = 0; vx < res; vx++) {
+        if (!isSurfaceCell(occupied, vx, vy, vz, res)) continue;
+        const cell = voxelIndex(vx, vy, vz, res);
+        points[at * 3 + 0] = voxelWorldCoord(vx, res, half);
+        points[at * 3 + 1] = voxelWorldCoord(vy, res, half);
+        points[at * 3 + 2] = voxelWorldCoord(vz, res, half);
+        if (color) {
+          colors[at * 3 + 0] = color[cell * 3 + 0];
+          colors[at * 3 + 1] = color[cell * 3 + 1];
+          colors[at * 3 + 2] = color[cell * 3 + 2];
+        }
+        if (origin && cellOrigin) origin[at] = cellOrigin[cell];
+        at++;
+      }
+    }
+  }
+  return { points, colors, origin, count: n };
 }
 
 export interface CoverageReport {

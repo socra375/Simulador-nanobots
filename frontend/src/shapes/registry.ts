@@ -28,6 +28,13 @@ export interface ShapeColorPart {
   readonly generator: (count: number) => Float32Array;
 }
 
+/** Nube con color, para las formas que lo traen (hoy: el escaneo). */
+export interface ColoredCloud {
+  readonly points: Float32Array;
+  /** count*3 bytes RGB, alineado punto a punto con `points`. */
+  readonly colors: Uint8Array;
+}
+
 export interface ShapeDef {
   readonly name: string;
   readonly aliases: readonly string[];
@@ -45,6 +52,19 @@ export interface ShapeDef {
    * que es el comportamiento de todas las demás formas.
    */
   readonly colorParts?: readonly ShapeColorPart[];
+  /**
+   * Variante de `generate` que además devuelve UN COLOR POR PUNTO (Fase
+   * 40). Opcional: las 17 formas predefinidas no la declaran y su
+   * comportamiento no cambia en nada.
+   *
+   * POR QUÉ ES UNA FUNCIÓN QUE DEVUELVE LAS DOS COSAS JUNTAS, y no un
+   * `pointColors(count)` aparte: `formShapeWithRoles` llama al generador
+   * varias veces (una para DETALLE y una por ola de color), y cada llamada
+   * resamplea por su cuenta. Con dos funciones separadas, la segunda
+   * llamada devolvería los colores de OTRO muestreo y cada agente
+   * terminaría con el color de un punto que no es el suyo.
+   */
+  readonly generateWithColor?: (count: number) => ColoredCloud;
 }
 
 const SHAPES = new Map<string, ShapeDef>();
@@ -131,25 +151,53 @@ export function listSupportedNames(): string[] {
 export const CUSTOM_SCAN_NAME = "escaneo";
 
 export function makeGeneratorFromPointCloud(source: Float32Array): (count: number) => Float32Array {
+  const withColor = makeColoredGeneratorFromPointCloud(source, null);
+  return (count: number) => withColor(count).points;
+}
+
+/**
+ * Igual que el anterior, pero llevando el color de cada punto junto con su
+ * posición. Ambos salen del MISMO muestreo, en la misma pasada: ése es el
+ * punto entero de que sea una sola función (ver `generateWithColor`).
+ *
+ * Si `sourceColors` es null, los colores salen en blanco — el neutro, que
+ * el render multiplica sin cambiar nada.
+ */
+export function makeColoredGeneratorFromPointCloud(
+  source: Float32Array,
+  sourceColors: Uint8Array | null,
+): (count: number) => ColoredCloud {
   const available = Math.floor(source.length / 3);
   // Jitter chico para los puntos que se repiten más allá de la primera
   // pasada (cuando se pide más `count` que vóxeles de superficie hay) —
-  // evita esferas perfectamente apiladas en la misma posición.
+  // evita esferas perfectamente apiladas en la misma posición. El COLOR no
+  // se jitterea: el punto repetido representa el mismo trozo de objeto, así
+  // que tiene que llevar el mismo material.
   const jitter = SHAPE_HALF_EXTENT * 0.02;
   return (count: number) => {
-    const out = new Float32Array(count * 3);
-    if (available === 0) return out;
+    const points = new Float32Array(count * 3);
+    const colors = new Uint8Array(count * 3);
+    if (available === 0) return { points, colors };
     for (let i = 0; i < count; i++) {
       const reused = i >= available;
       const srcIdx = reused ? Math.floor(Math.random() * available) : i;
       const jx = reused ? (Math.random() * 2 - 1) * jitter : 0;
       const jy = reused ? (Math.random() * 2 - 1) * jitter : 0;
       const jz = reused ? (Math.random() * 2 - 1) * jitter : 0;
-      out[i * 3 + 0] = source[srcIdx * 3 + 0] + jx;
-      out[i * 3 + 1] = source[srcIdx * 3 + 1] + jy;
-      out[i * 3 + 2] = source[srcIdx * 3 + 2] + jz;
+      points[i * 3 + 0] = source[srcIdx * 3 + 0] + jx;
+      points[i * 3 + 1] = source[srcIdx * 3 + 1] + jy;
+      points[i * 3 + 2] = source[srcIdx * 3 + 2] + jz;
+      if (sourceColors) {
+        colors[i * 3 + 0] = sourceColors[srcIdx * 3 + 0];
+        colors[i * 3 + 1] = sourceColors[srcIdx * 3 + 1];
+        colors[i * 3 + 2] = sourceColors[srcIdx * 3 + 2];
+      } else {
+        colors[i * 3 + 0] = 255;
+        colors[i * 3 + 1] = 255;
+        colors[i * 3 + 2] = 255;
+      }
     }
-    return out;
+    return { points, colors };
   };
 }
 
@@ -157,11 +205,15 @@ export function makeGeneratorFromPointCloud(source: Float32Array): (count: numbe
 // "escaneo" y devuelve ese nombre — llamar a formShapeWithRoles/
 // buildExoskeleton con él funciona exactamente igual que con cualquier
 // otra forma.
-export function registerCustomScan(points: Float32Array): string {
+export function registerCustomScan(points: Float32Array, colors: Uint8Array | null = null): string {
+  const colored = makeColoredGeneratorFromPointCloud(points, colors);
   registerShape({
     name: CUSTOM_SCAN_NAME,
     aliases: [],
-    generate: makeGeneratorFromPointCloud(points),
+    generate: (count) => colored(count).points,
+    // Sólo se declara si de verdad hay color: una forma sin color no debe
+    // anunciar que lo tiene y devolver blanco.
+    ...(colors ? { generateWithColor: colored } : {}),
   });
   return CUSTOM_SCAN_NAME;
 }
