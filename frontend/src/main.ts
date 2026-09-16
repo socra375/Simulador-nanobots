@@ -151,6 +151,7 @@ async function main() {
       gui.controllersRecursive().forEach((c) => c.updateDisplay());
     },
     onFormShape: (shapeName: string, colorClusters: ColorCluster[]) => sim.formShape(shapeName, colorClusters),
+    readNanobotCount: () => state.count,
     onReturnToCore: () => sim.returnToCore(),
     onMicrobotCountChange: (count: number) => sim.setMicrobotCount(count),
   });

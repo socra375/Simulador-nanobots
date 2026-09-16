@@ -2,6 +2,7 @@ import GUI from "lil-gui";
 import type { SwarmParams } from "./swarm";
 import type { SwarmConfig } from "./config-client";
 import { resolveShapeName, listSupportedNames, registerCustomScan } from "./shapes";
+import { addImageTo3DFolder } from "./ui/image-to-3d-panel";
 import { extractColorClustersFromFile, type ColorCluster } from "./image-color";
 import { buildVisualHullPoints, type ScanPhotos } from "./visual-hull";
 import { AGENT_STATE_NAMES } from "./swarm/agent-store";
@@ -19,6 +20,9 @@ export interface UiState extends SwarmParams {
 }
 
 export interface UiCallbacks {
+  /** Cuántos nanobots hay configurados. Lo lee el panel Imagen → 3D para
+   *  avisar si la cáscara pide más agentes de los que hay. */
+  readNanobotCount?: () => number;
   onCountChange: (count: number) => void;
   onMicrobotCountChange: (count: number) => void;
   onParamsChange: (params: SwarmParams) => void;
@@ -92,6 +96,10 @@ export function createControlPanel(state: UiState, callbacks: UiCallbacks): GUI 
 
   addCommandsFolder(gui, callbacks);
   addScanFolder(gui, callbacks);
+  addImageTo3DFolder(gui, {
+    onFormShape: callbacks.onFormShape,
+    readNanobotCount: callbacks.readNanobotCount ?? (() => state.count),
+  });
 
   return gui;
 }
@@ -345,6 +353,12 @@ function addCommandsFolder(gui: GUI, callbacks: UiCallbacks): void {
   fileInput.type = "file";
   fileInput.accept = "image/*";
   fileInput.style.display = "none";
+  // Marcador propio para el E2E. Antes este input era "el único sin
+  // data-scan-slot" y el test lo elegía por exclusión; con el panel
+  // Imagen → 3D apareció un segundo input sin ese atributo y el selector
+  // pasó a matchear dos elementos. Un selector POSITIVO no se rompe cada
+  // vez que aparece un input nuevo.
+  fileInput.dataset.commandSlot = "photo";
   document.body.appendChild(fileInput);
 
   const preview = document.createElement("img");

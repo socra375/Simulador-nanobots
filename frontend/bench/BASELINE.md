@@ -158,3 +158,37 @@ parecían obvias sirvió de nada; las dos mejoras reales salieron de sacar
 cosas.** Los tiempos de cuadro siguen sin moverse — el costo de reposo
 sigue siendo la física boid en Wasm, que es lo único que valdría la pena
 optimizar si alguna vez hace falta.
+
+## Post Fase 41 (pipeline imagen→3D)
+
+Mismo comando, mismo entorno headless (SwiftShader), tras agregar el
+pipeline de visión, el color por instancia y el panel "Imagen → 3D".
+
+| nanobots |  estado  | frame avg | frame p95 |    fps | draws | heap MB |
+|---------:|----------|----------:|----------:|-------:|------:|--------:|
+|     3000 | reposo   |    2.98  |    8.80  |  335.20 |    19 |   34.27 |
+|     3000 | formando |    8.02  |   11.30  |  124.64 |    21 |   34.69 |
+|     3000 | asentado |    0.77  |    0.80  | 1304.35 |    23 |   36.10 |
+|    10000 | reposo   |    6.34  |    7.00  |  157.69 |    19 |   39.93 |
+|    10000 | formando |   22.45  |   27.70  |   44.55 |    21 |   41.23 |
+|    10000 | asentado |    0.92  |    1.50  | 1081.08 |    23 |   40.92 |
+
+**Sin regresión.** Los draw calls son los mismos (19/21/23): el color por
+instancia NO agregó mallas — va en un buffer paralelo al de matrices, en
+los meshes que ya existían. El heap sube de 33,5 a 34,3 MB con 3.000
+agentes, que son los módulos de visión en el bundle. "Formando" a 10.000
+incluso mejoró un poco (22,45 ms contra 24,87 ms), dentro del ruido de
+medición.
+
+El pipeline de reconstrucción NO aparece en esta tabla porque no corre
+por cuadro: es un costo de una vez al apretar el botón, y además corre en
+un Worker. Sus tiempos por etapa los mide `metrics.time(...)` y los
+muestra el panel.
+
+### Dos arreglos de herramientas encontrados al correr esto
+
+1. El script lanzaba Chromium con el headless "old", que los builds
+   recientes quitaron: el bench no abría el navegador.
+2. Elegía el input de foto por exclusión (`:not([data-scan-slot])`), y el
+   input nuevo del panel Imagen → 3D lo rompió — el mismo problema que
+   tenía el E2E. Los dos pasaron a un selector positivo.

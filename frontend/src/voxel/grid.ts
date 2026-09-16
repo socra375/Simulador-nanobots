@@ -45,6 +45,17 @@ export interface VoxelGrid {
    * mezcla con esto (spec §13).
    */
   readonly color?: Uint8Array;
+  /**
+   * res³ bytes: de dónde salió la geometría de esta celda (ver
+   * POINT_ORIGIN en vision/reconstruction-result.ts). Opcional, igual que
+   * `color`.
+   *
+   * Sobrevive a la voxelización a propósito: la pregunta honesta —"qué
+   * parte de lo que el enjambre va a construir se VIO de verdad"— hay que
+   * responderla sobre la cáscara final, no sobre la nube previa, donde el
+   * relleno interior sesgaría el número.
+   */
+  readonly origin?: Uint8Array;
 }
 
 /** Índice lineal de una celda. Mismo orden que usaba carveVisualHull. */
@@ -111,10 +122,17 @@ export function voxelizePointsWithColor(
   center: readonly [number, number, number],
   res: number = DEFAULT_VOXEL_RES,
   half: number = SHAPE_HALF_EXTENT,
+  /** Procedencia por punto (opcional). Ver `VoxelGrid.origin`. */
+  origins: Uint8Array | null = null,
 ): VoxelGrid {
   const cells = res * res * res;
   const grid = createVoxelGrid(res, half);
   const color = new Uint8Array(cells * 3);
+  // 255 = "todavía sin dato". Se queda con el MÍNIMO de la celda, y como
+  // POINT_ORIGIN va de más a menos confiable (observada=0), eso equivale a
+  // "si algún punto de esta celda se vio, la celda se vio". Quedarse con
+  // el máximo marcaría como inventado algo que la foto sí mostró.
+  const origin = origins ? new Uint8Array(cells).fill(255) : null;
   // Acumuladores aparte: el promedio no entra en un byte sin desbordar.
   const sumR = new Float64Array(cells);
   const sumG = new Float64Array(cells);
@@ -135,6 +153,7 @@ export function voxelizePointsWithColor(
     sumG[at] += colors[i * 3 + 1];
     sumB[at] += colors[i * 3 + 2];
     n[at]++;
+    if (origin && origins && origins[i] < origin[at]) origin[at] = origins[i];
   }
   for (let at = 0; at < cells; at++) {
     if (n[at] === 0) continue;
@@ -142,7 +161,7 @@ export function voxelizePointsWithColor(
     color[at * 3 + 1] = Math.round(sumG[at] / n[at]);
     color[at * 3 + 2] = Math.round(sumB[at] / n[at]);
   }
-  return { ...grid, color };
+  return origin ? { ...grid, color, origin } : { ...grid, color };
 }
 
 /** ¿Es una celda de superficie? Ocupada con al menos un vecino vacío. */
@@ -196,6 +215,8 @@ export function surfacePoints(grid: VoxelGrid): Float32Array {
 export interface ColoredSurface {
   readonly points: Float32Array;
   readonly colors: Uint8Array;
+  /** Procedencia por punto, o null si la grilla no la lleva. */
+  readonly origin: Uint8Array | null;
   readonly count: number;
 }
 
@@ -207,7 +228,7 @@ export interface ColoredSurface {
  * inventarse: el llamador puede distinguir "gris" de "no hay dato".
  */
 export function surfacePointsWithColor(grid: VoxelGrid): ColoredSurface {
-  const { res, half, occupied, color } = grid;
+  const { res, half, occupied, color, origin: cellOrigin } = grid;
   let n = 0;
   for (let vz = 0; vz < res; vz++)
     for (let vy = 0; vy < res; vy++)
@@ -216,6 +237,7 @@ export function surfacePointsWithColor(grid: VoxelGrid): ColoredSurface {
 
   const points = new Float32Array(n * 3);
   const colors = new Uint8Array(n * 3);
+  const origin = cellOrigin ? new Uint8Array(n) : null;
   if (!color) colors.fill(255);
   let at = 0;
   for (let vz = 0; vz < res; vz++) {
@@ -231,11 +253,12 @@ export function surfacePointsWithColor(grid: VoxelGrid): ColoredSurface {
           colors[at * 3 + 1] = color[cell * 3 + 1];
           colors[at * 3 + 2] = color[cell * 3 + 2];
         }
+        if (origin && cellOrigin) origin[at] = cellOrigin[cell];
         at++;
       }
     }
   }
-  return { points, colors, count: n };
+  return { points, colors, origin, count: n };
 }
 
 export interface CoverageReport {

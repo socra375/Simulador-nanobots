@@ -49,8 +49,20 @@ export const DEPTH_RATIO = 0.5;
 /** Espesor del modo extrusión, como fracción del lado menor. */
 export const EXTRUSION_RATIO = 0.35;
 
-/** Tope de puntos de la nube. Arriba de esto se sube el paso de muestreo. */
-export const MAX_CLOUD_POINTS = 120_000;
+/**
+ * Tope de seguridad de la nube. NO es la palanca de densidad: la densidad
+ * la fija el tamaño de celda (ver abajo). Esto sólo evita que una imagen
+ * enorme con una resolución enorme reviente la memoria.
+ */
+export const MAX_CLOUD_POINTS = 2_500_000;
+
+/**
+ * Separación objetivo de la retícula, como fracción del lado de celda.
+ * Por debajo de 1 se garantiza que dos muestras consecutivas caen en la
+ * misma celda o en celdas vecinas, que es lo que hace que la figura salga
+ * maciza y no como un peine.
+ */
+export const LATTICE_FILL = 0.9;
 
 export interface Reconstruction {
   /**
@@ -176,20 +188,46 @@ export function reconstruct(
   const thickness = ratio * Math.min(bw, bh) * scale;
   const cellSize = (2 * half) / voxelRes;
 
-  // --- Paso de muestreo -----------------------------------------------
-  // Primero se estima cuántos puntos saldrían con paso 1; si se pasa del
-  // tope, se sube el paso en píxeles. Submuestrear es honesto (se pierde
-  // detalle); inventar puntos no lo sería.
+  // --- Densidad de muestreo --------------------------------------------
+  //
+  // LA REGLA: la retícula se ajusta al TAMAÑO DE CELDA, no a un tope de
+  // puntos. Muestrear más fino que la celda es desperdicio (varios puntos
+  // caen en la misma celda y se promedian igual); muestrear más grueso
+  // deja huecos, y la figura sale como un peine.
+  //
+  // Esto fue un bug real, medido: antes había dos ajustes independientes
+  // —uno que subía la densidad contra la celda y otro que la bajaba para
+  // respetar un tope de puntos— y cuando el segundo se activaba, la huella
+  // efectiva del píxel se duplicaba sin que el primero compensara. Un
+  // objeto macizo salía en 231 pedazos. Ahora hay UN solo cálculo y los
+  // dos ajustes son las dos caras de la misma cuenta:
+  //
+  //   - imagen más GRUESA que la grilla -> `sub` muestras por píxel
+  //   - imagen más FINA que la grilla   -> se saltan `step` píxeles
+  //
+  // El conteo queda acotado por la cantidad de celdas del objeto, que es
+  // lo que de verdad limita el resultado.
+  const pixelWorld = scale;
+  const target = cellSize * LATTICE_FILL;
+  const perPixel = pixelWorld / target;
+  const sub = perPixel >= 1 ? Math.ceil(perPixel) : 1;
+  const step = perPixel >= 1 ? 1 : Math.max(1, Math.floor(1 / perPixel));
   const zSamples = (d: number): number => {
     const zw = effMode === RECON_MODE.EXTRUSION ? thickness : d * thickness;
     return Math.max(2, Math.ceil((2 * zw) / cellSize) + 1);
   };
 
+  // Guarda de memoria, no de densidad: si ni así entra, se recorta el
+  // muestreo en Z, que es el eje con más redundancia (el interior se
+  // promedia igual al voxelizar).
   let estimate = 0;
-  for (let i = 0; i < width * height; i++) {
-    if (effMask[i]) estimate += zSamples(effDepth[i]);
+  for (let y = bbox.minY; y <= bbox.maxY; y += step) {
+    for (let x = bbox.minX; x <= bbox.maxX; x += step) {
+      const i = y * width + x;
+      if (effMask[i]) estimate += zSamples(effDepth[i]) * sub * sub;
+    }
   }
-  const step = estimate > maxPoints ? Math.max(1, Math.ceil(Math.sqrt(estimate / maxPoints))) : 1;
+  const zThin = estimate > maxPoints ? Math.max(1, Math.ceil(estimate / maxPoints)) : 1;
 
   // --- Emisión ---------------------------------------------------------
   const positions: number[] = [];
@@ -218,12 +256,19 @@ export function reconstruct(
       const p = pixelIndex(sx, y, width);
       const r = img.pixels[p], g = img.pixels[p + 1], b = img.pixels[p + 2];
 
-      const n = zSamples(effDepth[i]);
+      const n = Math.max(2, Math.ceil(zSamples(effDepth[i]) / zThin));
+      for (let sy = 0; sy < sub; sy++) {
+      for (let sx = 0; sx < sub; sx++) {
+      // Retícula dentro de la huella del píxel: el mismo color y la misma
+      // profundidad, repartidos para que no queden celdas vacías entre
+      // píxeles vecinos.
+      const ox = sub === 1 ? 0 : (sx / sub - 0.5 + 0.5 / sub) * pixelWorld;
+      const oy = sub === 1 ? 0 : (sy / sub - 0.5 + 0.5 / sub) * pixelWorld;
       for (let k = 0; k < n; k++) {
         // De -zw a +zw: la cara de atrás es el espejo de la de adelante,
         // que es la suposición mínima cuando no hay foto trasera.
         const t = n === 1 ? 0 : k / (n - 1);
-        positions.push(wx, wy, -zw + 2 * zw * t);
+        positions.push(wx + ox, wy + oy, -zw + 2 * zw * t);
         rgb.push(r, g, b);
         // t=1 es la cara de ADELANTE (z = +zw), la que mira a la cámara:
         // eso es lo único que la foto respalda. t=0 es la cara de atrás,
@@ -237,6 +282,8 @@ export function reconstruct(
                 ? POINT_ORIGIN.INFERRED
                 : POINT_ORIGIN.INTERPOLATED,
         );
+      }
+      }
       }
     }
   }

@@ -1,4 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
+// El proyecto es ESM ("type": "module"), así que acá no hay `require`.
+import { deflateSync } from "node:zlib";
 
 // Helpers para interactuar con el panel lil-gui (no expone atributos
 // estables como data-testid, así que estos helpers encapsulan su
@@ -41,10 +43,11 @@ async function readCommandsStatus(page: Page): Promise<string | null> {
 }
 
 async function attachFakePhoto(page: Page) {
-  // Fase 23 agregó 4 inputs de archivo más (carpeta "Escaneo 3D",
-  // marcados con data-scan-slot) — el de "Comandos" es el único sin ese
-  // atributo.
-  const fileInput = page.locator('input[type="file"]:not([data-scan-slot])');
+  // Se elige por un atributo PROPIO, no por exclusión. La versión
+  // anterior decía "el único sin data-scan-slot" y se rompió en cuanto el
+  // panel Imagen → 3D agregó otro input sin ese atributo: el selector
+  // pasó a matchear dos elementos y Playwright falla por modo estricto.
+  const fileInput = page.locator('input[type="file"][data-command-slot]');
   const pngBuffer = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64",
@@ -76,6 +79,25 @@ async function readFolderText(page: Page, title: string): Promise<string> {
       (c) => c.tagName === "DIV" && !c.classList.contains("children") && !c.classList.contains("title"),
     );
     return divs.length ? (divs[divs.length - 1].textContent ?? "") : "(sin contenido)";
+  }, title);
+}
+
+/**
+ * Todo el texto de una carpeta, no sólo su último div.
+ *
+ * `readFolderText` alcanza para los paneles de una sola línea, pero el de
+ * Imagen → 3D tiene varios bloques (aviso, datos del archivo, estado,
+ * estadísticas) y el último está vacío hasta que se reconstruye.
+ */
+async function readFolderAllText(page: Page, title: string): Promise<string> {
+  return page.evaluate((wanted) => {
+    const guis = Array.from(document.querySelectorAll(".lil-gui"));
+    const folder = guis.find((g) => g.querySelector(":scope > .title")?.textContent === wanted);
+    if (!folder) return "(sin panel)";
+    return Array.from(folder.children)
+      .filter((c) => c.tagName === "DIV" && !c.classList.contains("children") && !c.classList.contains("title"))
+      .map((d) => d.textContent ?? "")
+      .join("\n");
   }, title);
 }
 
@@ -374,3 +396,107 @@ test("la cola de tareas refleja el avance real de la formación", async ({ page 
   await clickCommandButton(page, "Volver al núcleo");
   await expect.poll(() => readTaskQueuePanel(page), { timeout: 60000 }).toMatch(/repliegue:/);
 });
+
+// Fase 41: la cadena completa imagen → 3D, desde la UI real.
+//
+// Es el único test que ejercita el pipeline entero de punta a punta:
+// carga de imagen, segmentación, profundidad, reconstrucción,
+// voxelización y construcción por el enjambre. Los unitarios cubren cada
+// etapa por separado sobre TypedArrays; esto cubre que estén bien
+// enchufadas y que el Worker (o su caída a ejecución en línea) funcione
+// dentro del navegador.
+test("Imagen → 3D: de una foto al objeto construido por el enjambre", async ({ page }) => {
+  // El headless con SwiftShader estira mucho los tiempos de la animación
+  // (documentado desde la Fase 20), y acá además hay un pipeline pesado.
+  test.setTimeout(300_000);
+
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  const panel = () => readFolderAllText(page, "Imagen → 3D");
+
+  // Una imagen chica pero con un objeto reconocible sobre fondo liso:
+  // un cuadrado oscuro centrado, que es el mismo fixture que usan los
+  // tests de silueta.
+  const png = makeSquarePng(48, 12);
+  await page
+    .locator('input[type="file"][data-image-slot]')
+    .setInputFiles({ name: "objeto.png", mimeType: "image/png", buffer: png });
+
+  await expect.poll(() => panel(), { timeout: 20000 }).toContain("Lista");
+
+  await clickFolderButton(page, "Imagen → 3D", "Reconstruir");
+  await expect.poll(() => panel(), { timeout: 60000 }).toContain("vóxeles de superficie");
+
+  // El aviso del spec §29 tiene que estar siempre, y el resultado tiene
+  // que informar cuánta geometría se vio de verdad.
+  const info = await readFolderAllText(page, "Imagen → 3D");
+  expect(info).toContain("es una estimación");
+
+  await clickFolderButton(page, "Imagen → 3D", "Construir con nanobots");
+
+  // El enjambre recorre su secuencia de siempre sobre la figura
+  // reconstruida: si la forma no se hubiera registrado bien, la cola
+  // nunca pasaría del exoesqueleto.
+  await expect
+    .poll(() => readTaskQueuePanel(page), { timeout: 180000 })
+    .toMatch(/exoesqueleto: done[\s\S]*relleno:/);
+
+  expect(errors).toEqual([]);
+});
+
+/** Hace clic en un botón de una carpeta cualquiera del panel. */
+async function clickFolderButton(page: Page, folderTitle: string, buttonName: string): Promise<void> {
+  await page.evaluate(
+    ([title, name]) => {
+      const guis = Array.from(document.querySelectorAll(".lil-gui"));
+      const folder = guis.find((g) => g.querySelector(":scope > .title")?.textContent === title);
+      const controllers = Array.from(folder?.querySelectorAll(".controller.function") ?? []);
+      const controller = controllers.find((c) => c.querySelector(".name")?.textContent === name);
+      controller?.querySelector("button")?.click();
+    },
+    [folderTitle, buttonName],
+  );
+}
+
+/** PNG mínimo: fondo blanco con un cuadrado oscuro centrado. */
+function makeSquarePng(size: number, margin: number): Buffer {
+  const raw: number[] = [];
+  for (let y = 0; y < size; y++) {
+    raw.push(0); // filtro de fila
+    for (let x = 0; x < size; x++) {
+      const dentro = x >= margin && x < size - margin && y >= margin && y < size - margin;
+      raw.push(dentro ? 30 : 245, dentro ? 40 : 245, dentro ? 200 : 248);
+    }
+  }
+  const crcTable: number[] = [];
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crcTable[n] = c >>> 0;
+  }
+  const crc = (buf: Buffer): number => {
+    let c = 0xffffffff;
+    for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer): Buffer => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+    const c = Buffer.alloc(4);
+    c.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, c]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8; // profundidad de bit
+  ihdr[9] = 2; // color verdadero (RGB)
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(Buffer.from(raw))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}

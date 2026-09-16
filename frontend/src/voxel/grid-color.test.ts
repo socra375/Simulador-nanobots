@@ -61,6 +61,46 @@ describe("voxelizePointsWithColor", () => {
   });
 });
 
+describe("procedencia por celda", () => {
+  // LA REGLA: si algún punto de la celda se VIO, la celda se vio. Se
+  // queda con el MÍNIMO porque POINT_ORIGIN va de más a menos confiable
+  // (observada=0). Con el máximo, una celda que contiene un punto
+  // observado y uno inferido saldría marcada como inventada — presentar
+  // como suposición algo que la foto sí mostró.
+  it("una celda con un punto visto y uno inferido queda como VISTA", () => {
+    const pts = new Float32Array([0.01, 0.01, 0.01, 0.02, 0.02, 0.02]);
+    const cols = Uint8Array.from([10, 10, 10, 20, 20, 20]);
+    // 0 = observada, 2 = inferida (ver POINT_ORIGIN).
+    const g = voxelizePointsWithColor(pts, cols, 2, ORIGIN, undefined, undefined, Uint8Array.from([2, 0]));
+    const at = g.occupied.indexOf(1);
+    expect(g.origin![at]).toBe(0);
+  });
+
+  it("una celda con sólo puntos inferidos queda como INFERIDA", () => {
+    const g = voxelizePointsWithColor(
+      new Float32Array([0.01, 0.01, 0.01]),
+      Uint8Array.from([10, 10, 10]),
+      1, ORIGIN, undefined, undefined, Uint8Array.from([2]),
+    );
+    expect(g.origin![g.occupied.indexOf(1)]).toBe(2);
+  });
+
+  it("sin procedencia de entrada, la grilla no inventa una", () => {
+    const g = voxelizePointsWithColor(new Float32Array([0, 0, 0]), Uint8Array.from([1, 2, 3]), 1, ORIGIN);
+    expect(g.origin).toBeUndefined();
+  });
+
+  it("la cáscara lleva la procedencia de su celda", () => {
+    const g = voxelizePointsWithColor(
+      new Float32Array([0, 0, 0]), Uint8Array.from([1, 2, 3]), 1, ORIGIN,
+      undefined, undefined, Uint8Array.from([1]),
+    );
+    const s = surfacePointsWithColor(g);
+    expect(s.origin).not.toBeNull();
+    expect(Array.from(s.origin!)).toEqual([1]);
+  });
+});
+
 describe("surfacePointsWithColor", () => {
   it("devuelve exactamente los mismos puntos que surfacePoints", () => {
     const pts = new Float32Array(300);
