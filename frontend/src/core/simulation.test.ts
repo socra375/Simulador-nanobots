@@ -8,6 +8,7 @@ import {
   type Simulation,
   type SwarmApi,
 } from "./simulation";
+import { MATERIAL_PHASE } from "../material/material-animation";
 import { DEFAULT_NANOBOT_TIMINGS, makeSwirlAxes } from "./kinematics";
 import { AGENT_STATE } from "../swarm/agent-store";
 import { TASK_STATUS, TASK_TYPE } from "../swarm/director";
@@ -807,14 +808,30 @@ describe("parpadeo del núcleo (Material Bots)", () => {
     expect(h.pulses).toContain(0x123456);
   });
 
-  it("parpadea UNA vez por tanda, no cada cuadro", () => {
+  it("parpadea UNA vez por entrega, no cada cuadro", () => {
     // El parpadeo dura casi un segundo; relanzarlo 60 veces por segundo lo
     // dejaría clavado en el primer destello.
+    //
+    // Fase 44: las entregas son la ACTIVACIÓN más una por tanda. Antes el
+    // primer destello caía recién con la primera tanda —el último tramo
+    // de una formación de ~12 s— y no se llegaba a ver.
     const h = makeSimConReactor();
     h.sim.formShape("cubo", [{ color: 0x111111, weight: 1 }]);
     advance(h.sim, FULL_LAUNCH + NANOBOT_FULL);
-    const capasDeColor = h.sim.director.tasks.filter((t) => t.type === TASK_TYPE.APPLY_COLOR).length;
-    expect(h.pulses.length).toBeLessThanOrEqual(capasDeColor);
+    const tandas = h.sim.director.tasks.filter((t) => t.type === TASK_TYPE.APPLY_COLOR).length;
+    expect(h.pulses.length).toBeLessThanOrEqual(tandas + 1);
+    expect(h.pulses.length).toBeGreaterThan(0);
+  });
+
+  it("el primer destello llega con la ACTIVACIÓN, antes de que aparezca el material", () => {
+    // La razón del cambio: el núcleo entrega el material cuando la red se
+    // enciende, no cuando el material ya está puesto.
+    const h = makeSimConReactor();
+    h.sim.formShape("cubo", [{ color: 0x123456, weight: 1 }]);
+    // Vuelo (2 capas x 2 s) + asentamiento (0,45 s) + un poco de la
+    // activación: todavía no empezó a aplicarse nada.
+    advance(h.sim, FULL_LAUNCH + 4.7);
+    expect(h.sim.state.materialPhase).toBe(MATERIAL_PHASE.ACTIVATION);
     expect(h.pulses.length).toBeGreaterThan(0);
   });
 

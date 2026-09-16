@@ -11,6 +11,7 @@ import {
   slotProgress,
   transitionFlash,
   writeMaterialTint,
+  INERT_DIM,
 } from "./material-animation";
 import { buildMaterialMap, NO_REGION, type MaterialMap } from "./material-map";
 
@@ -175,20 +176,71 @@ describe("parpadeo de activación (spec §10)", () => {
 });
 
 describe("tint por instancia", () => {
-  it("al llegar a la superficie los Material Bots llevan SU color de identidad, no el del objeto", () => {
+  it("al llegar a la superficie los Material Bots llevan SU color de identidad, ATENUADO", () => {
     // Spec §8: primero se ve el objeto CUBIERTO DE BOTS. Si el tint ya
     // trajera el material, volveríamos a "el color aparece mientras
     // vuelan", que es lo que esta fase vino a arreglar.
+    //
+    // Fase 44: y atenuado. El tint multiplica también la radiancia
+    // emissive, así que a brillo pleno el 75% del enjambre florecía con
+    // el bloom y el conjunto se veía GRUESO. Inerte se lee como metal
+    // apagado, que además es lo que un bot sin activar es.
     const { map, count } = cloudMap();
     const t = planMaterialTimeline(TRAVEL, map.slots);
     const out = new Float32Array(count * 3);
     writeMaterialTint(out, map, t, t.travelEnd, IDENTITY);
     for (let i = 0; i < count; i++) {
       if (map.region[i] === NO_REGION) continue;
-      expect(out[i * 3 + 0]).toBeCloseTo(IDENTITY[0], 5);
-      expect(out[i * 3 + 1]).toBeCloseTo(IDENTITY[1], 5);
-      expect(out[i * 3 + 2]).toBeCloseTo(IDENTITY[2], 5);
+      expect(out[i * 3 + 0]).toBeCloseTo(IDENTITY[0] * INERT_DIM, 5);
+      expect(out[i * 3 + 1]).toBeCloseTo(IDENTITY[1] * INERT_DIM, 5);
+      expect(out[i * 3 + 2]).toBeCloseTo(IDENTITY[2] * INERT_DIM, 5);
     }
+  });
+
+  it("ningún agente llega a brillar mucho más que su propio material", () => {
+    // EL TEST DEL GROSOR. El tint multiplica también la radiancia
+    // emissive, y el bloom de la escena tiene el umbral en 0,35: si un
+    // agente brilla bastante por encima de su color, florece y el
+    // enjambre se ve GRUESO. Eso es lo que pasó en la Fase 42, con el
+    // destello llegando a 2,4x sobre bots que además estaban a brillo
+    // pleno desde el despegue.
+    //
+    // El margen no es arbitrario: es el destello de transformación, que
+    // TIENE que notarse. Lo que no puede es duplicar el brillo.
+    const MARGEN = 1.15;
+    const { map, count } = cloudMap(10, false);
+    const t = planMaterialTimeline(TRAVEL, map.slots);
+    const out = new Float32Array(count * 3);
+
+    let techo = 0;
+    for (let i = 0; i < count * 3; i++) techo = Math.max(techo, map.color[i] / 255);
+    techo *= MARGEN;
+
+    for (let e = 0; e <= t.end; e += 0.05) {
+      writeMaterialTint(out, map, t, e, IDENTITY);
+      for (let i = 0; i < count; i++) {
+        if (map.region[i] === NO_REGION) continue;
+        for (let k = 0; k < 3; k++) expect(out[i * 3 + k]).toBeLessThanOrEqual(techo);
+      }
+    }
+  });
+
+  it("el bot inerte brilla MENOS que el material terminado", () => {
+    const { map, count } = cloudMap(10, false);
+    const t = planMaterialTimeline(TRAVEL, map.slots);
+    const out = new Float32Array(count * 3);
+    const brilloMedio = (elapsed: number): number => {
+      writeMaterialTint(out, map, t, elapsed, IDENTITY);
+      let suma = 0;
+      let n = 0;
+      for (let i = 0; i < count; i++) {
+        if (map.region[i] === NO_REGION) continue;
+        suma += Math.max(out[i * 3], out[i * 3 + 1], out[i * 3 + 2]);
+        n++;
+      }
+      return suma / n;
+    };
+    expect(brilloMedio(t.travelEnd)).toBeLessThan(brilloMedio(t.end));
   });
 
   it("al final, cada agente lleva EXACTAMENTE el color de su posición", () => {

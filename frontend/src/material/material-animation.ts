@@ -76,9 +76,21 @@ export const SLOT_STAGGER_FRACTION = 0.6;
 /** Ciclos de parpadeo durante la activación. */
 export const PULSE_CYCLES = 2.5;
 /** Cuánto sube el brillo en el pico del parpadeo. */
-export const FLASH_GAIN = 1.4;
+export const FLASH_GAIN = 0.55;
 /** Cuánto sube el brillo justo cuando un agente se convierte en material. */
-export const TRANSITION_GAIN = 0.9;
+export const TRANSITION_GAIN = 0.35;
+
+/**
+ * Cuánto se ATENÚA el tint mientras el bot todavía es un bot.
+ *
+ * Hasta la Fase 42 los Material Bots estaban OCULTOS hasta su ola: no
+ * aportaban brillo durante el vuelo. Ahora cubren la superficie desde el
+ * principio, así que el 75% del enjambre pasó a brillar a pleno durante
+ * toda la formación. Atenuados se leen como metal apagado —que es lo que
+ * son antes de activarse— y el destello de activación tiene contra qué
+ * destacar.
+ */
+export const INERT_DIM = 0.45;
 
 export interface MaterialTimeline {
   /** Segundo en que termina el vuelo (los bots ya cubren la superficie). */
@@ -183,6 +195,15 @@ export function activationFlash(elapsed: number, t: MaterialTimeline, index: num
 }
 
 /**
+ * Cuánto brilla un agente según su avance: atenuado mientras es bot,
+ * pleno cuando ya es material. Interpola entre los dos, así la
+ * transformación también se ve como un encendido.
+ */
+export function inertDim(progress: number): number {
+  return INERT_DIM + (1 - INERT_DIM) * progress;
+}
+
+/**
  * Destello del instante de la transformación: cero en los dos extremos y
  * máximo a mitad de camino, así un agente no pasa de azul a rojo de golpe
  * (spec §17) sino que pega un brillo mientras cambia.
@@ -253,7 +274,13 @@ export function writeMaterialTint(
     const p = agentMaterialProgress(elapsed, timeline, regions[r].slot, spread[i]);
     // Sólo se paga un seno por agente cuando de verdad está pasando algo:
     // durante el parpadeo, o mientras ese agente se está transformando.
-    const gain = (flashing ? activationFlash(elapsed, timeline, i) : 1) * (p > 0 && p < 1 ? transitionFlash(p) : 1);
+    const flash = (flashing ? activationFlash(elapsed, timeline, i) : 1) * (p > 0 && p < 1 ? transitionFlash(p) : 1);
+    // La atenuación por avance va DESPUÉS del destello, no como un tope
+    // aparte: es lo que mantiene acotado el brillo total. Se probó un
+    // `Math.min(..., MAX_GAIN)` y resultó código muerto — con `inertDim`
+    // aplicada, ni el destello original de 2,4x llegaba al techo con
+    // ningún color real, así que la constante no hacía nada.
+    const gain = flash * inertDim(p);
     const mr = color[i * 3 + 0] / 255;
     const mg = color[i * 3 + 1] / 255;
     const mb = color[i * 3 + 2] / 255;

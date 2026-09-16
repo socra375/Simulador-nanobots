@@ -10,6 +10,7 @@ import {
 import {
   DEFAULT_NANOBOT_TIMINGS,
   groupWindow,
+  materialApex,
   planLayers,
   writeMicrobotFrame,
   writeNanobotFrame,
@@ -543,6 +544,16 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     for (let i = 0; i < settings.count; i++) {
       isMaterial[i] = formation.roles[i] === NANOBOT_ROLE.COLOR ? 1 : 0;
     }
+    // El ÁPICE: dónde se para la bola de Material Bots antes de
+    // derramarse. Lo comparten el vuelo y el material a propósito — si
+    // cada uno eligiera su origen, se verían dos animaciones peleadas.
+    const apex = materialApex(
+      formation.roles,
+      formation.points,
+      settings.count,
+      NANOBOT_ROLE.COLOR,
+      FORMATION_CENTER,
+    );
     materialMap = buildMaterialMap({
       points: formation.points,
       count: settings.count,
@@ -550,9 +561,10 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       pointColors: formation.pointColors,
       clusters: formation.colorClusters,
       center: FORMATION_CENTER,
-      // Los bots llegan del núcleo, así que el material se propaga desde
-      // el lado del núcleo hacia el opuesto (spec §15).
-      propagationOrigin: reactorCenter,
+      // Desde ARRIBA, no desde el núcleo: el material se derrama sobre el
+      // objeto como un líquido, siguiendo al mismo punto donde cae la
+      // bola de bots.
+      propagationOrigin: apex,
     });
     const travelDuration = 2 * NANOBOT_LAYER_DURATION;
     materialTimeline = planMaterialTimeline(travelDuration, materialMap.slots);
@@ -790,23 +802,36 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   }
 
   /**
-   * Qué tanda de material se está transformando en este instante, o -1 si
-   * ninguna. Con tandas solapadas puede haber dos a la vez: se devuelve la
-   * más avanzada que todavía no terminó, que es la que el núcleo está
-   * "entregando".
+   * Qué "entrega" del núcleo corresponde a este instante: -1 mientras los
+   * bots todavía vuelan, 0 al empezar la ACTIVACIÓN, y 1..slots por cada
+   * tanda de material.
+   *
+   * POR QUÉ ARRANCA EN LA ACTIVACIÓN Y NO EN LA PRIMERA TANDA. En la Fase
+   * 42 el primer pulso caía recién al empezar a aplicar el material, o
+   * sea en el último tramo de una formación de ~12 s, y duraba 0,9 s: en
+   * la práctica no se veía. El núcleo ENTREGA el material cuando la red
+   * se enciende, que es lo que la activación representa, así que ése es
+   * el momento del primer destello.
    */
   function activeSlot(elapsed: number): number {
-    if (!materialMap || elapsed < materialTimeline.activationEnd) return -1;
+    if (!materialMap || elapsed < materialTimeline.settleEnd) return -1;
+    if (elapsed < materialTimeline.activationEnd) return 0;
     const raw = Math.floor((elapsed - materialTimeline.activationEnd) / materialTimeline.slotStep);
-    return Math.min(Math.max(raw, 0), materialTimeline.slots - 1);
+    return Math.min(Math.max(raw, 0), materialTimeline.slots - 1) + 1;
   }
 
-  /** Color representativo de una tanda: el de su región más grande. */
+  /**
+   * Color con el que el núcleo destella en cada entrega. El 0 es la
+   * activación (todavía no se aplicó nada): usa el color DOMINANTE del
+   * objeto, que es lo que está por entregar. De ahí en más, el de la
+   * región más grande de esa tanda.
+   */
   function slotColor(slot: number): number | null {
     if (!materialMap) return null;
+    if (slot === 0) return materialMap.palette[0] ?? null;
     let best: { count: number; color: number } | null = null;
     for (const region of materialMap.regions) {
-      if (region.slot !== slot) continue;
+      if (region.slot !== slot - 1) continue;
       if (!best || region.count > best.count) best = { count: region.count, color: region.color };
     }
     return best ? best.color : null;

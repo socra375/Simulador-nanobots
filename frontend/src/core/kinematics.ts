@@ -134,13 +134,54 @@ export interface LayerPlan {
   travelDuration: number;
   /** Vuelo + etapas de material. Es el largo total de la animación. */
   totalDuration: number;
-  /** Centroide de la capa de material: adónde viaja la "bola" antes de abrirse. */
+  /**
+   * ÁPICE de la figura: adónde viaja la bola de Material Bots antes de
+   * derramarse. Ver `planLayers`.
+   */
   wave0Landing: [number, number, number];
 }
 
 /** Capa activa/animando en el progreso `elapsed`. */
 export function layerIndexAt(elapsed: number, layerCount: number, layerDuration: number): number {
   return Math.min(Math.floor(elapsed / layerDuration), layerCount - 1);
+}
+
+/**
+ * Cuánto por encima del punto más alto de la figura se para la bola antes
+ * de derramarse. Pegada a la superficie no se leería como algo que cae.
+ */
+export const APEX_CLEARANCE = 1.2;
+
+/**
+ * Punto donde se para la bola de Material Bots antes de derramarse: el
+ * más alto de la capa de material, un poco por encima.
+ *
+ * Es UNA función y no dos cálculos parecidos porque lo necesitan dos
+ * consumidores —la cinemática, para el vuelo, y el mapa de material, para
+ * el orden en que se transforman las regiones— y tienen que coincidir
+ * exactamente: si el vuelo derramara desde arriba y el material desde
+ * otro lado, se verían dos animaciones peleadas.
+ */
+export function materialApex(
+  roles: Uint8Array,
+  points: Float32Array,
+  count: number,
+  colorRole: number,
+  fallback: Vec3,
+): [number, number, number] {
+  let ax = 0, ay = -Infinity, az = 0;
+  let found = false;
+  for (let i = 0; i < count; i++) {
+    if (roles[i] !== colorRole) continue;
+    const y = points[i * 3 + 1];
+    if (y > ay) {
+      ay = y;
+      ax = points[i * 3 + 0];
+      az = points[i * 3 + 2];
+      found = true;
+    }
+  }
+  return found ? [ax, ay + APEX_CLEARANCE, az] : [fallback[0], fallback[1], fallback[2]];
 }
 
 /**
@@ -177,19 +218,43 @@ export function planLayers(
 ): LayerPlan {
   const layerCount = 2;
   const layerOf = new Uint8Array(count);
-  // Centroide de la capa de material: adónde viaja la bola antes de
-  // abrirse. Se acumula en el mismo pase que ya recorre los agentes.
-  let sumX = 0, sumY = 0, sumZ = 0, materialCount = 0;
+
+  // --- Pase 1: a qué capa pertenece cada agente ---
+  for (let i = 0; i < count; i++) {
+    layerOf[i] = roles[i] === colorRole ? 1 : 0;
+  }
+
+  // EL ÁPICE, y por qué no el centroide. La bola de Material Bots sale
+  // del núcleo, se PARA ARRIBA del objeto y recién ahí se derrama, como
+  // un líquido que se vuelca encima. Hasta la Fase 43 aterrizaba en el
+  // centroide de la capa —el medio de la figura— y desde ahí se abría en
+  // todas direcciones, que se lee como una explosión, no como algo que
+  // cae.
+  const wave0Landing = materialApex(roles, points, count, colorRole, fallbackLanding);
+
+  // --- Pase 2: orden de salida, ESPACIAL ---
+  //
+  // Cada capa mide su distancia desde donde LLEGA:
+  //
+  //   DETALLE  -> desde el núcleo. Sale volando de ahí, así que los más
+  //               cercanos se posan primero y la capa avanza hacia
+  //               afuera.
+  //   MATERIAL -> desde el ÁPICE. Los bots se posan de arriba hacia
+  //               abajo, que es lo que hace que el derrame se lea como
+  //               líquido y no como una esfera que se infla.
+  //
+  // Hasta la Fase 41 esto era `cursor / (n-1)`: el índice de creación,
+  // que la spec §15 prohíbe porque no tiene ninguna relación con la
+  // geometría.
   const dist = new Float32Array(count);
   const minDist = [Infinity, Infinity];
   const maxDist = [-Infinity, -Infinity];
-
   for (let i = 0; i < count; i++) {
-    const layer = roles[i] === colorRole ? 1 : 0;
-    layerOf[i] = layer;
-    const dx = points[i * 3 + 0] - propagationOrigin[0];
-    const dy = points[i * 3 + 1] - propagationOrigin[1];
-    const dz = points[i * 3 + 2] - propagationOrigin[2];
+    const layer = layerOf[i];
+    const from = layer === 1 ? wave0Landing : propagationOrigin;
+    const dx = points[i * 3 + 0] - from[0];
+    const dy = points[i * 3 + 1] - from[1];
+    const dz = points[i * 3 + 2] - from[2];
     dist[i] = Math.sqrt(dx * dx + dy * dy + dz * dz);
     // Se relee DEL ARRAY, ya redondeado a float32, antes de compararlo.
     // Comparando el float64 original, el mínimo guardado podía quedar
@@ -200,12 +265,6 @@ export function planLayers(
     const d = dist[i];
     if (d < minDist[layer]) minDist[layer] = d;
     if (d > maxDist[layer]) maxDist[layer] = d;
-    if (layer === 1) {
-      sumX += points[i * 3 + 0];
-      sumY += points[i * 3 + 1];
-      sumZ += points[i * 3 + 2];
-      materialCount++;
-    }
   }
 
   const delayFraction = new Float32Array(count);
@@ -224,10 +283,7 @@ export function planLayers(
     layerCount,
     travelDuration,
     totalDuration: travelDuration + materialDuration,
-    wave0Landing:
-      materialCount > 0
-        ? [sumX / materialCount, sumY / materialCount, sumZ / materialCount]
-        : [fallbackLanding[0], fallbackLanding[1], fallbackLanding[2]],
+    wave0Landing,
   };
 }
 
