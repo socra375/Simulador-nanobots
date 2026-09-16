@@ -1,10 +1,9 @@
 import GUI from "lil-gui";
 import type { SwarmParams } from "./swarm";
 import type { SwarmConfig } from "./config-client";
-import { resolveShapeName, listSupportedNames, registerCustomScan } from "./shapes";
+import { resolveShapeName, listSupportedNames } from "./shapes";
 import { addImageTo3DFolder } from "./ui/image-to-3d-panel";
 import { extractColorClustersFromFile, type ColorCluster } from "./image-color";
-import { buildVisualHullPoints, type ScanPhotos } from "./visual-hull";
 import { AGENT_STATE_NAMES } from "./swarm/agent-store";
 import { type SwarmDirector } from "./swarm/director";
 import { type CoverageInfo } from "./core/simulation";
@@ -28,11 +27,17 @@ export interface UiCallbacks {
   onParamsChange: (params: SwarmParams) => void;
   onSave: (config: SwarmConfig) => void;
   onLoad: () => void;
-  // Olas de color (0xRRGGBB + peso) extraídas de la foto adjuntada (ver
-  // image-color.ts pickColorClusters) — las usa el 4to rol de nanobots
-  // (COLOR, ver shapes.ts), una por sub-fase de revelado.
+  // Paleta de material (0xRRGGBB + peso) extraída de la foto adjuntada
+  // (ver image-color.ts pickColorClusters). Desde la Fase 42 define QUÉ
+  // colores hay, no quién los lleva: eso lo decide la posición.
   onFormShape: (canonicalShapeName: string, colorClusters: ColorCluster[]) => void;
   onReturnToCore: () => void;
+  /**
+   * Muestra la nube reconstruida en la ESCENA, o la esconde con count 0.
+   * Opcional: sin esto el panel Imagen → 3D sigue funcionando y sólo se
+   * pierde la vista previa.
+   */
+  onPreviewCloud?: (points: Float32Array, colors: Uint8Array | null, count: number) => void;
 }
 
 // Panel de control (lil-gui): cantidad de nanobots (20-10.000), velocidad
@@ -95,10 +100,10 @@ export function createControlPanel(state: UiState, callbacks: UiCallbacks): GUI 
   gui.add(actions, "cargar").name("Cargar configuración");
 
   addCommandsFolder(gui, callbacks);
-  addScanFolder(gui, callbacks);
   addImageTo3DFolder(gui, {
     onFormShape: callbacks.onFormShape,
     readNanobotCount: callbacks.readNanobotCount ?? (() => state.count),
+    onPreviewCloud: callbacks.onPreviewCloud ?? (() => {}),
   });
 
   return gui;
@@ -214,6 +219,90 @@ export function addCoveragePanel(gui: GUI): (readCoverage: () => CoverageInfo | 
     lastText = next;
     line.textContent = next;
   };
+}
+
+/**
+ * Panel de material (Fase 42): las regiones espaciales, la paleta, y de
+ * dónde salió cada color.
+ *
+ * LO QUE ESTE PANEL DICE Y OTROS NO DIRÍAN: si el reparto de color es
+ * OBSERVADO (la foto sabe dónde va cada tono) o APROXIMADO (sólo se conoce
+ * la paleta y las bandas son una decisión de presentación). Mostrar tres
+ * colores bonitos sin decir cuál de los dos casos es sería exactamente la
+ * clase de dato inventado que el resto del proyecto evita.
+ *
+ * El interruptor de DEBUG pinta cada región de un color distinto (spec
+ * §25). Es sólo de presentación: no toca el mapa de material ni el estado
+ * de ningún agente, y se apaga del todo.
+ */
+export function addMaterialPanel(
+  gui: GUI,
+  onDebugChange: (on: boolean) => void,
+): (read: () => MaterialPanelInfo | null) => void {
+  const folder = gui.addFolder("Material y regiones");
+
+  const line = document.createElement("div");
+  line.style.padding = "6px 10px 2px";
+  line.style.fontSize = "11px";
+  line.style.lineHeight = "1.6";
+  line.style.whiteSpace = "pre-wrap";
+  line.style.opacity = "0.85";
+  line.textContent = "sin figura";
+  folder.domElement.appendChild(line);
+
+  const swatches = document.createElement("div");
+  swatches.style.cssText = "display:flex;flex-wrap:wrap;gap:4px;padding:2px 10px 8px";
+  folder.domElement.appendChild(swatches);
+
+  const debugState = { regiones: false };
+  folder.add(debugState, "regiones").name("depurar regiones").onChange((v: boolean) => onDebugChange(v));
+
+  let lastPaint = -Infinity;
+  let lastText = "";
+  let lastPalette = "";
+
+  return (read) => {
+    const now = performance.now();
+    if (now - lastPaint < STATE_PANEL_INTERVAL_MS) return;
+    lastPaint = now;
+
+    const info = read();
+    const next = info
+      ? [
+          `${info.regions} ${info.regions === 1 ? "región" : "regiones"} · ${info.slots} ${info.slots === 1 ? "tanda" : "tandas"}`,
+          `${info.materialCount} Material Bots`,
+          info.phase,
+          info.sourceLabel,
+        ].join("\n")
+      : "sin figura";
+    if (next !== lastText) {
+      lastText = next;
+      line.textContent = next;
+    }
+
+    const key = info ? info.palette.join(",") : "";
+    if (key !== lastPalette) {
+      lastPalette = key;
+      swatches.replaceChildren();
+      for (const color of info?.palette ?? []) {
+        const chip = document.createElement("span");
+        chip.title = hexColor(color);
+        chip.style.cssText = `width:16px;height:16px;border-radius:3px;border:1px solid rgba(255,255,255,0.25);background:${hexColor(color)}`;
+        swatches.appendChild(chip);
+      }
+    }
+  };
+}
+
+export interface MaterialPanelInfo {
+  readonly regions: number;
+  readonly slots: number;
+  readonly materialCount: number;
+  readonly palette: readonly number[];
+  /** Etapa actual, ya en texto. */
+  readonly phase: string;
+  /** "color por posición" vs "paleta repartida en bandas (aproximado)". */
+  readonly sourceLabel: string;
 }
 
 function hexColor(value: number): string {
@@ -425,86 +514,3 @@ function addCommandsFolder(gui: GUI, callbacks: UiCallbacks): void {
   folder.domElement.appendChild(status);
 }
 
-// Carpeta "Escaneo 3D" (Fase 23): en vez de un nombre + 1 foto de
-// confirmación (ver addCommandsFolder), acá se suben 4 fotos reales del
-// MISMO objeto (frente/atrás/lateral izq./lateral der.) y se reconstruye
-// su forma 3D real por "visual hull" (ver visual-hull.ts) — sin nombre
-// que escribir, la forma sale de las fotos mismas. El color sigue
-// saliendo del histograma de la foto frontal (mismo mecanismo que
-// addCommandsFolder, sin cambios) — no hay color real por-punto en esta
-// fase.
-type ScanSlot = "front" | "back" | "left" | "right";
-const SCAN_SLOT_LABELS: Record<ScanSlot, string> = {
-  front: "Foto frontal",
-  back: "Foto trasera",
-  left: "Foto lateral izq.",
-  right: "Foto lateral der.",
-};
-
-function addScanFolder(gui: GUI, callbacks: UiCallbacks): void {
-  const folder = gui.addFolder("Escaneo 3D (4 fotos)");
-  const attached: Partial<Record<ScanSlot, File>> = {};
-
-  // Fase 23 (verificación con fotos reales): la reconstrucción falla más
-  // por encuadre inconsistente que por el algoritmo en sí — cada foto
-  // necesita mapear al MISMO objeto a la MISMA escala en la grilla de
-  // vóxeles compartida, así que un recorte/zoom distinto por vista rompe
-  // la reconstrucción aunque el fondo esté perfectamente limpio.
-  const tip = document.createElement("div");
-  tip.style.cssText = "font-size:10px;color:#8fa3ad;padding:2px 6px 6px;line-height:1.4;";
-  tip.textContent =
-    "Consejo: mismo fondo liso y contrastante, objeto centrado y a la MISMA distancia/zoom en las 4 fotos (no recortar cada una por separado).";
-  folder.domElement.appendChild(tip);
-
-  const status = document.createElement("div");
-  status.style.cssText = "font-size:11px;color:#4be3ff;padding:2px 6px;min-height:14px;";
-
-  function makeSlotInput(slot: ScanSlot): HTMLInputElement {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.style.display = "none";
-    input.dataset.scanSlot = slot; // selector estable para E2E
-    document.body.appendChild(input);
-    input.addEventListener("change", () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      attached[slot] = file;
-      status.textContent = `${SCAN_SLOT_LABELS[slot]}: ${file.name}`;
-    });
-    return input;
-  }
-
-  const slots: ScanSlot[] = ["front", "back", "left", "right"];
-  const inputs = Object.fromEntries(slots.map((slot) => [slot, makeSlotInput(slot)])) as Record<
-    ScanSlot,
-    HTMLInputElement
-  >;
-
-  const actions = {
-    reconstruir: async () => {
-      const missing = slots.find((slot) => !attached[slot]);
-      if (missing) {
-        status.textContent = `Falta adjuntar: ${SCAN_SLOT_LABELS[missing]}.`;
-        return;
-      }
-      status.textContent = "Reconstruyendo en 3D...";
-      const photos = attached as ScanPhotos;
-      const points = await buildVisualHullPoints(photos);
-      if (points.length === 0) {
-        status.textContent = "No se pudo reconstruir nada — probá con fondo más liso/contrastante.";
-        return;
-      }
-      const canonical = registerCustomScan(points);
-      const colorClusters = await extractColorClustersFromFile(photos.front);
-      status.textContent = "Formando: escaneo";
-      callbacks.onFormShape(canonical, colorClusters);
-    },
-  };
-
-  for (const slot of slots) {
-    folder.add({ fn: () => inputs[slot].click() }, "fn").name(SCAN_SLOT_LABELS[slot]);
-  }
-  folder.add(actions, "reconstruir").name("Reconstruir en 3D");
-  folder.domElement.appendChild(status);
-}

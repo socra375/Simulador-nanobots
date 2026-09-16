@@ -88,7 +88,6 @@ describe("formShapeWithRoles", () => {
         expect(formation).not.toBeNull();
         expect(formation!.points.length).toBe(count * 3);
         expect(formation!.roles.length).toBe(count);
-        expect(formation!.colorWave.length).toBe(count);
         expect(formation!.points.some((v) => Number.isNaN(v))).toBe(false);
       }
     }
@@ -121,35 +120,45 @@ describe("formShapeWithRoles", () => {
     expect(detail).toBe(250);
   });
 
-  it("sin clusters de color explícitos, todos los agentes COLOR quedan en la ola 0 (colorWaveCount=1)", () => {
+  it("una forma sin color por parte no trae color por punto: el material sale de la paleta y se declara aproximado", () => {
     const formation = formShapeWithRoles("esfera", 500)!;
-    expect(formation.colorWaveCount).toBe(1);
-    for (let i = 0; i < 500; i++) {
-      if (formation.roles[i] === NANOBOT_ROLE.COLOR) expect(formation.colorWave[i]).toBe(0);
-    }
+    // El caso FALLBACK del mapa de material: la foto dice QUÉ colores hay,
+    // no DÓNDE van. Que esto sea null es lo que hace que el sistema lo
+    // declare aproximado en vez de fingir que lo midió.
+    expect(formation.pointColors).toBeNull();
   });
 
-  it("con varios clusters de color, cada ola de COLOR tiene un tamaño proporcional a su peso y la suma cierra exacto", () => {
+  it("la paleta de la foto llega entera a la formación, sin repartir agentes por color", () => {
+    // FASE 42: antes esto verificaba que cada "ola" tuviera un tamaño
+    // proporcional a su peso — o sea, que el color de un agente saliera de
+    // su ola. Ese reparto ERA el bug: ponía los tres colores intercalados
+    // por todo el objeto. Ahora la formación sólo transporta la paleta y
+    // quién lleva cada color lo decide la posición (material/material-map).
     const clusters = [
       { color: 0xff0000, weight: 0.6 },
       { color: 0x00ff00, weight: 0.3 },
       { color: 0x0000ff, weight: 0.1 },
     ];
     const formation = formShapeWithRoles("esfera", 1000, undefined, clusters)!;
-    expect(formation.colorWaveCount).toBe(3);
-    const waveCounts = [0, 0, 0];
+    expect(formation.colorClusters).toEqual(clusters);
     let colorTotal = 0;
-    for (let i = 0; i < 1000; i++) {
-      if (formation.roles[i] !== NANOBOT_ROLE.COLOR) continue;
-      waveCounts[formation.colorWave[i]]++;
-      colorTotal++;
-    }
+    for (let i = 0; i < 1000; i++) if (formation.roles[i] === NANOBOT_ROLE.COLOR) colorTotal++;
     expect(colorTotal).toBe(750); // 75% fijo del total, ver test de ratios
-    expect(waveCounts[0] + waveCounts[1] + waveCounts[2]).toBe(colorTotal);
-    // Proporciones aproximadas 60/30/10 dentro del budget de COLOR.
-    expect(waveCounts[0]).toBeGreaterThan(waveCounts[1]);
-    expect(waveCounts[1]).toBeGreaterThan(waveCounts[2]);
-    expect(waveCounts[0] / colorTotal).toBeCloseTo(0.6, 1);
+  });
+
+  it("la capa de material es UNA muestra contigua, no varias del objeto entero", () => {
+    // La prueba de que las olas se fueron de verdad: los agentes de
+    // material son un bloque contiguo al final del array. Con las olas
+    // había N bloques, uno por color, cada uno cubriendo toda la figura.
+    const formation = formShapeWithRoles("cubo", 1000)!;
+    let firstColor = -1;
+    let lastDetail = -1;
+    for (let i = 0; i < 1000; i++) {
+      if (formation.roles[i] === NANOBOT_ROLE.COLOR && firstColor < 0) firstColor = i;
+      if (formation.roles[i] === NANOBOT_ROLE.DETAIL) lastDetail = i;
+    }
+    expect(firstColor).toBeGreaterThan(0);
+    expect(lastDetail).toBeLessThan(firstColor);
   });
 
   it("'cabeza' colorea por parte anatómica (piel/cabello/ojos/labios) con tonos fijos, ignorando la foto adjuntada", () => {
@@ -158,7 +167,22 @@ describe("formShapeWithRoles", () => {
       { color: 0xabcdef, weight: 0.5 },
     ];
     const formation = formShapeWithRoles("cabeza", 2000, undefined, photoClusters)!;
-    expect(formation.colorWaveCount).toBe(CABEZA_PARTS.length);
+    // Fase 42: "cabeza" dejó de ser un caso especial de olas. Cada parte
+    // anatómica es su propio generador, así que ahora produce COLOR POR
+    // PUNTO real — información espacial medida, no repartida.
+    expect(formation.pointColors).not.toBeNull();
+    const partColors = new Set(CABEZA_PARTS.map((p) => p.color));
+    let checked = 0;
+    for (let i = 0; i < 2000; i++) {
+      if (formation.roles[i] !== NANOBOT_ROLE.COLOR) continue;
+      const hex =
+        (formation.pointColors![i * 3] << 16) |
+        (formation.pointColors![i * 3 + 1] << 8) |
+        formation.pointColors![i * 3 + 2];
+      expect(partColors.has(hex)).toBe(true);
+      checked++;
+    }
+    expect(checked).toBeGreaterThan(0);
     expect(formation.colorClusters).toEqual(
       CABEZA_PARTS.map((p) => ({ color: p.color, weight: p.weight })),
     );

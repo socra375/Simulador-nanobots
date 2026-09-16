@@ -24,8 +24,8 @@
 //
 // QUÉ TIPOS DE TAREA EXISTEN Y POR QUÉ SÓLO ESOS:
 //
-// Están los cinco que tienen un handler real hoy. `REPAIR`, `TRANSFORM`,
-// `DISASSEMBLE` y `APPLY_MATERIAL` NO están declarados: un tipo de tarea
+// Están los seis que tienen un handler real hoy. `REPAIR`, `TRANSFORM` y
+// `DISASSEMBLE` NO están declarados: un tipo de tarea
 // sin nada que lo ejecute es una lista de enums que finge un sistema. Los
 // cuatro entran sin reescribir esto cuando lleguen sus consumidores,
 // porque la ventana sobre el reloj compartido y el `cancel` ya son
@@ -35,6 +35,10 @@
 // exoesqueleto dejó de ser un bulto único: las vigas (Union Bots) salen en
 // su propia ventana, después de los nodos (Microbots), así que ahora hay
 // algo real que ejecuta esa tarea.
+//
+// `SPREAD_MATERIAL` entró en la Fase 42 por el mismo motivo: cubrir la
+// superficie con los bots pasó a ser una etapa real y separada de aplicar
+// el material, no dos cosas que ocurrían mezcladas.
 
 import { BOT_TYPE, type BotType } from "./bot-types";
 
@@ -45,7 +49,23 @@ export const TASK_TYPE = {
   CONNECT_STRUCTURE: "CONNECT_STRUCTURE",
   /** Capa de DETALLE de Nanobots (la "carne" sobre el hueso). Reloj: nanobot. */
   FILL_STRUCTURE: "FILL_STRUCTURE",
-  /** Una ola de color. Hay una tarea por ola. Reloj: nanobot. */
+  /**
+   * Los Material Bots salen del núcleo y CUBREN LA SUPERFICIE ENTERA, se
+   * asientan y se activan — todavía como bots, sin material aplicado
+   * (spec §8). Reloj: nanobot.
+   *
+   * Fase 42: antes esta etapa no existía como tarea propia porque no
+   * existía como etapa: el color aparecía mientras los agentes todavía
+   * volaban, repartido en olas.
+   */
+  SPREAD_MATERIAL: "SPREAD_MATERIAL",
+  /**
+   * Una TANDA de regiones transformándose en material. Reloj: nanobot.
+   *
+   * Fase 42: `wave` ya no es "qué color pinta" sino "qué tanda de regiones
+   * activa". El color de cada agente lo decide su posición (ver
+   * material/material-map.ts) y esta tarea sólo decide cuándo se enciende.
+   */
   APPLY_COLOR: "APPLY_COLOR",
   /** Repliegue completo al núcleo. Recorre los dos relojes hacia atrás. */
   RETURN_TO_CORE: "RETURN_TO_CORE",
@@ -72,7 +92,7 @@ export interface Task {
   /** Ventana sobre el reloj, en segundos. */
   readonly t0: number;
   readonly t1: number;
-  /** Sólo para APPLY_COLOR: qué ola de color pinta. -1 en el resto. */
+  /** Sólo para APPLY_COLOR: qué tanda de regiones activa. -1 en el resto. */
   readonly wave: number;
   status: TaskStatus;
 }
@@ -96,10 +116,29 @@ export interface StructurePlanInput {
 }
 
 export interface LayerPlanInput {
-  /** Capas de Nanobots: 1 (DETALLE) + una por ola de color. */
+  /** Capas de VUELO de Nanobots: siempre 2 desde la Fase 42 (relleno + material). */
   layerCount: number;
   /** Duración de cada capa sobre el reloj de Nanobots. */
   layerDuration: number;
+  /**
+   * Las tandas de activación del material, o null si esta figura no lleva
+   * material (no debería pasar hoy, pero encolar tandas que nadie ejecuta
+   * sería el enum decorativo que este archivo evita a propósito).
+   *
+   * Sale de `planMaterialTimeline` — el director NO recalcula las ventanas
+   * por su cuenta: si lo hiciera, la cola de tareas podría decir una cosa
+   * mientras la pantalla muestra otra, que es justo lo que la Fase 29 vino
+   * a impedir.
+   */
+  material: {
+    /** Segundo en que arranca la primera tanda. */
+    start: number;
+    slots: number;
+    slotDuration: number;
+    slotStep: number;
+    /** Segundo en que todo el material está puesto. */
+    end: number;
+  } | null;
 }
 
 export interface SwarmDirector {
@@ -110,12 +149,13 @@ export interface SwarmDirector {
    * Arranca una formación nueva: descarta la cola anterior y encola el
    * exoesqueleto (nodos y, si esta figura tiene, uniones). Se llama apenas
    * el usuario pide la figura — en ese momento todavía no se sabe cuántas
-   * olas de color va a tener.
+   * regiones de material va a tener.
    */
   planStructure(plan: StructurePlanInput): void;
   /**
-   * Encola el relleno y una tarea por ola de color. Se llama cuando la
-   * forma ya se resolvió y recién ahí se conoce `layerCount`. Reemplaza
+   * Encola el relleno, la cobertura de material y una tarea por tanda de
+   * activación. Se llama cuando la forma ya se resolvió y recién ahí se
+   * conocen las regiones y su reparto temporal. Reemplaza
    * las tareas de Nanobots que hubiera (p. ej. si cambió la cantidad de
    * agentes a mitad de formación) y NO toca el exoesqueleto.
    */
@@ -134,8 +174,8 @@ export interface SwarmDirector {
    */
   sync(microbotElapsed: number, nanobotElapsed: number): void;
   /**
-   * Capa de Nanobots activa (0 = DETALLE, 1+ = ola de color). Es lo que la
-   * malla usa como `revealedColorWaves`: sale de la cola de tareas, no de
+   * Capa de VUELO activa: 0 = relleno (DETALLE), 1 = material. Es lo que
+   * decide qué rol ya se puede dibujar, y sale de la cola de tareas, no de
    * una cuenta suelta.
    */
   nanobotLayerIndex(nanobotElapsed: number): number;
@@ -160,6 +200,7 @@ export const TASK_EXECUTOR: Record<TaskType, BotType> = {
   [TASK_TYPE.CREATE_STRUCTURE]: BOT_TYPE.MICROBOT,
   [TASK_TYPE.CONNECT_STRUCTURE]: BOT_TYPE.UNION,
   [TASK_TYPE.FILL_STRUCTURE]: BOT_TYPE.NANOBOT,
+  [TASK_TYPE.SPREAD_MATERIAL]: BOT_TYPE.MATERIAL,
   [TASK_TYPE.APPLY_COLOR]: BOT_TYPE.MATERIAL,
   // El repliegue lo hace el enjambre entero, no un tipo especializado.
   // Se marca con NANOBOT porque son la mayoría, y queda anotado para que
@@ -176,7 +217,8 @@ const TASK_LABELS: Record<TaskType, string> = {
   CREATE_STRUCTURE: "exoesqueleto",
   CONNECT_STRUCTURE: "uniones",
   FILL_STRUCTURE: "relleno",
-  APPLY_COLOR: "color",
+  SPREAD_MATERIAL: "cobertura",
+  APPLY_COLOR: "material",
   RETURN_TO_CORE: "repliegue",
 };
 
@@ -187,6 +229,9 @@ export function createSwarmDirector(): SwarmDirector {
   // topar el índice en la última capa, igual que hacía layerIndexAt.
   let layerCount = 1;
   let layerDuration = 1;
+  // Largo total de la animación de Nanobots (vuelo + material). Lo necesita
+  // el repliegue, que recorre ese mismo reloj hacia atrás.
+  let totalDuration = 1;
   let retracting = false;
 
   function make(type: TaskType, clock: TaskClock, t0: number, t1: number, wave = -1): Task {
@@ -228,11 +273,22 @@ export function createSwarmDirector(): SwarmDirector {
       // de una capa llega justo cuando arranca la siguiente, sin salto
       // (ver writeNanobotFrame).
       tasks.push(make(TASK_TYPE.FILL_STRUCTURE, "nanobot", 0, layerDuration));
-      for (let w = 0; w < layerCount - 1; w++) {
-        tasks.push(
-          make(TASK_TYPE.APPLY_COLOR, "nanobot", (w + 1) * layerDuration, (w + 2) * layerDuration, w),
-        );
+      const travelEnd = layerCount * layerDuration;
+      const m = plan.material;
+      if (!m) {
+        totalDuration = travelEnd;
+        return;
       }
+      // La cobertura llega hasta el arranque de la primera tanda: incluye
+      // el vuelo, el asentamiento y el parpadeo de activación, que son las
+      // tres cosas que pasan con los bots ya puestos y todavía sin
+      // material.
+      tasks.push(make(TASK_TYPE.SPREAD_MATERIAL, "nanobot", layerDuration, m.start));
+      for (let w = 0; w < m.slots; w++) {
+        const t0 = m.start + w * m.slotStep;
+        tasks.push(make(TASK_TYPE.APPLY_COLOR, "nanobot", t0, t0 + m.slotDuration, w));
+      }
+      totalDuration = m.end;
     },
 
     planReturn(): void {
@@ -244,7 +300,7 @@ export function createSwarmDirector(): SwarmDirector {
           t.status = TASK_STATUS.CANCELLED;
         }
       }
-      tasks.push(make(TASK_TYPE.RETURN_TO_CORE, "nanobot", 0, layerCount * layerDuration));
+      tasks.push(make(TASK_TYPE.RETURN_TO_CORE, "nanobot", 0, totalDuration));
     },
 
     clear(): void {

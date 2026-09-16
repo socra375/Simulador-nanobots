@@ -65,37 +65,124 @@ entero.
 | Microbots | Nodo | Icosaedro chico celeste | Anclas del exoesqueleto (*farthest-point sampling*), acotadas a un máximo (`MICROBOT_ANCHOR_CAP`) para que el cálculo (~O(n²)) no se trabe con conteos altos. |
 | Microbots | Viga | Cilindro chico celeste | Conecta cada ancla con su vecina (MST + vecinos cercanos) — la mayoría del budget de Microbots, ya que son baratas de generar a cualquier escala. |
 | Nanobots | **Detalle** | Esfera sólida emissive verde (gris apagado apenas arranca Color) | 25% del total de Nanobots. Relleno de base — primera capa en salir, escalonada agente por agente. |
-| Nanobots | **Color** | Esfera sólida emissive (ligeramente más grande) | **75% FIJO del total** de Nanobots. Repartido en hasta **4 "olas" de color**, una por cada zona de color reconociblemente distinta de la foto (ver abajo) — cada ola es su propia capa, sale recién cuando termina la anterior. |
+| Nanobots | **Color** (Material Bots) | Prisma sólido emissive (ligeramente más grande), con el color por INSTANCIA | **75% FIJO del total** de Nanobots. Salen TODOS en una sola capa y cubren la superficie entera; el material aparece después, región por región (ver abajo). |
 
-### Varias olas de color
+### El material sale de la posición, no de la ola (Fase 42)
 
-Si la foto tiene varias zonas de color bien distintas (p.ej. una remera
-roja y un pantalón azul), no sale un solo color promedio: `frontend/src/
-image-color.ts` (`pickColorClusters`) arma un histograma de color y
-agrupa los buckets por **proximidad** (tonos parecidos de una misma zona
-—ruido de cuantización— se funden en una sola ola, no se separan en dos),
-quedándose con hasta 4 clusters ordenados por peso (fracción de pixeles
-válidos de la foto, ignorando fondo blanco/negro/transparente). Todo
-100% en el navegador, sin IA/backend de visión.
+**El problema que esto arregla.** Hasta la Fase 41, la capa de Color se
+generaba como N "olas", y cada ola era un **muestreo independiente de la
+silueta completa** con un color plano propio. Con una foto roja y dorada,
+la ola roja esparcía rojo por todo el objeto y la dorada esparcía dorado
+por todo el objeto. En pantalla eso es un damero:
 
-Cada cluster es una ola de Color independiente, con su propio
-`InstancedMesh`/color real (no un tinte compartido), cada una con una
-cantidad de nanobots proporcional a su peso en la foto (una foto 70% roja
-/ 30% azul da una ola roja bastante más grande que la azul). Cada ola cubre
-una MUESTRA INDEPENDIENTE de toda la silueta (no una región geográfica de
-la figura — no hay forma de saber qué parte de la foto corresponde a qué
-parte de la figura 3D, ya que la forma sale del nombre escrito, no de la
-imagen). Detalle y las olas de Color salen en **capas secuenciales**
-(Detalle → ola 0 → ola 1 → ...): una capa entera tiene que terminar de
-asentarse antes de que se abra la siguiente — dentro de cada capa, cada
-nanobot vuela individualmente con su propio instante de salida (ver
-"Notas de rendimiento"), así el efecto es una ola/flujo de nanopartículas
-que recorre la figura, no un bloque sincronizado ni un revelado instantáneo.
+```
+🔴 🟡 🔴 🟡 🔴
+🟡 🔴 🟡 🔴 🟡
+🔴 🟡 🔴 🟡 🔴
+```
+
+El color lo decidía la **ola**. Ahora lo decide la **posición**:
+
+```
+color / material  =  POSICIÓN + REGIÓN     (no: = OLA)
+```
+
+**El mapa de material** (`frontend/src/material/material-map.ts`) le
+asigna a cada destino su color ANTES de que nadie se mueva, y agrupa los
+destinos en **regiones contiguas** del mismo material — componentes
+conexas por 6 vecinos sobre una grilla de vóxeles, con la condición extra
+de que dos celdas vecinas sólo se unen si llevan el mismo material. Es el
+mismo vecindario e indexado que ya usan `surfacePoints` y
+`findComponents`, así que "contiguo" significa lo mismo en todo el
+proyecto.
+
+La resolución de esa grilla es **adaptativa**, y no por gusto: con una
+resolución fija, a pocos agentes cada uno cae en su propia celda, ninguna
+celda toca a otra y la superficie se parte en tantas regiones como
+agentes. Medido con una nube de 1.728 puntos a res 32: daba 1.728
+regiones de un agente cada una. La contigüidad no es propiedad de la
+grilla sola, sino de la grilla **en relación a la densidad** de la nube.
+
+**Dos procedencias, y la diferencia se dice:**
+
+| Procedencia | Cuándo | Qué se sabe |
+|---|---|---|
+| `OBSERVED` | Escaneo desde imagen, o formas con partes de color propio (hoy "cabeza": piel, cabello, ojos, labios) | Cada punto lleva **su** color, con la fidelidad de la foto. Un rojo con sombras y reflejos conserva sus tonos: el material agrupa, no aplana. |
+| `FALLBACK` | Las 17 figuras predefinidas | De la foto sólo se conoce la **paleta** y sus proporciones, no dónde va cada color. Se reparte en bandas espaciales contiguas a lo largo del eje más largo de la figura, y el panel lo declara: *"paleta repartida en bandas (aproximado)"*. |
+
+"Cabeza" dejó de ser un caso especial: sus cuatro partes anatómicas son
+generadores distintos, así que producen color por punto igual de real que
+un escaneo.
+
+### Cubrir, activar, transformar
+
+La ola no desapareció — **cambió de trabajo**. Antes repartía color;
+ahora activa una región. La secuencia es:
+
+```
+SPREAD      los Material Bots vuelan y cubren la superficie ENTERA,
+            con su color de identidad. Todavía se ven bots.
+SETTLE      pausa breve: el objeto cubierto de bots, sin material.
+ACTIVATION  parpadeo, determinista por índice de agente (ángulo áureo),
+            con envolvente creciente: arranca salpicado y termina con
+            toda la red encendida.
+FORMATION   cada tanda de regiones se transforma, y dentro de cada región
+            el material avanza desde la semilla hacia afuera.
+```
+
+La **semilla** de cada región es su agente más cercano al núcleo, y las
+regiones se encienden en orden de cercanía al núcleo: el material recorre
+la superficie desde donde llegan los bots. El escalonado dentro de una
+capa también dejó de ser el orden del array (`cursor / (n-1)`) y pasó a
+ser la distancia normalizada al núcleo.
+
+Las tandas están **acotadas** (`MAX_ACTIVATION_SLOTS = 6`) y se solapan un
+25%. Las regiones conservan su identidad y su material; lo que se acota es
+en cuántos momentos distintos se encienden, para que un objeto con muchas
+manchas no tarde un minuto en formarse.
+
+### Cómo llega el color a la GPU
+
+Todo eso viaja en **un tint por instancia en floats** sobre un material
+blanco, multiplicado por el parche de shader de
+`rendering/instance-color.ts` tanto en el color difuso como en la
+radiancia emissive. Que sean floats y puedan pasarse de 1 es lo que
+permite el parpadeo y el destello de transformación **sin un shader
+nuevo**: un tint de 2.0 es literalmente el doble de brillo, y el bloom lo
+recoge.
+
+Como el tint es una **función pura del reloj**, el repliegue sale gratis:
+correr el reloj hacia atrás revierte la transformación (material →
+agentes → vuelo) sin una sola línea de código de "deshacer". Y por eso el
+repliegue empieza con el objeto quieto mientras el material se revierte,
+y recién después arranca la espiral.
+
+Esto además eliminó las cuatro mallas por ola: existían sólo para darle a
+cada ola un color plano, y el tint por instancia las volvió innecesarias.
+La población de Nanobots pasó de **5 InstancedMesh a 2**.
+
+**Modo DEBUG de regiones** (panel "Material y regiones"): pinta cada
+región de un color distinto. Es puramente de presentación — no toca el
+mapa de material ni el estado de ningún agente, y se apaga del todo.
+
+### De dónde sale la paleta
+
+`frontend/src/image-color.ts` (`pickColorClusters`) arma un histograma de
+color de la foto y agrupa los buckets por **proximidad** (tonos parecidos
+de una misma zona —ruido de cuantización— se funden en un solo material),
+quedándose con hasta 4 clusters ordenados por peso. Todo 100% en el
+navegador, sin IA ni backend de visión.
+
+Cuando la figura trae color por punto, la paleta sale de **la nube**, no
+de la foto: `paletteFromPointColors` comparte el merge por proximidad
+pero **no** los filtros de fondo. En una foto un negro casi puro suele ser
+fondo; en una nube ya segmentada es la rueda del auto, y descartarlo
+dejaría sin material justo a las partes más contrastadas.
 
 Detalle **pierde su color de rol fijo y pasa a un gris apagado** apenas
-arranca la primera ola de Color, así el color dominante real de la foto
-(Color) es el que predomina visualmente en toda la figura una vez que
-llega, con Detalle en gris apenas asomando entre las esferas.
+sale la capa de material, así el color real del objeto es el que
+predomina visualmente, con Detalle en gris apenas asomando entre los
+prismas.
 
 Al formar una figura, la física boid (`swarm.step`, cohesión/separación/
 alineación/seek) **no corre en absoluto** — los Nanobots se mueven 100%
@@ -201,10 +288,15 @@ voxel/
 
 - **Estado de los agentes**: cuántos están en el núcleo, viajando,
   ensamblando, asentados, volviendo o en reposo.
-- **Cola de tareas**: exoesqueleto → uniones → relleno → una tarea por ola
-  de color, con su estado. Es la misma secuencia que se ve en pantalla: las
-  ventanas de los grupos salen de una sola fuente (`groupWindow`), así que
-  la cola no puede describir un orden distinto del que se anima.
+- **Cola de tareas**: exoesqueleto → uniones → relleno → cobertura → una
+  tarea por tanda de material, con su estado. Es la misma secuencia que se
+  ve en pantalla: las ventanas salen de una sola fuente (`groupWindow` y
+  `planMaterialTimeline`), así que la cola no puede describir un orden
+  distinto del que se anima.
+- **Material y regiones**: cuántas regiones espaciales encontró, en
+  cuántas tandas se encienden, la paleta, la etapa actual, y —lo que
+  ningún otro panel diría— si el reparto de color es **observado** o
+  **aproximado**.
 - **Cobertura de la figura**: qué fracción del volumen de la forma ocupan
   realmente los nanobots. Responde a "¿me alcanzan los agentes para esta
   figura?", que antes sólo se podía adivinar mirando.
@@ -479,6 +571,21 @@ aprendió midiendo, y que conviene no volver a adivinar:
 | tras arreglar 6 bugs de estabilidad | 61,0 MB | nada: eran arreglos de corrección, no de memoria |
 | tras borrar roles muertos | 54,2 MB | borrar código que no se ejecutaba |
 | tras capacidad adaptativa de las mallas | 33,5 MB | dejar de reservar para agentes inexistentes |
+| tras el material por regiones (Fase 42-43) | 34-37 MB | cuatro `InstancedMesh` menos (las mallas por ola), contra el tint por instancia que sí ocupa |
+
+Y una lección sobre el TIEMPO DE CUADRO, no sobre el heap. El material por
+regiones escribía el tint de cada agente y lo subía a la GPU en cada
+cuadro: a 10.000 agentes el cuadro al formar pasó de 25,06 ms (línea base)
+a 33,84 ms. El arreglo no fue optimizar el cálculo sino no hacerlo — el
+tint sólo puede cambiar durante el parpadeo y la transformación; en el
+vuelo, el asentamiento y una vez completo es constante. Medido después:
+**18,70 ms**, por debajo de la línea base. A 3.000 agentes quedan +1,5 ms
+contra la línea base, y eso sí es el costo real de las etapas nuevas.
+
+Un detalle que conviene no repetir: sacar las cuatro mallas por ola **no**
+bajó los draw calls (19/21/23 antes y después). Las mallas sin usar ya
+dibujaban cero instancias. Lo que se ganó son cuatro objetos menos y sus
+`instanceMatrix`, no llamadas de dibujo.
 
 Las dos mejoras reales de memoria vinieron de **sacar** cosas, no de
 agregar optimizaciones. En cambio las "optimizaciones" intuitivas
@@ -492,10 +599,22 @@ el tope de `dt` del loop hacen que una formación de ~12 s nominales tarde
 bastante más en reloj de pared. Es un artefacto del entorno de medición,
 no un problema del simulador.
 
-## Imagen → 3D: de una foto al objeto construido (Fases 38-41)
+## Imagen → 3D: de una foto al objeto construido (Fases 38-43)
 
 El panel **"Imagen → 3D"** toma UNA sola imagen y la convierte en un
 objeto que el enjambre construye, con los colores reales de la foto.
+
+**La reconstrucción se ve EN LA ESCENA, no en el menú (Fase 43).** Al
+terminar de reconstruir, la nube de puntos aparece donde se arma todo, en
+el mismo lugar y a la misma escala en que la va a construir el enjambre,
+y se la puede girar con los controles de cámara de siempre. Antes salía
+proyectada en una miniatura de 240 px dentro de la carpeta del panel, que
+es justamente donde no se puede hacer lo único que importa de una
+reconstrucción 3D: mirarla desde otro ángulo y ver si el volumen cerró.
+Las etapas 2D —imagen, máscara, profundidad, procedencia— sí se quedan en
+el panel, porque son imágenes. La vista previa es sólo presentación: no
+crea agentes, no toca la simulación, y se apaga sola en cuanto el enjambre
+empieza a construir.
 
 ```
 imagen -> máscara -> profundidad -> nube 3D con color
@@ -562,20 +681,37 @@ las asuma:
   separación, alineación) a escala visual. No hay fuerzas de van der
   Waals, ni movimiento browniano, ni química.
 - **La forma no sale de la foto en "Comandos".** Ahí la foto sirve como
-  confirmación de UX y para extraer olas de color; la geometría viene de
-  los generadores de `shapes/`. Para reconstruir geometría desde una
-  imagen está el panel "Imagen → 3D" (ver arriba).
+  confirmación de UX y para extraer la PALETA de material; la geometría
+  viene de los generadores de `shapes/`. Para reconstruir geometría desde
+  una imagen está el panel "Imagen → 3D" (ver arriba).
+- **En las figuras predefinidas, DÓNDE va cada color es una
+  aproximación.** La foto dice qué colores hay y en qué proporción, no en
+  qué parte de la figura van (la forma sale del nombre escrito, no de la
+  imagen). El reparto en bandas espaciales es una decisión de
+  presentación, y el panel "Material y regiones" lo dice con todas las
+  letras: *"paleta repartida en bandas (aproximado)"*. Con color por punto
+  real —el escaneo desde imagen, o "cabeza"— pasa a decir *"color por
+  posición"*.
+- **Las regiones son contiguas en la medida en que la nube lo permite.**
+  La grilla de regiones ajusta su resolución a la densidad de agentes,
+  pero con conteos bajos las celdas son gruesas y dos manchas de colores
+  distintos que se tocan pueden fundirse en el borde. Las esquirlas por
+  debajo del 1% se absorben en la región grande más cercana del mismo
+  material, así que no producen tandas de activación propias.
 - **Una sola imagen no alcanza para una reconstrucción exacta.** No
   contiene información de profundidad: lo que se obtiene es una
   ESTIMACIÓN, y la UI lo dice siempre. El sistema informa qué fracción de
   la geometría se vio de verdad y cuánta infirió. Con confianza baja
   rotula el resultado como "Reconstrucción aproximada".
-- **El escaneo 3D por 4 fotos sobre-aproxima.** Es un visual hull: las
-  concavidades que no se ven desde ninguna de las 4 vistas quedan
-  rellenas. Tampoco hay alineación automática entre fotos, así que el
-  encuadre y el zoom tienen que ser consistentes en las 4 tomas — eso es
-  una limitación de la técnica, no del código, y la UI lo avisa antes de
-  intentarlo.
+- **El escaneo por 4 fotos se retiró (Fase 43).** Era un visual hull, y
+  pedía algo que en la práctica casi nadie lograba: cuatro tomas del mismo
+  objeto con el MISMO encuadre, zoom y distancia, sobre fondo liso. Con
+  cualquier desalineación la reconstrucción salía peor que la de una sola
+  imagen, que ya cubre el caso. El tallado por siluetas sigue en
+  `visual-hull.ts` y sus tests siguen corriendo: son la prueba de que la
+  grilla de vóxeles generalizada (`voxel/grid.ts`) da exactamente los
+  mismos vóxeles que la implementación a mano que reemplazó. Lo que se
+  quitó es la carpeta de UI y la carga de las 4 fotos.
 - **La física corre sólo en reposo.** Al formar una figura los agentes se
   mueven por animación scripted, no por convergencia física.
 - **No hay medición de FPS real con GPU.** Los números de arriba son
@@ -591,11 +727,12 @@ entre lo que funciona y lo que no existe:
 
 - Conexiones entre agentes y hashing espacial expuesto desde C++ (hoy la
   grilla existe en `boids.cpp` pero no exporta la lista de vecinos).
-- Materiales por agente y reparación de huecos. La grilla de vóxeles ya
-  devuelve las celdas faltantes (`validateCoverage`), que es justo la
-  entrada que necesita la reparación; falta el handler que las llene.
-- Los tipos de tarea `REPAIR`, `TRANSFORM`, `DISASSEMBLE` y
-  `APPLY_MATERIAL`. **No están declarados a propósito**: un tipo de tarea
+- Reparación de huecos. La grilla de vóxeles ya devuelve las celdas
+  faltantes (`validateCoverage`), que es justo la entrada que necesita la
+  reparación; falta el handler que las llene. (El material POR AGENTE sí
+  existe desde la Fase 42: ver "El material sale de la posición".)
+- Los tipos de tarea `REPAIR`, `TRANSFORM` y `DISASSEMBLE`. **No están
+  declarados a propósito**: un tipo de tarea
   sin nada que lo ejecute es una lista de enums que finge un sistema.
   Entran cuando lleguen sus consumidores, sin reescribir el director. Los
   TIPOS DE BOT `REPAIR` y `TRANSFORM` sí están declarados (el store y el
@@ -614,4 +751,8 @@ entre lo que funciona y lo que no existe:
   visión sólo se podría devolver "desconocido" siempre, que es el módulo
   decorativo que el proyecto evita. Entra con el proveedor externo.
 - Pausar el pipeline etapa por etapa.
+- Bajar el material al interior del objeto. Hoy los Material Bots cubren
+  la SUPERFICIE, que es lo que se ve; pintar vóxeles internos gastaría
+  agentes en algo invisible, y si alguna vez hiciera falta tiene que ser
+  una decisión explícita del plan de construcción, no un efecto lateral.
 - Comandos en lenguaje natural.

@@ -49,47 +49,55 @@ export const ROLE_RATIO_COLOR = 0.75;
 // relleno (DETALLE, ~25% del total) y pintura (COLOR, 75% fijo). El
 // 25% restante (después de COLOR) va entero a DETALLE.
 
-// Una "ola" de color: un grupo de agentes COLOR pintados con el mismo tono
-// (ver image-color.ts pickColorClusters), revelado como su propia sub-fase
-// (ver PHASE_COUNT dinámico en main.ts) — así, si la foto tiene varias
-// zonas de color reconociblemente distintas, salen de a una por vez en vez
-// de mezclarse todas juntas.
+// Paleta de material de una figura: los colores que el objeto lleva y en
+// qué proporción.
+//
+// FASE 42 — QUÉ CAMBIÓ Y POR QUÉ. Hasta la Fase 41 esto era una "ola de
+// color": un grupo de agentes pintados todos del mismo tono, y cada ola
+// era un MUESTREO INDEPENDIENTE DE LA SILUETA COMPLETA. El resultado era
+// que rojo y dorado quedaban intercalados agente por agente sobre todo el
+// objeto — el damero. La ola decidía el color, que es exactamente la
+// dependencia que había que romper.
+//
+// Ahora esto es sólo una PALETA: qué colores hay y cuánto pesa cada uno.
+// Dónde va cada color lo decide la posición (ver material/material-map.ts)
+// y cuándo aparece lo decide la activación por regiones (ver
+// material/material-animation.ts).
 export interface ColorClusterInput {
-  color: number; // 0xRRGGBB — informativo, no se usa acá (ver nanobot-mesh.ts)
-  weight: number; // fracción del budget de COLOR que le toca a esta ola
+  color: number; // 0xRRGGBB
+  weight: number; // fracción del material que representa este color
 }
 
 export interface ShapeFormation {
   points: Float32Array; // count*3 floats, ya trasladados a `center`
   roles: Uint8Array<ArrayBufferLike>; // largo count, uno de NANOBOT_ROLE por agente
-  // Para agentes COLOR: a qué ola (índice dentro del array de clusters
-  // pasado a formShapeWithRoles) pertenece — 0 para el resto de los roles.
-  colorWave: Uint8Array<ArrayBufferLike>; // largo count
-  // Cuántas olas de color tiene esta formación (>= 1 siempre) — main.ts lo
-  // usa para saber cuántas sub-fases de revelado de COLOR debe recorrer.
-  colorWaveCount: number;
-  // Color+peso REALMENTE usado para armar cada ola (en el mismo orden que
-  // `colorWave`) — normalmente un eco de los `colorClusters` recibidos por
-  // parámetro (derivados de la foto), pero para "cabeza" (Fase 21) son los
-  // 4 tonos fijos de CABEZA_PARTS en vez de la foto. main.ts solo necesita
-  // leer este campo para pintar bien cada ola, sin duplicar el criterio de
-  // "es cabeza o no" fuera de este archivo.
+  /**
+   * Paleta de material de esta figura. Para casi todas las formas es un eco
+   * de los clusters derivados de la foto; para "cabeza" son los tonos fijos
+   * de sus partes anatómicas (CABEZA_PARTS).
+   *
+   * Sólo se usa como paleta de respaldo cuando `pointColors` es null: si la
+   * figura trae color por punto, el color sale de ahí y esto queda como
+   * información para la UI.
+   */
   colorClusters: ColorClusterInput[];
   /**
    * Color del objeto por agente (count*3 bytes RGB), o null si esta forma
-   * no lo trae — el caso de las 17 formas predefinidas, donde el color
-   * sale del histograma de la foto repartido en olas (Fase 40).
+   * no lo trae.
    *
-   * Sólo tiene valores útiles en las posiciones de los agentes con rol
+   * Tiene valores útiles SÓLO en las posiciones de los agentes con rol
    * COLOR: son los Material Bots, los únicos que llevan el material del
-   * objeto. Los de DETALLE quedan en cero y el render ni los mira.
+   * objeto (spec §14). Los de DETALLE quedan en cero.
+   *
+   * Es no-null en dos casos, y los dos son información espacial REAL:
+   *  - el escaneo desde imagen, donde cada punto lleva el píxel del que
+   *    salió;
+   *  - las formas con partes de color propio (hoy "cabeza": piel, cabello,
+   *    ojos y labios son generadores distintos, así que cada punto sabe de
+   *    qué parte es).
+   *
+   * Cuando es null, la figura no tiene información de DÓNDE va cada color y
+   * el mapa de material lo declara como aproximado (MATERIAL_SOURCE.FALLBACK).
    */
   pointColors: Uint8Array | null;
 }
-
-// Árbol de expansión mínima (Prim, O(anchorCount²) — trivial para los
-// tamaños en juego, se calcula una sola vez por click en "Formar objeto")
-// sobre las anclas de ESTRUCTURA: garantiza que TODAS queden conectadas en
-// una sola red, sin importar cuántos nanobots de RELACION haya disponibles.
-// Elegir pares al azar (como antes) podía dejar zonas enteras de la figura
-// sin ninguna conexión — la "segunda capa a medio hacer" — mientras otras

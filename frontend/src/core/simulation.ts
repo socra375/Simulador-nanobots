@@ -25,6 +25,17 @@ import { getShape, shapeRevision } from "../shapes/registry";
 import { validateCoverage, voxelizePoints, type VoxelGrid } from "../voxel/grid";
 import { findComponents, type ComponentReport } from "../voxel/validate";
 import { buildMorphSource } from "../voxel/correspondence";
+import { buildMaterialMap, type MaterialMap } from "../material/material-map";
+import {
+  materialPhaseAt,
+  materialTintIsStatic,
+  planMaterialTimeline,
+  writeMaterialTint,
+  MATERIAL_PHASE,
+  type MaterialPhase,
+  type MaterialTimeline,
+} from "../material/material-animation";
+import { botVisual } from "../swarm/bot-config";
 
 // Simulación del enjambre (Fase 27c).
 //
@@ -119,13 +130,10 @@ export interface NanobotMeshApi {
     roles: Uint8Array<ArrayBufferLike>,
     formationTargets: Float32Array,
     visibleRoles: RoleVisibility,
-    colorWave: Uint8Array<ArrayBufferLike>,
-    revealedColorWaves: number,
   ): void;
   setVisible(visible: boolean): void;
-  setColorClusters(clusters: ColorCluster[]): void;
-  /** Color del objeto por agente, o null para volver al color por olas. */
-  setPointColors(colors: Uint8Array | null): void;
+  /** Tint por agente (count*3 floats), o null para el neutro. */
+  setInstanceTint(tint: Float32Array | null): void;
   setSkeletonGrayscale(active: boolean): void;
 }
 
@@ -228,6 +236,14 @@ export interface SimState {
    */
   readonly typeCounts: Uint32Array;
   /**
+   * Mapa de material de la figura en curso, o null en reposo. Lo lee el
+   * panel para mostrar regiones, paleta y si el reparto es observado o
+   * aproximado.
+   */
+  readonly materialMap: MaterialMap | null;
+  /** Etapa del material (cubriendo / activación / formando / completo). */
+  readonly materialPhase: MaterialPhase;
+  /**
    * Derivado, NO almacenado. Antes existía un `mode` aparte que se seteaba
    * en paralelo con `currentShapeName` y podía quedar desfasado: por
    * ejemplo `returnToCore()` ponía `mode = "idle"` mientras las otras dos
@@ -250,8 +266,29 @@ export interface Simulation {
   setNanobotCount(count: number): void;
   setMicrobotCount(count: number): void;
   applyParams(): void;
+  /**
+   * Modo DEBUG de regiones (spec §25): pinta cada región con un color
+   * distinto en vez del material real. Es puramente de presentación — no
+   * toca el mapa de material ni el estado de ningún agente.
+   */
+  setRegionDebug(on: boolean): void;
+  readonly regionDebug: boolean;
   /** Sólo para tests/depuración: posiciones escritas en el último cuadro. */
   readonly renderPositions: Float32Array;
+}
+
+/**
+ * 0xRRGGBB -> tripla 0..1 en `out`, el espacio en el que trabaja el tint.
+ *
+ * Escribe en un buffer del llamador porque esto se consulta una vez por
+ * cuadro: devolver un array nuevo sería una asignación por cuadro para
+ * nada.
+ */
+function hexToUnit(hex: number, out: [number, number, number]): [number, number, number] {
+  out[0] = ((hex >> 16) & 0xff) / 255;
+  out[1] = ((hex >> 8) & 0xff) / 255;
+  out[2] = (hex & 0xff) / 255;
+  return out;
 }
 
 export function createSimulation(deps: SimulationDeps): Simulation {
@@ -260,7 +297,6 @@ export function createSimulation(deps: SimulationDeps): Simulation {
 
   let currentShapeName: string | null = null;
   let currentColorClusters: ColorCluster[] = DEFAULT_COLOR_CLUSTERS;
-  let currentColorWave: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
   let currentRoles: Uint8Array<ArrayBufferLike> = new Uint8Array(settings.count).fill(NANOBOT_ROLE.DETAIL);
   let currentFormationTargets: Float32Array = new Float32Array(settings.count * 3);
   let currentFormation: ShapeFormation | null = null;
@@ -275,9 +311,32 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     layerOf: new Uint8Array(0),
     delayFraction: new Float32Array(0),
     layerCount: 1,
+    travelDuration: NANOBOT_LAYER_DURATION,
     totalDuration: NANOBOT_LAYER_DURATION,
     wave0Landing: [...FORMATION_CENTER],
   };
+  // --- Material (Fase 42) ---
+  //
+  // El mapa dice QUÉ material lleva cada agente (sale de la posición); la
+  // línea de tiempo dice CUÁNDO aparece. El tint es lo único que se
+  // recalcula por cuadro, y sólo mientras algo esté cambiando.
+  let materialMap: MaterialMap | null = null;
+  let materialTimeline: MaterialTimeline = planMaterialTimeline(NANOBOT_LAYER_DURATION * 2, 1);
+  const materialTint = new Float32Array(deps.maxNanobots * 3).fill(1);
+  let regionDebug = false;
+  /**
+   * Última etapa de material para la que ya se escribió el tint. Mientras
+   * la etapa es estática (vuelo, asentamiento, completo) el tint no cambia
+   * de un cuadro al otro, así que alcanza con haberlo escrito una vez.
+   */
+  let tintWrittenForPhase = -1;
+  // Última tanda para la que se disparó el parpadeo del núcleo.
+  let lastPulsedSlot = -1;
+  // Se relee de la config en cada refresco, no se congela al arrancar: la
+  // paleta de identidad es configurable en caliente (setBotIdentityColor),
+  // y una copia congelada acá haría que cambiarla no tuviera efecto sobre
+  // los bots que todavía no se transformaron.
+  const materialIdentity: [number, number, number] = [0, 0, 0];
   const nanobotRenderPositions = new Float32Array(deps.maxNanobots * 3);
   // Estado por agente en Structure-of-Arrays. Se escribe dentro del mismo
   // recorrido que calcula las posiciones (ver writeNanobotFrame), así que
@@ -299,14 +358,10 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   // relanza (~2 s). Sin esto la malla se ocultaba y la figura DESAPARECÍA
   // en esa ventana — verificado en pantalla: quedaba sólo el reactor. Un
   // morph que hace desaparecer la figura no es un morph.
-  // Última capa para la que se disparó el parpadeo del núcleo.
-  let lastPulsedLayer = -1;
   let morphHold: {
     positions: Float32Array;
     count: number;
     roles: Uint8Array<ArrayBufferLike>;
-    colorWave: Uint8Array<ArrayBufferLike>;
-    revealed: number;
   } | null = null;
 
   let microbotPhase: MicrobotPhase = "hidden";
@@ -477,25 +532,47 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     // identidad, no la igualdad).
     currentRoles = formation.roles;
     currentFormationTargets = formation.points;
-    currentColorWave = formation.colorWave;
     currentColorClusters = colorClusters;
     nanobotAnimCount = settings.count;
+
+    // EL ORDEN IMPORTA: primero el mapa de material (que necesita los
+    // puntos), después la línea de tiempo (que necesita cuántas tandas
+    // tiene el mapa), y recién ahí el plan de capas (que necesita saber
+    // cuánto dura la cola de material para dar el total).
+    const isMaterial = new Uint8Array(settings.count);
+    for (let i = 0; i < settings.count; i++) {
+      isMaterial[i] = formation.roles[i] === NANOBOT_ROLE.COLOR ? 1 : 0;
+    }
+    materialMap = buildMaterialMap({
+      points: formation.points,
+      count: settings.count,
+      isMaterial,
+      pointColors: formation.pointColors,
+      clusters: formation.colorClusters,
+      center: FORMATION_CENTER,
+      // Los bots llegan del núcleo, así que el material se propaga desde
+      // el lado del núcleo hacia el opuesto (spec §15).
+      propagationOrigin: reactorCenter,
+    });
+    const travelDuration = 2 * NANOBOT_LAYER_DURATION;
+    materialTimeline = planMaterialTimeline(travelDuration, materialMap.slots);
+
     nanobotPlan = planLayers(
       formation.roles,
-      formation.colorWave,
       formation.points,
       settings.count,
-      formation.colorWaveCount,
       NANOBOT_ROLE.COLOR,
       NANOBOT_LAYER_DURATION,
       FORMATION_CENTER,
+      reactorCenter,
+      materialTimeline.end - travelDuration,
     );
     // El store apunta a los arrays de ESTA formación (no los copia, igual
     // que currentRoles/currentFormationTargets arriba).
     agents.adoptFormation({
       count: settings.count,
       role: formation.roles,
-      colorWave: formation.colorWave,
+      region: materialMap.region,
       layer: nanobotPlan.layerOf,
       delayFraction: nanobotPlan.delayFraction,
       target: formation.points,
@@ -534,16 +611,48 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     director.planLayers({
       layerCount: nanobotPlan.layerCount,
       layerDuration: NANOBOT_LAYER_DURATION,
+      material: {
+        start: materialTimeline.activationEnd,
+        slots: materialTimeline.slots,
+        slotDuration: materialTimeline.slotDuration,
+        slotStep: materialTimeline.slotStep,
+        end: materialTimeline.end,
+      },
     });
 
-    // Para casi todas las formas es un eco de `colorClusters` (derivados de
-    // la foto); para "cabeza" son los tonos fijos por parte anatómica.
-    // shapes decide cuál corresponde, acá sólo se lee el resultado.
-    swarmMesh.setColorClusters(formation.colorClusters);
-    // Fase 40: si la figura trae el color real de la foto punto por punto
-    // (hoy, el escaneo desde imagen), cada Material Bot lleva el suyo. Si
-    // no, null vuelve al color por olas del histograma.
-    swarmMesh.setPointColors(formation.pointColors);
+    lastPulsedSlot = -1;
+    tintWrittenForPhase = -1;
+    // El tint arranca en el color de IDENTIDAD del Material Bot: al llegar
+    // a la superficie se ven bots, no material (spec §8). El material
+    // aparece después, región por región.
+    refreshMaterialTint(0);
+    swarmMesh.setInstanceTint(materialTint);
+  }
+
+  /**
+   * Recalcula el tint de este cuadro. Devuelve false cuando ya no puede
+   * cambiar más, para que el llamador pueda dejar de escribirlo.
+   */
+  function refreshMaterialTint(elapsed: number): boolean {
+    if (!materialMap) return false;
+    hexToUnit(botVisual(BOT_TYPE.MATERIAL).identityColor, materialIdentity);
+    tintWrittenForPhase = materialPhaseAt(elapsed, materialTimeline);
+    return writeMaterialTint(materialTint, materialMap, materialTimeline, elapsed, materialIdentity, regionDebug);
+  }
+
+  /**
+   * El tint del cuadro, saltándose el trabajo cuando no puede haber
+   * cambiado. Devuelve true si hay que volver a subirlo a la GPU.
+   */
+  function refreshMaterialTintIfNeeded(elapsed: number): boolean {
+    if (!materialMap) return false;
+    if (materialTintIsStatic(elapsed, materialTimeline)) {
+      // Estático: sólo hace falta escribirlo al ENTRAR a esta etapa.
+      if (materialPhaseAt(elapsed, materialTimeline) === tintWrittenForPhase) return false;
+      refreshMaterialTint(elapsed);
+      return true;
+    }
+    return refreshMaterialTint(elapsed);
   }
 
   function goIdle(): void {
@@ -554,7 +663,9 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     applyIdleTargets();
     swarmMesh.setVisible(false);
     swarmMesh.setSkeletonGrayscale(false);
-    swarmMesh.setPointColors(null);
+    swarmMesh.setInstanceTint(null);
+    materialMap = null;
+    lastPulsedSlot = -1;
     currentShapeName = null;
     microbotExo = null;
     microbotPhase = "hidden";
@@ -564,7 +675,6 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     coverage = null;
     morphFrom = null;
     morphHold = null;
-    lastPulsedLayer = -1;
     deps.reactor?.resetColor();
     applyParams();
   }
@@ -582,8 +692,6 @@ export function createSimulation(deps: SimulationDeps): Simulation {
             positions: nanobotRenderPositions.slice(0, nanobotAnimCount * 3),
             count: nanobotAnimCount,
             roles: currentRoles,
-            colorWave: currentColorWave,
-            revealed: nanobotPlan.layerCount - 1,
           }
         : null;
 
@@ -647,15 +755,17 @@ export function createSimulation(deps: SimulationDeps): Simulation {
         nanobotPhase = "settled";
         nanobotElapsed = nanobotPlan.totalDuration;
         renderNanobotsAt(nanobotElapsed);
-        swarmMesh.setSkeletonGrayscale(nanobotPlan.layerCount > 1);
+        swarmMesh.setSkeletonGrayscale(true);
+        // El material ya está puesto: hay que rehacer el tint a ese
+        // instante, o la figura recién recontada se vería con los bots en
+        // color de identidad en vez de con su material.
+        refreshMaterialTint(nanobotElapsed);
         swarmMesh.updateFromPositions(
           nanobotRenderPositions,
           nanobotAnimCount,
           currentRoles,
           currentFormationTargets,
           ALL_ROLES_VISIBLE,
-          currentColorWave,
-          nanobotPlan.layerCount - 1,
         );
       }
       // Si seguía "forming", sigue animando desde el progreso actual con
@@ -677,6 +787,48 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     // las tareas de Nanobots que para entonces sí existen.
     if (microbotPhase === "launching" && microbotGroups() !== groupsAntes) planStructureTasks();
     if (microbotPhase === "settled") renderMicrobotsAt(1);
+  }
+
+  /**
+   * Qué tanda de material se está transformando en este instante, o -1 si
+   * ninguna. Con tandas solapadas puede haber dos a la vez: se devuelve la
+   * más avanzada que todavía no terminó, que es la que el núcleo está
+   * "entregando".
+   */
+  function activeSlot(elapsed: number): number {
+    if (!materialMap || elapsed < materialTimeline.activationEnd) return -1;
+    const raw = Math.floor((elapsed - materialTimeline.activationEnd) / materialTimeline.slotStep);
+    return Math.min(Math.max(raw, 0), materialTimeline.slots - 1);
+  }
+
+  /** Color representativo de una tanda: el de su región más grande. */
+  function slotColor(slot: number): number | null {
+    if (!materialMap) return null;
+    let best: { count: number; color: number } | null = null;
+    for (const region of materialMap.regions) {
+      if (region.slot !== slot) continue;
+      if (!best || region.count > best.count) best = { count: region.count, color: region.color };
+    }
+    return best ? best.color : null;
+  }
+
+  /**
+   * Vuelve a escribir el cuadro actual en la malla sin avanzar el reloj.
+   *
+   * Hace falta porque la fase "settled" no dibuja: una vez terminada la
+   * figura, el buffer de instancias ya está donde tiene que estar y step()
+   * no lo toca. Cualquier cambio que sólo afecte al COLOR (el modo debug,
+   * un recuento de agentes) necesita empujarlo a mano.
+   */
+  function redrawCurrentFrame(): void {
+    if (!currentFormation || nanobotAnimCount === 0) return;
+    swarmMesh.updateFromPositions(
+      nanobotRenderPositions,
+      nanobotAnimCount,
+      currentRoles,
+      currentFormationTargets,
+      nanobotPhase === "settled" ? ALL_ROLES_VISIBLE : formingRoleVisibility,
+    );
   }
 
   function step(dt: number): void {
@@ -723,31 +875,32 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       // barre todo el recorrido afirmando que da exactamente lo mismo que
       // el layerIndexAt que había antes.
       const layerIndex = director.nanobotLayerIndex(nanobotElapsed);
-      // Fase 36: al ENTRAR en una capa de color, el núcleo parpadea y toma
-      // ese color — es el traspaso del material desde los Material Bots
-      // del núcleo hacia la figura. Sólo al entrar, no cada cuadro: el
-      // parpadeo dura casi un segundo y relanzarlo 60 veces por segundo lo
-      // dejaría clavado en el primer destello.
-      if (layerIndex !== lastPulsedLayer) {
-        lastPulsedLayer = layerIndex;
-        // La capa 0 es el relleno (sin color propio); de ahí en más, una
-        // ola de color por capa.
-        const wave = layerIndex - 1;
-        const cluster = wave >= 0 ? currentFormation?.colorClusters?.[wave] : undefined;
-        if (cluster) deps.reactor?.pulseColor(cluster.color);
+      // Fase 36/42: al ENTRAR en una tanda de material, el núcleo parpadea
+      // y toma el color de la región que se está transformando — es el
+      // traspaso del material desde el núcleo hacia la figura. Sólo al
+      // entrar, no cada cuadro: el parpadeo dura casi un segundo y
+      // relanzarlo 60 veces por segundo lo dejaría clavado en el primer
+      // destello.
+      const slot = activeSlot(nanobotElapsed);
+      if (slot !== lastPulsedSlot) {
+        lastPulsedSlot = slot;
+        const hex = slot >= 0 ? slotColor(slot) : null;
+        if (hex !== null) deps.reactor?.pulseColor(hex);
       }
-      // Detalle pasa a gris apenas arranca la primera ola de Color, para
-      // que el color real de la foto termine predominando.
+      // Detalle pasa a gris apenas sale la capa de material, para que el
+      // color real del objeto termine predominando.
       swarmMesh.setSkeletonGrayscale(layerIndex >= 1);
       formingRoleVisibility[1] = layerIndex >= 1;
+      // El tint sólo se recalcula mientras puede cambiar: una vez que todo
+      // el material está puesto, el buffer ya dice lo correcto y volver a
+      // escribirlo cuadro a cuadro sería trabajo puro para nadie.
+      if (refreshMaterialTintIfNeeded(nanobotElapsed)) swarmMesh.setInstanceTint(materialTint);
       swarmMesh.updateFromPositions(
         nanobotRenderPositions,
         nanobotAnimCount,
         currentRoles,
         currentFormationTargets,
         formingRoleVisibility,
-        currentColorWave,
-        layerIndex,
       );
       if (nanobotPhase === "forming" && nanobotElapsed >= nanobotPlan.totalDuration) {
         nanobotPhase = "settled";
@@ -763,8 +916,10 @@ export function createSimulation(deps: SimulationDeps): Simulation {
         coverage = null;
         morphFrom = null;
         morphHold = null;
-        lastPulsedLayer = -1;
+        materialMap = null;
+        lastPulsedSlot = -1;
         deps.reactor?.resetColor();
+        swarmMesh.setInstanceTint(null);
         swarmMesh.setVisible(false);
         // Un cambio de cantidad pedido durante el repliegue se aplica
         // recién acá, con todos los buffers ya libres.
@@ -795,8 +950,6 @@ export function createSimulation(deps: SimulationDeps): Simulation {
           morphHold.roles,
           morphHold.positions,
           ALL_ROLES_VISIBLE,
-          morphHold.colorWave,
-          morphHold.revealed,
         );
       } else {
         swarmMesh.updateFromPositions(
@@ -805,8 +958,6 @@ export function createSimulation(deps: SimulationDeps): Simulation {
           currentRoles,
           currentFormationTargets,
           ALL_ROLES_VISIBLE,
-          currentColorWave,
-          0,
         );
       }
     }
@@ -824,6 +975,10 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     get currentShapeName() { return currentShapeName; },
     get stateCounts() { return agents.countByState(stateCountsScratch); },
     get coverage() { return coverage; },
+    get materialMap() { return materialMap; },
+    get materialPhase() {
+      return materialMap ? materialPhaseAt(nanobotElapsed, materialTimeline) : MATERIAL_PHASE.SPREAD;
+    },
     get typeCounts() {
       agents.countByType(typeCountsScratch);
       // Microbots y Union Bots no están en el AgentStore: viven en la malla
@@ -852,6 +1007,19 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     setNanobotCount,
     setMicrobotCount,
     applyParams,
+    setRegionDebug(on: boolean): void {
+      if (on === regionDebug) return;
+      regionDebug = on;
+      tintWrittenForPhase = -1;
+      refreshMaterialTint(nanobotElapsed);
+      swarmMesh.setInstanceTint(materialMap ? materialTint : null);
+      // Y REDIBUJAR. Con la figura ya asentada, step() no hace nada (el
+      // cuadro anterior dejó el buffer de instancias en su lugar), así que
+      // sin esto el tint nuevo se queda en RAM y no llega nunca a la GPU:
+      // el interruptor no hacía nada visible. Verificado en pantalla.
+      redrawCurrentFrame();
+    },
+    get regionDebug() { return regionDebug; },
     renderPositions: nanobotRenderPositions,
   };
 }

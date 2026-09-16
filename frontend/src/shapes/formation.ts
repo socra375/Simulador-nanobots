@@ -94,11 +94,36 @@ export function buildExoskeleton(
   return { points, isBeam, relationSpans };
 }
 
-// Genera la nube de puntos de la figura (repartida en los 3 roles) y la
+// Genera la nube de puntos de la figura (repartida en sus dos roles) y la
 // traslada a `center`. Devuelve null si `name` no matchea ninguna forma
 // conocida.
 export const DEFAULT_COLOR_CLUSTERS: ColorClusterInput[] = [{ color: 0, weight: 1 }];
 
+/**
+ * FASE 42 — EL CAMBIO CENTRAL DE ESTE ARCHIVO.
+ *
+ * Antes, la capa de material se generaba como N "olas", y cada ola era un
+ * MUESTREO INDEPENDIENTE DE LA SILUETA COMPLETA con un color plano propio.
+ * Eso ponía rojo por todo el objeto, dorado por todo el objeto, y en
+ * pantalla daba el damero: 🔴🟡🔴🟡. El color lo decidía la ola, no la
+ * posición.
+ *
+ * Ahora la capa de material es UNA SOLA muestra de la figura, y cada punto
+ * lleva SU color cuando la forma sabe cuál es:
+ *
+ *   - escaneo desde imagen -> `generateWithColor` devuelve posiciones y
+ *     colores del MISMO muestreo (cada punto trae el píxel del que salió);
+ *   - formas con partes propias (hoy "cabeza") -> cada parte es su propio
+ *     generador, así que un punto de "cabello" sabe que es cabello. Esto
+ *     dejó de ser un caso especial de olas y pasó a ser el caso normal de
+ *     color por punto;
+ *   - el resto -> sin color por punto. El mapa de material reparte la
+ *     paleta de la foto en bandas espaciales y lo declara aproximado (ver
+ *     material/material-map.ts, MATERIAL_SOURCE.FALLBACK).
+ *
+ * Qué región es cada mancha y cuándo se enciende NO se decide acá: este
+ * archivo produce geometría y color por punto, nada de tiempo.
+ */
 export function formShapeWithRoles(
   name: string,
   count: number,
@@ -109,10 +134,6 @@ export function formShapeWithRoles(
   if (!canonical) return null;
   const def = getShape(canonical)!;
   const generator = def.generate;
-  // Una forma puede traer sus propias olas de color con tonos fijos por
-  // parte (hoy solo "cabeza": piel/cabello/ojos/labios, ver CABEZA_PARTS).
-  // Si no las declara, las olas salen del histograma de la foto adjuntada,
-  // que es el comportamiento de todas las demás.
   const colorParts = def.colorParts;
   const clusters = colorParts
     ? colorParts.map((p) => ({ color: p.color, weight: p.weight }))
@@ -121,61 +142,30 @@ export function formShapeWithRoles(
       : DEFAULT_COLOR_CLUSTERS;
 
   // COLOR se calcula PRIMERO y de forma independiente (75% fijo del
-  // total) — ESTRUCTURA/RELACION/DETALLE (el "esqueleto") se reparten
-  // recién lo que sobra, no al revés, para que el 75% de COLOR nunca
-  // dependa de cuánto terminen usando las otras 3.
+  // total) — DETALLE se queda con lo que sobra, no al revés, para que el
+  // 75% de material nunca dependa de cuánto use el relleno.
   const colorCount = count > 0 ? Math.round(count * ROLE_RATIO_COLOR) : 0;
-  // ESTRUCTURA/RELACION quedan en 0 (ver comentario arriba) — todo el
-  // budget restante va a DETALLE.
   const detailCount = Math.max(0, count - colorCount);
   const detailPts = generator(detailCount);
-  // Cada ola de color es una MUESTRA INDEPENDIENTE de la silueta completa
-  // (mismo generador que DETALLE, no un subconjunto de colorPts) — así cada
-  // una por sí sola ya cubre parejo toda la figura, en vez de quedar
-  // agrupada en una sola zona. Para "cabeza", en cambio, cada ola es la
-  // parte anatómica correspondiente (CABEZA_PARTS[wave].generator) — no un
-  // resample de la silueta completa.
-  const colorWaveCounts = splitCounts(colorCount, clusters.map((c) => c.weight));
 
-  // Fase 40: si la forma trae color POR PUNTO (hoy sólo el escaneo desde
-  // imagen), cada ola se muestrea con `generateWithColor`, que devuelve
-  // posiciones y colores del MISMO muestreo. Las 17 formas predefinidas no
-  // la declaran y caen al camino de siempre, byte por byte.
-  const colored = def.generateWithColor;
-  const colorWaveClouds = colorParts
-    ? colorWaveCounts.map((n, wave) => ({ points: colorParts[wave].generator(n), colors: null }))
-    : colorWaveCounts.map((n) =>
-        colored ? colored(n) : { points: generator(n), colors: null },
-      );
+  const { points: materialPts, colors: materialColors } = sampleMaterialLayer(
+    colorCount,
+    generator,
+    def.generateWithColor,
+    colorParts,
+  );
 
   const points = new Float32Array(count * 3);
   const roles = new Uint8Array(count);
-  const colorWave = new Uint8Array(count);
-  // Sólo se reserva si de verdad hay color por punto: para las formas de
-  // siempre queda en null y el render sigue pintando por olas.
-  const pointColors = colored && !colorParts ? new Uint8Array(count * 3) : null;
+  const pointColors = materialColors ? new Uint8Array(count * 3) : null;
   let cursor = 0;
 
-  const write = (src: Float32Array, n: number, role: NanobotRole) => {
+  const write = (src: Float32Array, n: number, role: NanobotRole, colors: Uint8Array | null) => {
     for (let i = 0; i < n; i++) {
       points[cursor * 3 + 0] = src[i * 3 + 0] + center[0];
       points[cursor * 3 + 1] = src[i * 3 + 1] + center[1];
       points[cursor * 3 + 2] = src[i * 3 + 2] + center[2];
       roles[cursor] = role;
-      cursor++;
-    }
-  };
-
-  write(detailPts, detailCount, NANOBOT_ROLE.DETAIL);
-  for (let wave = 0; wave < colorWaveClouds.length; wave++) {
-    const { points: src, colors } = colorWaveClouds[wave];
-    const n = colorWaveCounts[wave];
-    for (let i = 0; i < n; i++) {
-      points[cursor * 3 + 0] = src[i * 3 + 0] + center[0];
-      points[cursor * 3 + 1] = src[i * 3 + 1] + center[1];
-      points[cursor * 3 + 2] = src[i * 3 + 2] + center[2];
-      roles[cursor] = NANOBOT_ROLE.COLOR;
-      colorWave[cursor] = wave;
       if (pointColors && colors) {
         pointColors[cursor * 3 + 0] = colors[i * 3 + 0];
         pointColors[cursor * 3 + 1] = colors[i * 3 + 1];
@@ -183,16 +173,57 @@ export function formShapeWithRoles(
       }
       cursor++;
     }
+  };
+
+  write(detailPts, detailCount, NANOBOT_ROLE.DETAIL, null);
+  write(materialPts, colorCount, NANOBOT_ROLE.COLOR, materialColors);
+
+  return { points, roles, colorClusters: clusters, pointColors };
+}
+
+/**
+ * La capa de material: posiciones y, cuando la forma lo permite, un color
+ * por punto.
+ *
+ * Con `colorParts` cada parte se muestrea por separado y SUS puntos quedan
+ * pintados con SU color — la información espacial del color es real, no
+ * inventada: un punto de "cabello" está donde está el cabello.
+ */
+function sampleMaterialLayer(
+  count: number,
+  generator: (n: number) => Float32Array,
+  colored: ((n: number) => { points: Float32Array; colors: Uint8Array }) | undefined,
+  colorParts: readonly { color: number; weight: number; generator: (n: number) => Float32Array }[] | undefined,
+): { points: Float32Array; colors: Uint8Array | null } {
+  if (count === 0) return { points: new Float32Array(0), colors: colored || colorParts ? new Uint8Array(0) : null };
+
+  if (colorParts && colorParts.length > 0) {
+    const partCounts = splitCounts(count, colorParts.map((p) => p.weight));
+    const points = new Float32Array(count * 3);
+    const colors = new Uint8Array(count * 3);
+    let cursor = 0;
+    for (let part = 0; part < colorParts.length; part++) {
+      const n = partCounts[part];
+      const src = colorParts[part].generator(n);
+      const hex = colorParts[part].color;
+      const r = (hex >> 16) & 0xff;
+      const g = (hex >> 8) & 0xff;
+      const b = hex & 0xff;
+      for (let i = 0; i < n; i++) {
+        points[cursor * 3 + 0] = src[i * 3 + 0];
+        points[cursor * 3 + 1] = src[i * 3 + 1];
+        points[cursor * 3 + 2] = src[i * 3 + 2];
+        colors[cursor * 3 + 0] = r;
+        colors[cursor * 3 + 1] = g;
+        colors[cursor * 3 + 2] = b;
+        cursor++;
+      }
+    }
+    return { points, colors };
   }
 
-  return {
-    points,
-    roles,
-    colorWave,
-    colorWaveCount: clusters.length,
-    colorClusters: clusters,
-    pointColors,
-  };
+  if (colored) return colored(count);
+  return { points: generator(count), colors: null };
 }
 
 // Cluster de reposo: cáscara esférica aleatoria alrededor del núcleo.

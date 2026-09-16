@@ -126,8 +126,15 @@ export interface LayerPlan {
   layerOf: Uint8Array;
   delayFraction: Float32Array;
   layerCount: number;
+  /**
+   * Cuánto dura el VUELO (capa de detalle + capa de material). Es lo que
+   * mide el repliegue en espiral: las etapas de material que vienen
+   * después no mueven a nadie, así que no participan del regreso.
+   */
+  travelDuration: number;
+  /** Vuelo + etapas de material. Es el largo total de la animación. */
   totalDuration: number;
-  /** Centroide de la 1ra ola de Color: adónde viaja la "bola" antes de abrirse. */
+  /** Centroide de la capa de material: adónde viaja la "bola" antes de abrirse. */
   wave0Landing: [number, number, number];
 }
 
@@ -143,55 +150,83 @@ export function layerIndexAt(elapsed: number, layerCount: number, layerDuration:
  * que este módulo no dependa de shapes: la cinemática no necesita saber
  * qué formas existen.
  *
- * Los agentes de una misma capa ya salen CONTIGUOS del generador de la
- * formación, así que alcanza con un contador por capa para asignar la
- * fracción de escalonado — no hace falta ordenar nada.
+ * SIEMPRE SON DOS CAPAS DE VUELO (Fase 42): el relleno y el material.
+ * Antes había una capa por "ola de color", y cada ola era un muestreo
+ * distinto de la figura entera — por eso el material salía salpicado en
+ * varias tandas repartidas por todo el objeto. Ahora los Material Bots
+ * cubren la superficie ENTERA de una sola vez (spec §8) y la aparición del
+ * material por regiones ocurre DESPUÉS, sin mover a nadie (ver
+ * material/material-animation.ts).
+ *
+ * EL ORDEN DE SALIDA DENTRO DE UNA CAPA ES ESPACIAL, no el orden del
+ * array. Hasta la Fase 41 `delayFraction` era `cursor / (n-1)`: el índice
+ * de creación, que la spec §15 prohíbe explícitamente porque produce una
+ * salida sin relación con la geometría. Ahora es la distancia normalizada
+ * al origen de propagación, así los agentes más cercanos al núcleo se
+ * posan primero y la capa se ve avanzar sobre la figura.
  */
 export function planLayers(
   roles: Uint8Array,
-  colorWave: Uint8Array,
   points: Float32Array,
   count: number,
-  colorWaveCount: number,
   colorRole: number,
   layerDuration: number,
   fallbackLanding: Vec3,
+  propagationOrigin: Vec3,
+  materialDuration = 0,
 ): LayerPlan {
-  const layerCount = 1 + colorWaveCount;
+  const layerCount = 2;
   const layerOf = new Uint8Array(count);
-  const layerCounts = new Array<number>(layerCount).fill(0);
-  // Centroide de la 1ra ola de Color: adónde viaja la bola antes de
+  // Centroide de la capa de material: adónde viaja la bola antes de
   // abrirse. Se acumula en el mismo pase que ya recorre los agentes.
-  let sumX = 0, sumY = 0, sumZ = 0, wave0Count = 0;
+  let sumX = 0, sumY = 0, sumZ = 0, materialCount = 0;
+  const dist = new Float32Array(count);
+  const minDist = [Infinity, Infinity];
+  const maxDist = [-Infinity, -Infinity];
+
   for (let i = 0; i < count; i++) {
-    const layer = roles[i] === colorRole ? 1 + colorWave[i] : 0;
+    const layer = roles[i] === colorRole ? 1 : 0;
     layerOf[i] = layer;
-    layerCounts[layer]++;
+    const dx = points[i * 3 + 0] - propagationOrigin[0];
+    const dy = points[i * 3 + 1] - propagationOrigin[1];
+    const dz = points[i * 3 + 2] - propagationOrigin[2];
+    dist[i] = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    // Se relee DEL ARRAY, ya redondeado a float32, antes de compararlo.
+    // Comparando el float64 original, el mínimo guardado podía quedar
+    // apenas por ENCIMA del valor almacenado y dar un delayFraction
+    // negativo — verificado: exactamente un agente por figura. Ese agente
+    // salía disparado en el primer cuadro del repliegue mientras el resto
+    // seguía quieto.
+    const d = dist[i];
+    if (d < minDist[layer]) minDist[layer] = d;
+    if (d > maxDist[layer]) maxDist[layer] = d;
     if (layer === 1) {
       sumX += points[i * 3 + 0];
       sumY += points[i * 3 + 1];
       sumZ += points[i * 3 + 2];
-      wave0Count++;
+      materialCount++;
     }
   }
 
   const delayFraction = new Float32Array(count);
-  const layerCursor = new Array<number>(layerCount).fill(0);
   for (let i = 0; i < count; i++) {
     const layer = layerOf[i];
-    const n = layerCounts[layer];
-    delayFraction[i] = n > 1 ? layerCursor[layer] / (n - 1) : 0;
-    layerCursor[layer]++;
+    const span = maxDist[layer] - minDist[layer];
+    // Figura degenerada (todos a la misma distancia): todos salen juntos,
+    // que es lo correcto — no hay un orden espacial que respetar.
+    delayFraction[i] = span > 0 ? (dist[i] - minDist[layer]) / span : 0;
   }
 
+  const travelDuration = layerCount * layerDuration;
   return {
     layerOf,
     delayFraction,
     layerCount,
-    totalDuration: layerCount * layerDuration,
+    travelDuration,
+    totalDuration: travelDuration + materialDuration,
     wave0Landing:
-      wave0Count > 0
-        ? [sumX / wave0Count, sumY / wave0Count, sumZ / wave0Count]
+      materialCount > 0
+        ? [sumX / materialCount, sumY / materialCount, sumZ / materialCount]
         : [fallbackLanding[0], fallbackLanding[1], fallbackLanding[2]],
   };
 }
@@ -357,7 +392,12 @@ function writeSpiralReturn(
   outState?: Uint8Array,
 ): void {
   const { layerOf, delayFraction, layerCount } = plan;
-  const total = layerCount * timings.layerDuration;
+  // El VUELO, no el total: las etapas de material que van después del
+  // vuelo no mueven a nadie. Mientras el reloj baja por esa cola, `global`
+  // da 0 y todos se quedan exactos en la figura — que es justo lo que se
+  // quiere ver mientras el material se revierte a agentes (spec §22),
+  // antes de que empiece el regreso propiamente dicho.
+  const total = plan.travelDuration || layerCount * timings.layerDuration;
   // 0 = recién empieza el repliegue (todos en la figura), 1 = todos en el
   // núcleo. Se invierte porque `elapsed` viene bajando.
   const global = total > 0 ? 1 - Math.min(Math.max(elapsed / total, 0), 1) : 1;

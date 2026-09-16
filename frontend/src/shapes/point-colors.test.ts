@@ -112,12 +112,21 @@ describe("formShapeWithRoles: color por punto", () => {
     for (const c of vistos) expect(["255,0,0", "0,255,0", "0,0,255"]).toContain(c);
   });
 
-  it("'cabeza' usa sus partes anatómicas y NO entra al camino de color por punto", () => {
-    // Las olas de "cabeza" son partes del cuerpo con tonos fijos; mezclar
-    // eso con color por punto daría dos fuentes de verdad para lo mismo.
-    const f = formShapeWithRoles("cabeza", 300, CENTER, [{ color: 0xff0000, weight: 1 }]);
-    expect(f!.pointColors).toBeNull();
-    expect(f!.colorWaveCount).toBe(4);
+  it("'cabeza' también produce color por punto, desde sus partes anatómicas", () => {
+    // FASE 42: antes "cabeza" iba por el camino de las olas y su
+    // pointColors era null — dos mecanismos distintos para lo mismo. Ahora
+    // cada parte pinta SUS puntos, así que la cabeza tiene información
+    // espacial de color igual de real que un escaneo, y la foto adjuntada
+    // sigue sin colarse.
+    const f = formShapeWithRoles("cabeza", 300, CENTER, [{ color: 0xff0000, weight: 1 }])!;
+    expect(f.pointColors).not.toBeNull();
+    const vistos = new Set<number>();
+    for (let i = 0; i < 300; i++) {
+      if (f.roles[i] !== NANOBOT_ROLE.COLOR) continue;
+      vistos.add((f.pointColors![i * 3] << 16) | (f.pointColors![i * 3 + 1] << 8) | f.pointColors![i * 3 + 2]);
+    }
+    expect(vistos.size).toBeGreaterThan(1);
+    expect(vistos.has(0xff0000)).toBe(false);
   });
 });
 

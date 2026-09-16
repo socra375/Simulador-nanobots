@@ -383,15 +383,18 @@ test("la cola de tareas refleja el avance real de la formación", async ({ page 
     .poll(() => readTaskQueuePanel(page), { timeout: 20000 })
     .toMatch(/^exoesqueleto: (pending|running)\nuniones: (pending|running)$/);
 
-  // Cumplido el exoesqueleto aparecen el relleno y las olas.
+  // Cumplido el exoesqueleto aparecen el relleno y las etapas de material.
   await expect
     .poll(() => readTaskQueuePanel(page), { timeout: 60000 })
     .toMatch(/exoesqueleto: done\nuniones: done[\s\S]*relleno:/);
 
   // Y al final TODO queda cumplido, sin ninguna tarea colgada.
+  // Fase 42: las etiquetas cambiaron. "color N" (una por ola) pasó a ser
+  // "cobertura" (los Material Bots cubriendo la superficie) más
+  // "material N" (una por tanda de activación de regiones).
   await expect
     .poll(() => readTaskQueuePanel(page), { timeout: 180000 })
-    .toMatch(/^(?:(?:exoesqueleto|uniones|relleno|color \d+): done\n?)+$/);
+    .toMatch(/^(?:(?:exoesqueleto|uniones|relleno|cobertura|material \d+): done\n?)+$/);
 
   await clickCommandButton(page, "Volver al núcleo");
   await expect.poll(() => readTaskQueuePanel(page), { timeout: 60000 }).toMatch(/repliegue:/);
@@ -460,6 +463,109 @@ async function clickFolderButton(page: Page, folderTitle: string, buttonName: st
 }
 
 /** PNG mínimo: fondo blanco con un cuadrado oscuro centrado. */
+// ---------------------------------------------------------------------
+// Fase 42 — el material sale de la POSICIÓN, no de la ola.
+//
+// La regresión que este test existe para atrapar: hasta la Fase 41 cada
+// "ola" de color era un muestreo independiente de la figura entera, así
+// que los colores quedaban intercalados agente por agente sobre todo el
+// objeto. Acá se comprueba la secuencia que reemplazó a eso: los Material
+// Bots cubren la superficie, se asientan, se activan y RECIÉN AHÍ aparece
+// el material, región por región.
+// ---------------------------------------------------------------------
+test("el material aparece por regiones DESPUÉS de cubrir la superficie", async ({ page }) => {
+  // Headless con SwiftShader estira mucho los tiempos: una formación de
+  // ~12 s de reloj puede tardar un minuto de reloj de pared.
+  test.setTimeout(180_000);
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await attachPhotoWithColors(page);
+  await setObjectName(page, "carro");
+  await clickCommandButton(page, "Formar objeto");
+
+  const material = () => readFolderAllText(page, "Material y regiones");
+
+  // 1. El mapa de material existe apenas arranca la capa de Nanobots, con
+  //    regiones y tandas reales — no un panel vacío.
+  await expect.poll(material, { timeout: 60_000 }).toMatch(/\d+ regiones? · \d+ tandas?/);
+  // Una foto sin información de DÓNDE va cada color se declara aproximada
+  // en vez de hacerse pasar por medida (spec §32).
+  expect(await material()).toContain("aproximado");
+
+  // 2. La superficie se cubre ANTES de que aparezca el material. Este
+  //    fotograma —el objeto cubierto de bots, todavía sin material— es el
+  //    que no existía antes de esta fase.
+  await expect.poll(material, { timeout: 60_000 }).toContain("cubriendo superficie");
+  expect(await readTaskQueuePanel(page)).toContain("cobertura");
+
+  // 3. Y después, la transformación por tandas hasta terminar.
+  await expect.poll(material, { timeout: 120_000 }).toContain("material completo");
+  await expect
+    .poll(() => readTaskQueuePanel(page))
+    .toMatch(/^(?:(?:exoesqueleto|uniones|relleno|cobertura|material \d+): done\n?)+$/);
+
+  expect(errors).toEqual([]);
+});
+
+test("el modo debug de regiones se enciende y se apaga sin tocar la simulación", async ({ page }) => {
+  test.setTimeout(180_000);
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await attachPhotoWithColors(page);
+  await setObjectName(page, "cubo");
+  await clickCommandButton(page, "Formar objeto");
+  await expect
+    .poll(() => readFolderAllText(page, "Material y regiones"), { timeout: 120_000 })
+    .toContain("material completo");
+
+  const antes = await readFolderAllText(page, "Material y regiones");
+  await toggleRegionDebug(page, true);
+  await page.waitForTimeout(400);
+  await toggleRegionDebug(page, false);
+  await page.waitForTimeout(400);
+
+  // El interruptor es de PRESENTACIÓN: ni el mapa de material ni la fase
+  // cambian. Si tocara la simulación, este panel lo diría.
+  expect(await readFolderAllText(page, "Material y regiones")).toBe(antes);
+  expect(await readCommandsStatus(page)).toBe("Formando: cubo");
+  expect(errors).toEqual([]);
+});
+
+async function toggleRegionDebug(page: Page, on: boolean) {
+  await page.evaluate((valor) => {
+    const guis = Array.from(document.querySelectorAll(".lil-gui"));
+    const folder = guis.find(
+      (g) => g.querySelector(":scope > .title")?.textContent === "Material y regiones",
+    );
+    const input = folder?.querySelector<HTMLInputElement>(".controller.boolean input");
+    if (!input) return;
+    input.checked = valor;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  }, on);
+}
+
+/**
+ * Foto con TRES colores bien distintos, para que la paleta tenga más de
+ * un material y las regiones sean algo más que una sola mancha.
+ */
+async function attachPhotoWithColors(page: Page) {
+  const size = 48;
+  const raw: number[] = [];
+  for (let y = 0; y < size; y++) {
+    raw.push(0);
+    for (let x = 0; x < size; x++) {
+      const f = y / size;
+      const [r, g, b] = f < 0.6 ? [208, 32, 32] : f < 0.9 ? [216, 176, 32] : [16, 16, 16];
+      raw.push(r, g, b);
+    }
+  }
+  await page
+    .locator('input[type="file"][data-command-slot]')
+    .setInputFiles({ name: "objeto.png", mimeType: "image/png", buffer: encodeRgbPng(size, raw) });
+}
+
 function makeSquarePng(size: number, margin: number): Buffer {
   const raw: number[] = [];
   for (let y = 0; y < size; y++) {
@@ -469,6 +575,14 @@ function makeSquarePng(size: number, margin: number): Buffer {
       raw.push(dentro ? 30 : 245, dentro ? 40 : 245, dentro ? 200 : 248);
     }
   }
+  return encodeRgbPng(size, raw);
+}
+
+/**
+ * Codifica un PNG RGB sin comprimir por filtros. `raw` ya viene con el
+ * byte de filtro (0) al principio de cada fila.
+ */
+function encodeRgbPng(size: number, raw: number[]): Buffer {
   const crcTable: number[] = [];
   for (let n = 0; n < 256; n++) {
     let c = n;
