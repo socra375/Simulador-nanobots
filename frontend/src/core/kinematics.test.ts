@@ -499,11 +499,18 @@ describe("planLayers: el orden de salida es ESPACIAL (spec §15)", () => {
     return { roles, points };
   }
 
-  it("delayFraction crece con la distancia al núcleo, no con el índice", () => {
+  it("delayFraction crece con la distancia al ORIGEN DE SU CAPA, no con el índice", () => {
+    // Fase 44: cada capa mide desde donde LLEGA. El relleno sale volando
+    // del núcleo; el material cae en el ÁPICE y se derrama desde ahí, así
+    // que medirlo desde el núcleo lo haría abrirse de costado en vez de
+    // hacia abajo.
     const { roles, points } = nube();
     const plan = planLayers(roles, points, N, 1, 2, [0, 0, 0], CORE, 2);
-    const d = (i: number) =>
-      Math.hypot(points[i * 3] - CORE[0], points[i * 3 + 1] - CORE[1], points[i * 3 + 2] - CORE[2]);
+    const apex = plan.wave0Landing;
+    const d = (i: number) => {
+      const from = plan.layerOf[i] === 1 ? apex : CORE;
+      return Math.hypot(points[i * 3] - from[0], points[i * 3 + 1] - from[1], points[i * 3 + 2] - from[2]);
+    };
 
     // Ordenados POR delayFraction, las distancias tienen que salir
     // crecientes. Comparar sólo pares con i < j no sirve: el orden por
@@ -523,6 +530,37 @@ describe("planLayers: el orden de salida es ESPACIAL (spec §15)", () => {
     const capa1 = [...Array(N).keys()].filter((i) => plan.layerOf[i] === 1);
     const porDelay = [...capa1].sort((a, b) => plan.delayFraction[a] - plan.delayFraction[b]);
     expect(porDelay).not.toEqual(capa1);
+  });
+
+  it("la bola de material cae ARRIBA de la figura, no en su centro", () => {
+    // Es lo que hace que el derrame se lea como líquido: el punto de
+    // aterrizaje tiene que estar por encima de TODOS los destinos de
+    // material, no en el medio de ellos.
+    const { roles, points } = nube();
+    const plan = planLayers(roles, points, N, 1, 2, [0, 0, 0], CORE, 2);
+    let maxY = -Infinity;
+    for (let i = 0; i < N; i++) {
+      if (plan.layerOf[i] === 1) maxY = Math.max(maxY, points[i * 3 + 1]);
+    }
+    expect(plan.wave0Landing[1]).toBeGreaterThan(maxY);
+  });
+
+  it("el material se posa de ARRIBA hacia abajo, venga de donde venga el núcleo", () => {
+    // El núcleo va DEBAJO de la figura a propósito. Con el núcleo en su
+    // sitio real (arriba y al costado), ordenar por distancia al núcleo
+    // también empieza por arriba, así que el test no distinguiría una
+    // cosa de la otra — verificado mutando el código. Desde abajo, si el
+    // material se ordenara por el núcleo empezaría por el piso, que es
+    // exactamente lo contrario a un líquido que se derrama.
+    const DESDE_ABAJO: Vec3 = [0, -20, 0];
+    const { roles, points } = nube();
+    const plan = planLayers(roles, points, N, 1, 2, [0, 0, 0], DESDE_ABAJO, 2);
+    const capa1 = [...Array(N).keys()]
+      .filter((i) => plan.layerOf[i] === 1)
+      .sort((a, b) => plan.delayFraction[a] - plan.delayFraction[b]);
+    const primeros = capa1.slice(0, 20).reduce((s, i) => s + points[i * 3 + 1], 0) / 20;
+    const ultimos = capa1.slice(-20).reduce((s, i) => s + points[i * 3 + 1], 0) / 20;
+    expect(primeros).toBeGreaterThan(ultimos);
   });
 
   it("delayFraction queda SIEMPRE en [0,1]", () => {

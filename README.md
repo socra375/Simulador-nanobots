@@ -120,8 +120,10 @@ La ola no desapareció — **cambió de trabajo**. Antes repartía color;
 ahora activa una región. La secuencia es:
 
 ```
-SPREAD      los Material Bots vuelan y cubren la superficie ENTERA,
-            con su color de identidad. Todavía se ven bots.
+SPREAD      sale una BOLA de Material Bots del núcleo, se para ARRIBA del
+            objeto y se derrama: los bots se posan de arriba hacia abajo,
+            como un líquido que se vuelca encima. Todavía se ven bots,
+            atenuados.
 SETTLE      pausa breve: el objeto cubierto de bots, sin material.
 ACTIVATION  parpadeo, determinista por índice de agente (ángulo áureo),
             con envolvente creciente: arranca salpicado y termina con
@@ -130,11 +132,19 @@ FORMATION   cada tanda de regiones se transforma, y dentro de cada región
             el material avanza desde la semilla hacia afuera.
 ```
 
-La **semilla** de cada región es su agente más cercano al núcleo, y las
-regiones se encienden en orden de cercanía al núcleo: el material recorre
-la superficie desde donde llegan los bots. El escalonado dentro de una
-capa también dejó de ser el orden del array (`cursor / (n-1)`) y pasó a
-ser la distancia normalizada al núcleo.
+**Todo se derrama desde el mismo punto (Fase 44).** `materialApex()` en
+`core/kinematics.ts` es la única fuente del ápice —el punto más alto de la
+capa de material, un poco por encima— y lo comparten las tres cosas: el
+aterrizaje de la bola, el escalonado con que los bots se posan, y el orden
+en que las regiones se transforman. Si cada una eligiera su origen se
+verían tres animaciones peleadas. Hasta la Fase 43 la bola caía en el
+CENTROIDE y se abría en todas direcciones, que se lee como una explosión,
+no como algo que cae.
+
+El escalonado dentro de una capa tampoco es el orden del array
+(`cursor / (n-1)`, que la spec §15 prohíbe): cada capa mide la distancia
+desde donde LLEGA — el relleno desde el núcleo, el material desde el
+ápice.
 
 Las tandas están **acotadas** (`MAX_ACTIVATION_SLOTS = 6`) y se solapan un
 25%. Las regiones conservan su identidad y su material; lo que se acota es
@@ -150,6 +160,20 @@ radiancia emissive. Que sean floats y puedan pasarse de 1 es lo que
 permite el parpadeo y el destello de transformación **sin un shader
 nuevo**: un tint de 2.0 es literalmente el doble de brillo, y el bloom lo
 recoge.
+
+**El brillo está acotado, y eso importa más de lo que parece (Fase 44).**
+El tint multiplica la radiancia emissive, y el bloom de la escena tiene el
+umbral en 0,35: un agente que brilla por encima de su propio color
+florece, y el enjambre vuelve a verse GRUESO — el mismo síntoma que la
+Fase 34 arregló sacando el hexágono de la vista normal, por otra vía. Dos
+reglas lo evitan: `INERT_DIM` atenúa al bot mientras sigue siendo bot (es
+metal apagado, no plasma), y el destello se dimensionó para notarse sin
+duplicar el brillo. Un test barre toda la animación agente por agente
+comprobándolo.
+
+Se probó además un techo duro (`MAX_GAIN`) y resultó **código muerto**:
+con la atenuación aplicada, ni el destello original de 2,4× lo alcanzaba
+con ningún color real. Se quitó.
 
 Como el tint es una **función pura del reloj**, el repliegue sale gratis:
 correr el reloj hacia atrás revierte la transformación (material →
@@ -599,22 +623,21 @@ el tope de `dt` del loop hacen que una formación de ~12 s nominales tarde
 bastante más en reloj de pared. Es un artefacto del entorno de medición,
 no un problema del simulador.
 
-## Imagen → 3D: de una foto al objeto construido (Fases 38-43)
+## Imagen → 3D: de una foto al objeto construido (Fases 38-44)
 
 El panel **"Imagen → 3D"** toma UNA sola imagen y la convierte en un
 objeto que el enjambre construye, con los colores reales de la foto.
 
-**La reconstrucción se ve EN LA ESCENA, no en el menú (Fase 43).** Al
-terminar de reconstruir, la nube de puntos aparece donde se arma todo, en
-el mismo lugar y a la misma escala en que la va a construir el enjambre,
-y se la puede girar con los controles de cámara de siempre. Antes salía
-proyectada en una miniatura de 240 px dentro de la carpeta del panel, que
-es justamente donde no se puede hacer lo único que importa de una
-reconstrucción 3D: mirarla desde otro ángulo y ver si el volumen cerró.
-Las etapas 2D —imagen, máscara, profundidad, procedencia— sí se quedan en
-el panel, porque son imágenes. La vista previa es sólo presentación: no
-crea agentes, no toca la simulación, y se apaga sola en cuanto el enjambre
-empieza a construir.
+**La forma la construye el ENJAMBRE (Fase 44).** "Reconstruir y construir"
+corre el pipeline y manda la figura al enjambre en el acto. La Fase 43
+había puesto en el medio una nube de puntos translúcida como vista previa;
+el usuario pidió otra cosa —"que el enjambre la forme de verdad"— y tenía
+razón: una vista previa de algo que el enjambre puede construir enseguida
+es un intermediario que no aporta, y además se veía casi transparente.
+"Volver a construir" rearma sin re-correr el pipeline de visión, que es lo
+único que hace falta rehacer después de cambiar la cantidad de nanobots.
+Las etapas 2D —imagen, máscara, profundidad, procedencia— se quedan en el
+panel, porque son imágenes.
 
 ```
 imagen -> máscara -> profundidad -> nube 3D con color

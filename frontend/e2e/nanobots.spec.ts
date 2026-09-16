@@ -428,7 +428,7 @@ test("Imagen → 3D: de una foto al objeto construido por el enjambre", async ({
 
   await expect.poll(() => panel(), { timeout: 20000 }).toContain("Lista");
 
-  await clickFolderButton(page, "Imagen → 3D", "Reconstruir");
+  await clickFolderButton(page, "Imagen → 3D", "Reconstruir y construir");
   await expect.poll(() => panel(), { timeout: 60000 }).toContain("vóxeles de superficie");
 
   // El aviso del spec §29 tiene que estar siempre, y el resultado tiene
@@ -436,8 +436,10 @@ test("Imagen → 3D: de una foto al objeto construido por el enjambre", async ({
   const info = await readFolderAllText(page, "Imagen → 3D");
   expect(info).toContain("es una estimación");
 
-  await clickFolderButton(page, "Imagen → 3D", "Construir con nanobots");
-
+  // Fase 44: NO hay un segundo clic. "Reconstruir y construir" deja al
+  // enjambre formando — el usuario pidió que la forma la haga el enjambre
+  // de verdad, no una vista previa que después haya que confirmar.
+  //
   // El enjambre recorre su secuencia de siempre sobre la figura
   // reconstruida: si la forma no se hubiera registrado bien, la cola
   // nunca pasaría del exoesqueleto.

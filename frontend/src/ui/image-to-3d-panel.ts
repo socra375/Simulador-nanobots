@@ -40,15 +40,6 @@ export interface ImageTo3DCallbacks {
   onFormShape: (shapeName: string, colorClusters: ColorCluster[]) => void;
   /** Cuántos nanobots hay configurados, para avisar si no alcanzan. */
   readNanobotCount: () => number;
-  /**
-   * Muestra la nube reconstruida EN LA ESCENA, o la esconde con null.
-   *
-   * La reconstrucción es un objeto 3D: mirarlo proyectado en una
-   * miniatura del menú no deja hacer lo único que importa —girarlo y ver
-   * si el volumen cerró—. Las etapas 2D (imagen, máscara, profundidad)
-   * sí se quedan en el panel, porque son imágenes.
-   */
-  onPreviewCloud: (points: Float32Array, colors: Uint8Array | null, count: number) => void;
 }
 
 type StageView = "imagen" | "mascara" | "profundidad" | "procedencia";
@@ -305,10 +296,15 @@ export function addImageTo3DFolder(gui: GUI, callbacks: ImageTo3DCallbacks): voi
         stageCtrl.setValue("mascara");
         drawStage();
         paintStats();
-        // La nube, en la escena: es lo que el enjambre va a construir, en
-        // el mismo lugar y a la misma escala.
-        callbacks.onPreviewCloud(core.cloud.points, core.cloud.colors, core.cloud.count);
-        status.textContent = `Listo: ${core.stats.surfaceVoxels} vóxeles de superficie. Girá la cámara para verla en la escena.`;
+        // Y ENSEGUIDA LO CONSTRUYE EL ENJAMBRE.
+        //
+        // La Fase 43 mostraba acá una nube de puntos translúcida como
+        // vista previa. El usuario pidió otra cosa: que la forma la haga
+        // el enjambre de verdad. Una vista previa de algo que el enjambre
+        // puede construir en el acto es un intermediario que no aporta —
+        // y además se veía casi transparente.
+        status.textContent = `${core.stats.surfaceVoxels} vóxeles — construyendo con el enjambre...`;
+        await formWithSwarm();
       } catch (err) {
         status.textContent = err instanceof Error ? err.message : "Falló la reconstrucción.";
       } finally {
@@ -316,7 +312,7 @@ export function addImageTo3DFolder(gui: GUI, callbacks: ImageTo3DCallbacks): voi
       }
     },
 
-    construir: async () => {
+    reconstruir2: async () => {
       if (busy) return;
       if (!core || !file || core.cloud.count === 0) {
         status.textContent = "Reconstruí primero.";
@@ -324,24 +320,34 @@ export function addImageTo3DFolder(gui: GUI, callbacks: ImageTo3DCallbacks): voi
       }
       busy = true;
       try {
-        const name = registerCustomScan(core.cloud.points, core.cloud.colors);
-        // Los clusters siguen saliendo del histograma: definen las OLAS
-        // (cuándo se revela cada zona). El tono exacto de cada agente sale
-        // del color por punto, que es otra cosa y viaja aparte.
-        const clusters = await extractColorClustersFromFile(file);
-        status.textContent = "Construyendo con el enjambre...";
-        // La vista previa se apaga: de acá en más lo que hay que mirar son
-        // los bots, y dos nubes superpuestas no se leen.
-        callbacks.onPreviewCloud(new Float32Array(0), null, 0);
-        callbacks.onFormShape(name, clusters);
+        await formWithSwarm();
       } finally {
         busy = false;
       }
     },
   };
 
-  folder.add(actions, "reconstruir").name("Reconstruir");
-  folder.add(actions, "construir").name("Construir con nanobots");
+  /**
+   * Registra la nube como forma y la manda a construir.
+   *
+   * Está aparte porque tiene DOS llamadores: el final de "Reconstruir"
+   * (el camino normal) y "Volver a construir", que rearma sin re-correr
+   * el pipeline de visión — útil después de cambiar la cantidad de
+   * nanobots, que es lo único que hace falta rehacer en ese caso.
+   */
+  async function formWithSwarm(): Promise<void> {
+    if (!core || !file) return;
+    const name = registerCustomScan(core.cloud.points, core.cloud.colors);
+    // Los clusters siguen saliendo del histograma: son la PALETA. El tono
+    // exacto de cada agente sale del color por punto, que es otra cosa y
+    // viaja aparte.
+    const clusters = await extractColorClustersFromFile(file);
+    callbacks.onFormShape(name, clusters);
+    status.textContent = `Construyendo: ${core.stats.surfaceVoxels} vóxeles de superficie.`;
+  }
+
+  folder.add(actions, "reconstruir").name("Reconstruir y construir");
+  folder.add(actions, "reconstruir2").name("Volver a construir");
   folder.domElement.appendChild(status);
   folder.domElement.appendChild(stats);
 

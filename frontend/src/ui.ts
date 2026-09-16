@@ -32,12 +32,6 @@ export interface UiCallbacks {
   // colores hay, no quién los lleva: eso lo decide la posición.
   onFormShape: (canonicalShapeName: string, colorClusters: ColorCluster[]) => void;
   onReturnToCore: () => void;
-  /**
-   * Muestra la nube reconstruida en la ESCENA, o la esconde con count 0.
-   * Opcional: sin esto el panel Imagen → 3D sigue funcionando y sólo se
-   * pierde la vista previa.
-   */
-  onPreviewCloud?: (points: Float32Array, colors: Uint8Array | null, count: number) => void;
 }
 
 // Panel de control (lil-gui): cantidad de nanobots (20-10.000), velocidad
@@ -103,7 +97,6 @@ export function createControlPanel(state: UiState, callbacks: UiCallbacks): GUI 
   addImageTo3DFolder(gui, {
     onFormShape: callbacks.onFormShape,
     readNanobotCount: callbacks.readNanobotCount ?? (() => state.count),
-    onPreviewCloud: callbacks.onPreviewCloud ?? (() => {}),
   });
 
   return gui;
