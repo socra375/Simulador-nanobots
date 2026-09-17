@@ -694,6 +694,34 @@ bajó los draw calls (19/21/23 antes y después). Las mallas sin usar ya
 dibujaban cero instancias. Lo que se ganó son cuatro objetos menos y sus
 `instanceMatrix`, no llamadas de dibujo.
 
+### Estos números NO se comparan entre sesiones (Fase 45)
+
+Al medir la Fase 45 salió **33,86 ms** a 10.000 formando, contra los 18,70
+ms anotados arriba. Parecía una regresión del 70% — y no lo era. Dos
+señales avisaban antes de tocar nada: el tiempo de formación completo
+apenas se movió (82,85 s contra 81,01 s), y la ventana que el bench llama
+"formando" son los primeros 4 s tras el clic, que en SwiftShader es casi
+todo el lanzamiento del exoesqueleto de Microbots — un camino que esa fase
+no toca.
+
+La forma de resolverlo no fue razonar sino **medir las dos versiones en la
+misma máquina, el mismo día**:
+
+| build | frame avg (10k formando) | formación completa |
+|---|---:|---:|
+| Fase 44 (`main`) | 33,15 ms | 87,97 s |
+| Fase 45 (rama) | 33,86 ms | 82,85 s |
+
+O sea: +0,7 ms (~2%, dentro del ruido entre corridas), y la formación
+completa incluso más rápida. Los 18,70 ms se midieron en otro contenedor;
+**el contenedor cambia entre sesiones y el bench corre sobre CPU
+compartida**, así que una cifra de una sesión no es línea base para otra.
+
+La regla que queda: un número de rendimiento sólo significa algo contra
+otro medido **en la misma máquina y con la misma carga**. Ante una
+sospecha de regresión, compilar la versión anterior y medirla ahí mismo
+cuesta cinco minutos y es la única respuesta que no es una conjetura.
+
 ### Lo que sólo encuentra la pantalla
 
 Tres veces seguidas, un cambio pasó los tests y estaba mal, y lo encontró
