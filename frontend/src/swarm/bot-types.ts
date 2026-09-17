@@ -166,3 +166,71 @@ export function botTypeInfo(type: number): BotTypeInfo {
 export function acceptsObjectMaterial(type: number): boolean {
   return botTypeInfo(type).acceptsObjectMaterial;
 }
+
+// --- De qué se compone cada POBLACIÓN (Fase 45) ---
+//
+// EL PROBLEMA QUE ESTO ARREGLA, dicho como lo dijo el usuario: "cuando
+// coloco X cantidad de microbots sale otra diferente".
+//
+// No era un error de conteo. Los dos sliders piden una POBLACIÓN, y cada
+// población se reparte en dos TIPOS:
+//
+//   Microbots (slider)  ->  Microbot (nodos)  +  Union Bot (vigas)
+//   Nanobots  (slider)  ->  Nanobot (detalle) +  Material Bot (material)
+//
+// Así que pedir 4.000 Microbots y ver "Microbot: 480" es correcto —los
+// otros 3.520 son las vigas— pero la pantalla no lo decía en ninguna
+// parte, y un número que no coincide con el que uno escribió se lee como
+// un bug. Esto arma esa frase, y es una función PURA para poder testear
+// la aritmética sin DOM.
+
+export interface PopulationSplit {
+  readonly label: string;
+  /** Lo que pide el slider. */
+  readonly configured: number;
+  /** Cuántos hay en escena, sumando los tipos en que se reparte. */
+  readonly onScreen: number;
+  readonly parts: ReadonlyArray<{ readonly name: string; readonly count: number }>;
+}
+
+/** Qué tipos componen cada población. */
+export const POPULATIONS: ReadonlyArray<{ label: string; types: readonly BotType[] }> = [
+  { label: "Microbots", types: [BOT_TYPE.MICROBOT, BOT_TYPE.UNION] },
+  { label: "Nanobots", types: [BOT_TYPE.NANOBOT, BOT_TYPE.MATERIAL] },
+];
+
+export function splitPopulations(
+  counts: ArrayLike<number>,
+  configured: readonly [microbots: number, nanobots: number],
+): PopulationSplit[] {
+  return POPULATIONS.map((pop, i) => {
+    const parts = pop.types.map((type) => ({ name: botTypeInfo(type).name, count: counts[type] ?? 0 }));
+    return {
+      label: pop.label,
+      configured: configured[i],
+      onScreen: parts.reduce((sum, p) => sum + p.count, 0),
+      parts,
+    };
+  });
+}
+
+/**
+ * La frase que va en el panel. Cuando no hay nadie en escena lo dice, en
+ * vez de mostrar un reparto de ceros que parecería un error.
+ */
+export function describePopulation(split: PopulationSplit): string {
+  const pedidos = `${miles(split.configured)} pedidos`;
+  if (split.onScreen === 0) return `${split.label}: ${pedidos} · ninguno en escena`;
+  const reparto = split.parts.map((p) => `${miles(p.count)} ${p.name}`).join(" + ");
+  return `${split.label}: ${pedidos} = ${reparto}`;
+}
+
+/**
+ * Separador de miles propio en vez de `toLocaleString("es")`: el formato
+ * de Intl depende de los datos ICU que traiga el entorno, así que el
+ * mismo número salía "4.000" en el navegador y "4000" bajo los tests. Un
+ * número que cambia de forma según dónde se lo mire no se puede afirmar.
+ */
+function miles(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}

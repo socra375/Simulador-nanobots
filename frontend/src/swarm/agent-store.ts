@@ -131,6 +131,19 @@ export interface AgentStore {
     target: Float32Array;
   }): void;
 
+  /**
+   * Re-apunta SÓLO las regiones (Fase 45).
+   *
+   * Existe porque cambiar el material de una figura ya formada rehace el
+   * mapa de material —y con él las regiones— pero NO empieza una
+   * formación: los agentes ya están en su destino, con su tipo y su
+   * estado. Reusar `adoptFormation` para esto los mandaba a todos de
+   * vuelta a CORE y los volvía a marcar Nanobot, así que el panel pasaba
+   * a decir "3.000 Nanobot, 0 Material Bot" sobre una figura que estaba
+   * ahí, terminada, hecha de material. Lo encontró la pantalla.
+   */
+  setRegions(nextRegion: Int16Array): void;
+
   /** Vuelve al reposo: sin figura, todos los agentes en IDLE. */
   reset(count: number, role: Uint8Array<ArrayBufferLike>, target: Float32Array): void;
 
@@ -217,6 +230,10 @@ export function createAgentStore(): AgentStore {
       // del rol COLOR (vive en shapes) y pedírselo acá acoplaría el store a
       // las formas. Lo afina assignTypesFromRoles.
       botType.fill(BOT_TYPE.NANOBOT, 0, count);
+    },
+
+    setRegions(nextRegion): void {
+      region = nextRegion;
     },
 
     reset(nextCount, nextRole, nextTarget): void {

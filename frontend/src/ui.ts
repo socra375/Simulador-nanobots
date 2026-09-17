@@ -7,8 +7,14 @@ import { extractColorClustersFromFile, type ColorCluster } from "./image-color";
 import { AGENT_STATE_NAMES } from "./swarm/agent-store";
 import { type SwarmDirector } from "./swarm/director";
 import { type CoverageInfo } from "./core/simulation";
-import { BOT_TYPES } from "./swarm/bot-types";
+import { BOT_TYPES, describePopulation, splitPopulations } from "./swarm/bot-types";
 import { botVisual } from "./swarm/bot-config";
+import {
+  materialNamesByFamily,
+  materialOriginLabel,
+  resolveMaterial,
+  type MaterialDefinition,
+} from "./material/material-library";
 
 export interface UiState extends SwarmParams {
   count: number;
@@ -231,8 +237,69 @@ export function addCoveragePanel(gui: GUI): (readCoverage: () => CoverageInfo | 
 export function addMaterialPanel(
   gui: GUI,
   onDebugChange: (on: boolean) => void,
+  onMaterialChange?: (material: MaterialDefinition | null) => void,
 ): (read: () => MaterialPanelInfo | null) => void {
   const folder = gui.addFolder("Material y regiones");
+
+  // --- De qué está hecho el objeto (Fase 45) ---
+  //
+  // Dos entradas para la MISMA pregunta: el desplegable para lo que está
+  // en la biblioteca, y el campo de texto para todo lo demás (la spec
+  // pide "cualquier material, tanto ficticio como real"). El campo gana
+  // cuando tiene algo escrito, porque escribir es un acto más explícito
+  // que dejar un desplegable donde estaba.
+  const DE_LA_FOTO = "— del objeto (foto) —";
+  const opciones: string[] = [DE_LA_FOTO];
+  for (const grupo of materialNamesByFamily()) opciones.push(...grupo.names);
+
+  const DEL_OBJETO = "El color sale de la foto: cada agente lleva el de su posición.";
+  const materialState = { elegir: DE_LA_FOTO, escribir: "" };
+
+  const materialRow = document.createElement("div");
+  materialRow.style.cssText = "display:flex;align-items:center;gap:6px;padding:4px 10px 6px";
+  const materialChip = document.createElement("span");
+  materialChip.style.cssText =
+    "width:14px;height:14px;border-radius:3px;flex:0 0 auto;border:1px solid rgba(255,255,255,0.25);background:transparent";
+  const materialNote = document.createElement("span");
+  materialNote.style.cssText = "font-size:10px;opacity:0.6;line-height:1.4";
+  materialNote.textContent = DEL_OBJETO;
+  materialRow.append(materialChip, materialNote);
+
+  const aplicar = (query: string | null): void => {
+    if (query === null) {
+      materialNote.textContent = DEL_OBJETO;
+      materialChip.style.background = "transparent";
+      onMaterialChange?.(null);
+      return;
+    }
+    const resuelto = resolveMaterial(query);
+    if (!resuelto) return;
+    // La procedencia se DICE, igual que con la paleta de la foto: un
+    // material inventado tiene un color derivado de su nombre, y hacerlo
+    // pasar por un color conocido sería inventar un dato.
+    materialNote.textContent = `${resuelto.definition.name} — ${materialOriginLabel(resuelto)}`;
+    materialChip.style.background = hexColor(resuelto.definition.color);
+    onMaterialChange?.(resuelto.definition);
+  };
+
+  const elegirCtrl = folder.add(materialState, "elegir", opciones).name("Material");
+  const escribirCtrl = folder.add(materialState, "escribir").name("…o escribilo");
+
+  elegirCtrl.onChange((valor: string) => {
+    // Elegir del desplegable borra lo escrito: si quedaran los dos, la
+    // pantalla mostraría dos respuestas para la misma pregunta.
+    materialState.escribir = "";
+    escribirCtrl.updateDisplay();
+    aplicar(valor === DE_LA_FOTO ? null : valor);
+  });
+  escribirCtrl.onFinishChange((valor: string) => {
+    const texto = valor.trim();
+    materialState.elegir = DE_LA_FOTO;
+    elegirCtrl.updateDisplay();
+    aplicar(texto || null);
+  });
+
+  folder.domElement.appendChild(materialRow);
 
   const line = document.createElement("div");
   line.style.padding = "6px 10px 2px";
@@ -310,8 +377,20 @@ function hexColor(value: number): string {
  * motivo escrito. Ocultarlos daría a entender que no existen; mostrarlos
  * sin aclaración daría a entender que funcionan.
  */
-export function addBotTypePanel(gui: GUI): (readCounts: () => Uint32Array) => void {
+export function addBotTypePanel(
+  gui: GUI,
+): (readCounts: () => Uint32Array, readConfigured: () => [number, number]) => void {
   const folder = gui.addFolder("Tipos de bot");
+
+  // EL RENGLÓN QUE FALTABA (Fase 45). Sin él, pedir 4.000 Microbots y leer
+  // "Microbot: 480" parece un bug: los otros 3.520 están en la fila de
+  // Union Bot, porque las vigas del exoesqueleto son de ese tipo. Ahora la
+  // cuenta se muestra entera y cierra a la vista.
+  const populations = document.createElement("div");
+  populations.style.cssText =
+    "padding:6px 10px 2px;font-size:10px;line-height:1.6;opacity:0.6;white-space:pre-wrap";
+  folder.domElement.appendChild(populations);
+
   const list = document.createElement("div");
   list.style.padding = "6px 10px";
   list.style.fontSize = "11px";
@@ -362,8 +441,9 @@ export function addBotTypePanel(gui: GUI): (readCounts: () => Uint32Array) => vo
 
   let lastPaint = -Infinity;
   const lastValues = BOT_TYPES.map(() => -1);
+  let lastPopulations = "";
 
-  return (readCounts) => {
+  return (readCounts, readConfigured) => {
     const now = performance.now();
     if (now - lastPaint < STATE_PANEL_INTERVAL_MS) return;
     lastPaint = now;
@@ -374,6 +454,12 @@ export function addBotTypePanel(gui: GUI): (readCounts: () => Uint32Array) => vo
       if (n === lastValues[i]) continue;
       lastValues[i] = n;
       valueCells[i].textContent = BOT_TYPES[i].implemented ? String(n) : "sin agentes";
+    }
+
+    const texto = splitPopulations(counts, readConfigured()).map(describePopulation).join("\n");
+    if (texto !== lastPopulations) {
+      lastPopulations = texto;
+      populations.textContent = texto;
     }
   };
 }

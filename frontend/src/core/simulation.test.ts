@@ -9,8 +9,11 @@ import {
   type SwarmApi,
 } from "./simulation";
 import { MATERIAL_PHASE } from "../material/material-animation";
+import { MATERIAL_SOURCE } from "../material/material-map";
+import { resolveMaterial } from "../material/material-library";
 import { DEFAULT_NANOBOT_TIMINGS, makeSwirlAxes } from "./kinematics";
 import { AGENT_STATE } from "../swarm/agent-store";
+import { BOT_TYPE } from "../swarm/bot-types";
 import { TASK_STATUS, TASK_TYPE } from "../swarm/director";
 
 // Arnés de la máquina de estados. Antes de la Fase 27c esto era
@@ -927,5 +930,106 @@ describe("el exoesqueleto sale por grupos, no todo junto", () => {
 
     advance(sim, MICROBOT_EXO_DURATION * 0.3);
     expect(sim.state.nanobotPhase).toBe("forming");
+  });
+});
+
+// --- Fase 45: elegir de qué está hecho el objeto ---
+
+describe("material elegido", () => {
+  const HUESO = resolveMaterial("hueso")!.definition;
+
+  function formarYAsentar(sim: Simulation): void {
+    sim.formShape("cubo", [{ color: 0xd02020, weight: 1 }]);
+    advance(sim, FULL_LAUNCH);
+    advance(sim, NANOBOT_FULL);
+    expect(sim.state.nanobotPhase).toBe("settled");
+  }
+
+  it("sin figura, se guarda y se aplica a la que se forme después", () => {
+    const { sim } = makeSim({ count: 400 });
+    sim.setMaterial(HUESO);
+    expect(sim.chosenMaterial?.id).toBe("hueso");
+    formarYAsentar(sim);
+    expect(sim.state.materialMap?.source).toBe(MATERIAL_SOURCE.CHOSEN);
+    expect(sim.state.materialMap?.palette).toEqual([HUESO.color]);
+  });
+
+  // EL COMPORTAMIENTO QUE HACE QUE SE VEA: con la figura ya asentada, el
+  // cambio de material no es instantáneo — rebobina hasta el final del
+  // vuelo para que se vuelva a ver el parpadeo y el derrame sobre la
+  // figura que ya está en pantalla.
+  it("con la figura asentada, REBOBINA la transformación en vez de cambiar el color de golpe", () => {
+    const { sim } = makeSim({ count: 400 });
+    formarYAsentar(sim);
+    sim.setMaterial(HUESO);
+    expect(sim.state.nanobotPhase).toBe("forming");
+    expect(sim.state.materialPhase).not.toBe(MATERIAL_PHASE.COMPLETE);
+    // Y llega sola al final, sin volver a volar.
+    advance(sim, NANOBOT_FULL);
+    expect(sim.state.nanobotPhase).toBe("settled");
+    expect(sim.state.materialPhase).toBe(MATERIAL_PHASE.COMPLETE);
+  });
+
+  // ...pero los bots NO se mueven: al rebobinar al final del vuelo ya
+  // están en su destino. Si saltaran, se vería un teletransporte.
+  it("al rebobinar, los agentes se quedan donde están", () => {
+    const { sim, rec } = makeSim({ count: 400 });
+    formarYAsentar(sim);
+    const antes = rec.lastPositions!.slice();
+    sim.setMaterial(HUESO);
+    sim.step(0.016);
+    const despues = rec.lastPositions!;
+    let maxSalto = 0;
+    for (let i = 0; i < antes.length; i++) maxSalto = Math.max(maxSalto, Math.abs(antes[i] - despues[i]));
+    expect(maxSalto).toBeLessThan(0.05);
+    // Y la capa de material sigue VISIBLE: si el rebobinado cayera en un
+    // instante donde todavía no está revelada, la figura parpadearía
+    // perdiendo tres cuartos de sus agentes por un cuadro.
+    expect(rec.lastUpdate?.visibleRoles[1]).toBe(true);
+  });
+
+  // LO QUE LA PANTALLA ENCONTRÓ Y LOS TESTS NO: cambiar el material
+  // reconstruye el mapa, y el primer intento reusó `adoptFormation` para
+  // meterlo en el store. Eso EMPIEZA una formación — manda a todos los
+  // agentes al núcleo y los vuelve a marcar Nanobot— así que el panel
+  // pasaba a decir "3.000 Nanobot, 0 Material Bot" sobre una figura que
+  // estaba ahí, terminada, hecha de material.
+  it("cambiar el material NO deshace el tipo ni el estado de los agentes", () => {
+    const { sim } = makeSim({ count: 400 });
+    formarYAsentar(sim);
+    const tiposAntes = Array.from(sim.state.typeCounts);
+    const estadosAntes = Array.from(sim.state.stateCounts);
+    expect(tiposAntes[BOT_TYPE.MATERIAL]).toBeGreaterThan(0);
+
+    sim.setMaterial(HUESO);
+
+    expect(Array.from(sim.state.typeCounts)).toEqual(tiposAntes);
+    expect(Array.from(sim.state.stateCounts)).toEqual(estadosAntes);
+  });
+
+  // ...y sin embargo las regiones SÍ tienen que quedar actualizadas: son
+  // las del mapa nuevo, y el inspector las lee del store.
+  it("pero las regiones del store SÍ pasan a ser las del mapa nuevo", () => {
+    const { sim } = makeSim({ count: 400 });
+    formarYAsentar(sim);
+    sim.setMaterial(HUESO);
+    expect(sim.agents.region).toBe(sim.state.materialMap!.region);
+  });
+
+  it("volver a null devuelve el color de la figura", () => {
+    const { sim } = makeSim({ count: 400 });
+    sim.setMaterial(HUESO);
+    formarYAsentar(sim);
+    sim.setMaterial(null);
+    expect(sim.chosenMaterial).toBeNull();
+    expect(sim.state.materialMap?.source).not.toBe(MATERIAL_SOURCE.CHOSEN);
+  });
+
+  it("elegir material sin figura no dibuja nada ni rompe", () => {
+    const { sim, rec } = makeSim({ count: 400 });
+    rec.calls.length = 0;
+    sim.setMaterial(HUESO);
+    expect(rec.calls).toEqual([]);
+    expect(sim.state.materialMap).toBeNull();
   });
 });

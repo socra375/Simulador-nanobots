@@ -27,6 +27,7 @@ import { validateCoverage, voxelizePoints, type VoxelGrid } from "../voxel/grid"
 import { findComponents, type ComponentReport } from "../voxel/validate";
 import { buildMorphSource } from "../voxel/correspondence";
 import { buildMaterialMap, type MaterialMap } from "../material/material-map";
+import { type MaterialDefinition } from "../material/material-library";
 import {
   materialPhaseAt,
   materialTintIsStatic,
@@ -274,6 +275,13 @@ export interface Simulation {
    */
   setRegionDebug(on: boolean): void;
   readonly regionDebug: boolean;
+  /**
+   * De qué está hecho el objeto (Fase 45). null = el color sale de la
+   * foto. Cambiarlo NO reemplaza al mapa de material: la posición sigue
+   * decidiendo regiones, semillas y orden de propagación.
+   */
+  setMaterial(material: MaterialDefinition | null): void;
+  readonly chosenMaterial: MaterialDefinition | null;
   /** Sólo para tests/depuración: posiciones escritas en el último cuadro. */
   readonly renderPositions: Float32Array;
 }
@@ -322,6 +330,13 @@ export function createSimulation(deps: SimulationDeps): Simulation {
   // línea de tiempo dice CUÁNDO aparece. El tint es lo único que se
   // recalcula por cuadro, y sólo mientras algo esté cambiando.
   let materialMap: MaterialMap | null = null;
+  /**
+   * De qué está hecho el objeto, si el usuario lo eligió (Fase 45). null =
+   * el color sale de la foto, como hasta la Fase 44. Vive acá y no en el
+   * mapa porque SOBREVIVE a la figura: se elige una vez y vale para todas
+   * las que se formen después.
+   */
+  let chosenMaterial: MaterialDefinition | null = null;
   let materialTimeline: MaterialTimeline = planMaterialTimeline(NANOBOT_LAYER_DURATION * 2, 1);
   const materialTint = new Float32Array(deps.maxNanobots * 3).fill(1);
   let regionDebug = false;
@@ -518,6 +533,85 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     };
   }
 
+  /**
+   * Arma el mapa de material, su línea de tiempo y el plan de capas para
+   * una formación ya generada.
+   *
+   * Está separado de `startFormation` porque tiene DOS llamadores: formar
+   * una figura, y cambiar el material de la que ya está en pantalla. Si
+   * el segundo caso rehiciera esto por su cuenta, serían dos versiones de
+   * la misma secuencia esperando a divergir.
+   *
+   * EL ORDEN IMPORTA: primero el mapa de material (que necesita los
+   * puntos), después la línea de tiempo (que necesita cuántas tandas
+   * tiene el mapa), y recién ahí el plan de capas (que necesita saber
+   * cuánto dura la cola de material para dar el total).
+   */
+  function planMaterialAndLayers(formation: ShapeFormation, count: number): void {
+    const isMaterial = new Uint8Array(count);
+    for (let i = 0; i < count; i++) {
+      isMaterial[i] = formation.roles[i] === NANOBOT_ROLE.COLOR ? 1 : 0;
+    }
+    // El ÁPICE: dónde se para la bola de Material Bots antes de
+    // derramarse. Lo comparten el vuelo y el material a propósito — si
+    // cada uno eligiera su origen, se verían dos animaciones peleadas.
+    const apex = materialApex(
+      formation.roles,
+      formation.points,
+      count,
+      NANOBOT_ROLE.COLOR,
+      FORMATION_CENTER,
+    );
+    materialMap = buildMaterialMap({
+      points: formation.points,
+      count,
+      isMaterial,
+      pointColors: formation.pointColors,
+      clusters: formation.colorClusters,
+      center: FORMATION_CENTER,
+      // Desde ARRIBA, no desde el núcleo: el material se derrama sobre el
+      // objeto como un líquido, siguiendo al mismo punto donde cae la
+      // bola de bots.
+      propagationOrigin: apex,
+      // De qué está hecho el objeto, si el usuario lo eligió. El mapa
+      // sigue decidiendo DÓNDE va cada cosa; esto sólo cambia el color.
+      chosen: chosenMaterial,
+    });
+    const travelDuration = 2 * NANOBOT_LAYER_DURATION;
+    materialTimeline = planMaterialTimeline(travelDuration, materialMap.slots);
+
+    nanobotPlan = planLayers(
+      formation.roles,
+      formation.points,
+      count,
+      NANOBOT_ROLE.COLOR,
+      NANOBOT_LAYER_DURATION,
+      FORMATION_CENTER,
+      reactorCenter,
+      materialTimeline.end - travelDuration,
+    );
+  }
+
+  /**
+   * Adopta en el store la formación recién planificada. Va SEPARADO de
+   * `planMaterialAndLayers` a propósito: esto empieza una formación —
+   * manda a todos los agentes al núcleo y les vuelve a asignar el tipo—
+   * y eso es exactamente lo que NO hay que hacer al cambiarle el material
+   * a una figura que ya está construida.
+   */
+  function adoptPlannedFormation(formation: ShapeFormation, count: number): void {
+    // El store apunta a los arrays de ESTA formación (no los copia, igual
+    // que currentRoles/currentFormationTargets).
+    agents.adoptFormation({
+      count,
+      role: formation.roles,
+      region: materialMap!.region,
+      layer: nanobotPlan.layerOf,
+      delayFraction: nanobotPlan.delayFraction,
+      target: formation.points,
+    });
+  }
+
   function startFormation(name: string, colorClusters: ColorCluster[]): void {
     const formation = formShapeWithRoles(
       name,
@@ -536,59 +630,8 @@ export function createSimulation(deps: SimulationDeps): Simulation {
     currentColorClusters = colorClusters;
     nanobotAnimCount = settings.count;
 
-    // EL ORDEN IMPORTA: primero el mapa de material (que necesita los
-    // puntos), después la línea de tiempo (que necesita cuántas tandas
-    // tiene el mapa), y recién ahí el plan de capas (que necesita saber
-    // cuánto dura la cola de material para dar el total).
-    const isMaterial = new Uint8Array(settings.count);
-    for (let i = 0; i < settings.count; i++) {
-      isMaterial[i] = formation.roles[i] === NANOBOT_ROLE.COLOR ? 1 : 0;
-    }
-    // El ÁPICE: dónde se para la bola de Material Bots antes de
-    // derramarse. Lo comparten el vuelo y el material a propósito — si
-    // cada uno eligiera su origen, se verían dos animaciones peleadas.
-    const apex = materialApex(
-      formation.roles,
-      formation.points,
-      settings.count,
-      NANOBOT_ROLE.COLOR,
-      FORMATION_CENTER,
-    );
-    materialMap = buildMaterialMap({
-      points: formation.points,
-      count: settings.count,
-      isMaterial,
-      pointColors: formation.pointColors,
-      clusters: formation.colorClusters,
-      center: FORMATION_CENTER,
-      // Desde ARRIBA, no desde el núcleo: el material se derrama sobre el
-      // objeto como un líquido, siguiendo al mismo punto donde cae la
-      // bola de bots.
-      propagationOrigin: apex,
-    });
-    const travelDuration = 2 * NANOBOT_LAYER_DURATION;
-    materialTimeline = planMaterialTimeline(travelDuration, materialMap.slots);
-
-    nanobotPlan = planLayers(
-      formation.roles,
-      formation.points,
-      settings.count,
-      NANOBOT_ROLE.COLOR,
-      NANOBOT_LAYER_DURATION,
-      FORMATION_CENTER,
-      reactorCenter,
-      materialTimeline.end - travelDuration,
-    );
-    // El store apunta a los arrays de ESTA formación (no los copia, igual
-    // que currentRoles/currentFormationTargets arriba).
-    agents.adoptFormation({
-      count: settings.count,
-      role: formation.roles,
-      region: materialMap.region,
-      layer: nanobotPlan.layerOf,
-      delayFraction: nanobotPlan.delayFraction,
-      target: formation.points,
-    });
+    planMaterialAndLayers(formation, settings.count);
+    adoptPlannedFormation(formation, settings.count);
 
     // Cada destino se empareja con el agente viejo más cercano (por
     // celda de vóxel) para que nadie cruce la figura de punta a punta.
@@ -1045,6 +1088,43 @@ export function createSimulation(deps: SimulationDeps): Simulation {
       redrawCurrentFrame();
     },
     get regionDebug() { return regionDebug; },
+    get chosenMaterial() { return chosenMaterial; },
+    /**
+     * Elige de qué está hecho el objeto (Fase 45). null vuelve al color de
+     * la foto.
+     *
+     * TRES CASOS, y cada uno hace lo mínimo que hace falta:
+     *
+     *   sin figura       se guarda y vale para la próxima que se forme.
+     *   figura formándose  se rehace el mapa y la animación en curso lo
+     *                    toma desde el cuadro siguiente (spec §21: la
+     *                    animación es interrumpible y continúa desde
+     *                    donde está, no se reinicia).
+     *   figura asentada  se rehace el mapa y se REBOBINA hasta el final
+     *                    del vuelo, así se ve la transformación completa
+     *                    —parpadeo, tandas, derrame— sobre la figura que
+     *                    ya está en pantalla. Los bots no vuelven a
+     *                    volar: en ese instante ya están en su destino,
+     *                    así que nada salta.
+     */
+    setMaterial(material: MaterialDefinition | null): void {
+      chosenMaterial = material;
+      if (!currentFormation || nanobotAnimCount === 0) return;
+      planMaterialAndLayers(currentFormation, nanobotAnimCount);
+      // SÓLO las regiones: los agentes ya están donde están, con su tipo
+      // y su estado. Adoptar la formación entera acá los mandaba a todos
+      // de vuelta al núcleo y los volvía a marcar Nanobot.
+      agents.setRegions(materialMap!.region);
+      tintWrittenForPhase = -1;
+      lastPulsedSlot = -1;
+      if (nanobotPhase === "settled") {
+        nanobotPhase = "forming";
+        nanobotElapsed = materialTimeline.travelEnd;
+      }
+      refreshMaterialTint(nanobotElapsed);
+      swarmMesh.setInstanceTint(materialTint);
+      redrawCurrentFrame();
+    },
     renderPositions: nanobotRenderPositions,
   };
 }

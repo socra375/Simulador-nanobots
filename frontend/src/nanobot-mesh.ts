@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { NANOBOT_ROLE } from "./shapes";
 import { BOT_TYPE } from "./swarm/bot-types";
-import { botVisual } from "./swarm/bot-config";
+import { botVisual, MATERIAL_EMISSIVE_INTENSITY } from "./swarm/bot-config";
 import { createBotGeometries, LOD_LEVEL, type BotGeometrySet, type LodLevel } from "./rendering/bot-models";
 import { createInstanceColorBuffer, patchMaterialForInstanceColor } from "./rendering/instance-color";
 
@@ -94,7 +94,7 @@ function buildRoleMaterial(role: number): THREE.Material {
   return new THREE.MeshStandardMaterial({
     color: 0xffffff,
     emissive: 0xffffff,
-    emissiveIntensity: 0.85,
+    emissiveIntensity: MATERIAL_EMISSIVE_INTENSITY,
     roughness: 0.35,
     metalness: 0.1,
   });

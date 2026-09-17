@@ -3,6 +3,10 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+// El umbral vive en bot-config.ts junto con la intensidad del emissive:
+// son la misma pregunta (qué florece), y el techo de brillo del material
+// los DERIVA en vez de adivinarlos (ver material/material-animation.ts).
+import { BLOOM_THRESHOLD } from "./swarm/bot-config";
 
 // Construye la escena 3D con estética futurista/holográfica: fondo oscuro,
 // cuadrícula sutil tipo "piso de laboratorio" y una luz de acento neón.
@@ -106,7 +110,7 @@ export function createScene(container: HTMLElement): SceneBundle {
     new THREE.Vector2(window.innerWidth, window.innerHeight),
     0.55, // strength
     0.4, // radius
-    0.35, // threshold
+    BLOOM_THRESHOLD, // threshold
   );
   composer.addPass(bloomPass);
 

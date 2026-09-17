@@ -46,6 +46,28 @@ export function botVisual(type: number): BotVisual {
   return BOT_VISUALS[type as BotType] ?? BOT_VISUALS[BOT_TYPE.NANOBOT];
 }
 
+// --- Las dos constantes que deciden qué FLORECE (Fase 45) ---
+//
+// Estaban sueltas en dos archivos que no se conocen —`scene.ts` tenía el
+// umbral del bloom y `nanobot-mesh.ts` la intensidad del emissive— y el
+// techo de brillo del material se calibraba contra un número inventado
+// que no se parecía a ninguno de los dos. Resultado: un material claro
+// (hueso, mármol, nieve) seguía floreciendo hasta volverse una mancha
+// blanca sin forma, aunque hubiera "un techo".
+//
+// Acá viven juntas porque son UNA sola pregunta —cuánto tiene que emitir
+// algo para que el bloom lo recoja— y porque así `toneScale()` en
+// material/material-animation.ts puede DERIVAR su presupuesto en vez de
+// adivinarlo, sin importar three.js (los tests corren en node).
+//
+// Si alguna se toca, el presupuesto se reajusta solo.
+
+/** Umbral del `UnrealBloomPass` de la escena. Por encima de esto, florece. */
+export const BLOOM_THRESHOLD = 0.35;
+
+/** `emissiveIntensity` del material que llevan los Material Bots. */
+export const MATERIAL_EMISSIVE_INTENSITY = 0.85;
+
 /**
  * Cambia el color de identificación de un tipo en caliente. Existe para
  * que la paleta sea configurable (lo pide la spec) sin que nadie tenga que

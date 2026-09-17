@@ -12,8 +12,14 @@ import {
   transitionFlash,
   writeMaterialTint,
   INERT_DIM,
+  emittedLuminance,
+  lumaBudget,
+  luminance,
+  MATE_LUMA_BUDGET,
+  toneScale,
 } from "./material-animation";
 import { buildMaterialMap, NO_REGION, type MaterialMap } from "./material-map";
+import { BLOOM_THRESHOLD, MATERIAL_EMISSIVE_INTENSITY } from "../swarm/bot-config";
 
 const CENTER: [number, number, number] = [0, 0, 0];
 const CORE: [number, number, number] = [-8, 8, -8];
@@ -243,17 +249,88 @@ describe("tint por instancia", () => {
     expect(brilloMedio(t.travelEnd)).toBeLessThan(brilloMedio(t.end));
   });
 
-  it("al final, cada agente lleva EXACTAMENTE el color de su posición", () => {
+  it("al final, cada agente lleva EL TONO de su posición (el brillo puede estar acotado)", () => {
     const { map, count } = cloudMap();
     const t = planMaterialTimeline(TRAVEL, map.slots);
     const out = new Float32Array(count * 3);
     expect(writeMaterialTint(out, map, t, t.end, IDENTITY)).toBe(false);
     for (let i = 0; i < count; i++) {
       if (map.region[i] === NO_REGION) continue;
-      expect(out[i * 3 + 0]).toBeCloseTo(map.color[i * 3 + 0] / 255, 5);
-      expect(out[i * 3 + 1]).toBeCloseTo(map.color[i * 3 + 1] / 255, 5);
-      expect(out[i * 3 + 2]).toBeCloseTo(map.color[i * 3 + 2] / 255, 5);
+      const r = map.color[i * 3 + 0] / 255;
+      const g = map.color[i * 3 + 1] / 255;
+      const b = map.color[i * 3 + 2] / 255;
+      const escala = toneScale(r, g, b, map.glow);
+      // El tono se conserva EXACTO: los tres canales se escalan por el
+      // mismo factor, así que lo que cambia es el brillo, no el color.
+      expect(out[i * 3 + 0]).toBeCloseTo(r * escala, 5);
+      expect(out[i * 3 + 1]).toBeCloseTo(g * escala, 5);
+      expect(out[i * 3 + 2]).toBeCloseTo(b * escala, 5);
     }
+  });
+
+  // EL ARREGLO DE LA FASE 45: un fondo blanco (o un material claro) hacía
+  // florecer el objeto entero con el bloom. El techo de luminancia es lo
+  // que lo impide, y este test lo fija por los dos lados — que acote lo
+  // claro Y que no toque lo oscuro. Sin la segunda mitad, "escalar todo a
+  // la mitad" pasaría el test y arruinaría los colores.
+  it("un material claro no pasa del presupuesto de luminancia; uno oscuro no se toca", () => {
+    const casiBlanco = toneScale(1, 1, 0.98);
+    expect(luminance(casiBlanco, casiBlanco, 0.98 * casiBlanco)).toBeLessThanOrEqual(lumaBudget(0.5) + 1e-6);
+    expect(casiBlanco).toBeLessThan(1);
+
+    const rojoOscuro = toneScale(0.55, 0.05, 0.05);
+    expect(rojoOscuro).toBe(1);
+
+    // `glow` mueve el presupuesto: un material que se ganó el brillo
+    // (cromo, lava) queda más claro que uno mate (hueso, madera) del
+    // MISMO color. Si `glow` se ignorara, estos dos serían iguales.
+    expect(toneScale(1, 1, 1, 1)).toBeGreaterThan(toneScale(1, 1, 1, 0));
+  });
+
+  // EL TEST QUE FALTABA EN EL PRIMER INTENTO, y que la pantalla tuvo que
+  // encontrar por su cuenta: el techo era un número elegido a ojo, y el
+  // hueso seguía floreciendo. La afirmación correcta no es "el tint es
+  // menor que X" sino "lo que EMITE un material mate no llega al umbral
+  // del bloom" — que es la condición física de que no florezca.
+  it("un material MATE nunca llega al umbral del bloom, por claro que sea", () => {
+    for (const [r, g, b] of [[1, 1, 1], [0.95, 0.9, 0.78], [0.82, 0.8, 0.72], [0.6, 0.6, 0.6]]) {
+      const s = toneScale(r, g, b, 0);
+      expect(emittedLuminance(r * s, g * s, b * s)).toBeLessThan(BLOOM_THRESHOLD);
+    }
+  });
+
+  // ...y el otro lado, para que el techo no se convierta en "apagar todo":
+  // un material que SÍ se ganó el brillo tiene que pasar el umbral.
+  it("un material con brillo propio SÍ pasa el umbral, que es lo que lo hace brillar", () => {
+    const [r, g, b] = [0.75, 0.78, 0.8]; // cromo
+    const s = toneScale(r, g, b, 0.95);
+    expect(emittedLuminance(r * s, g * s, b * s)).toBeGreaterThan(BLOOM_THRESHOLD);
+  });
+
+  it("el presupuesto mate SALE del pipeline, no de un número suelto", () => {
+    expect(MATE_LUMA_BUDGET * MATERIAL_EMISSIVE_INTENSITY).toBeLessThan(BLOOM_THRESHOLD);
+    expect(lumaBudget(0)).toBe(MATE_LUMA_BUDGET);
+    expect(lumaBudget(1)).toBeGreaterThan(lumaBudget(0));
+    // Fuera de rango se acota, no se extrapola.
+    expect(lumaBudget(5)).toBe(lumaBudget(1));
+    expect(lumaBudget(-3)).toBe(lumaBudget(0));
+  });
+
+  it("el techo se aplica al material, no al destello: la activación sigue picando", () => {
+    const { map, count } = cloudMap();
+    const t = planMaterialTimeline(TRAVEL, map.slots);
+    const out = new Float32Array(count * 3);
+    const pico = (elapsed: number): number => {
+      writeMaterialTint(out, map, t, elapsed, IDENTITY);
+      let max = 0;
+      for (let i = 0; i < count; i++) {
+        if (map.region[i] === NO_REGION) continue;
+        max = Math.max(max, out[i * 3 + 0], out[i * 3 + 1], out[i * 3 + 2]);
+      }
+      return max;
+    };
+    // Durante el parpadeo hay agentes por encima de su valor de reposo.
+    expect(pico(t.settleEnd + ACTIVATION_DURATION * 0.5)).toBeGreaterThan(pico(t.travelEnd));
   });
 
   it("los agentes sin material quedan en blanco (el neutro del producto)", () => {
