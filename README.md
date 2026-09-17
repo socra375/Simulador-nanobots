@@ -694,6 +694,22 @@ bajó los draw calls (19/21/23 antes y después). Las mallas sin usar ya
 dibujaban cero instancias. Lo que se ganó son cuatro objetos menos y sus
 `instanceMatrix`, no llamadas de dibujo.
 
+### Lo que sólo encuentra la pantalla
+
+Tres veces seguidas, un cambio pasó los tests y estaba mal, y lo encontró
+mirar el render. Vale la pena tenerlo anotado porque es un patrón, no mala
+suerte:
+
+| Qué pasó | Por qué los tests no lo vieron |
+|---|---|
+| El parche de shader de la Fase 40 era un **no-op silencioso** (`USE_INSTANCING_COLOR` sólo existe en el vertex) | Un shader sólo se puede comprobar de verdad renderizando |
+| El modo DEBUG de regiones no hacía nada visible (Fase 42) | Con la figura asentada `step()` no dibuja: el tint nuevo se quedaba en RAM |
+| El techo de brillo de la Fase 45 estaba calibrado contra un número inventado | Los tests afirmaban "menor que X", y X era el número equivocado. La afirmación correcta —"lo que emite un material mate no llega al umbral del bloom"— sólo se puede escribir si las dos constantes del pipeline están donde se las pueda leer |
+
+De ahí la regla del proyecto: un cambio que afecta lo que se VE no está
+terminado hasta haberlo visto. Los tests fijan la regla; la pantalla dice
+si la regla era la correcta.
+
 Las dos mejoras reales de memoria vinieron de **sacar** cosas, no de
 agregar optimizaciones. En cambio las "optimizaciones" intuitivas
 (evitar un literal de array por cuadro, sacar closures de `forEach`,
