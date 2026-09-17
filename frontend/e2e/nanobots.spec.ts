@@ -175,8 +175,22 @@ async function setNanobotCount(page: Page, count: number) {
   await input.press("Tab");
 }
 
+/**
+ * El canvas de la ESCENA es el que three.js cuelga dentro de `#app` (ver
+ * createScene). No es el único de la página: el panel Imagen → 3D dibuja
+ * su vista previa en uno, y el inspector de bots tiene su propio
+ * renderer de three.js.
+ *
+ * Con `page.locator("canvas")` a secas, Playwright resolvía TRES y
+ * fallaba por modo estricto. Eso es lo que este test venía registrando
+ * como "flake de arrastre de cámara" desde la Fase 20: no era timing, era
+ * un selector ambiguo que sólo funcionaba mientras los otros dos canvas
+ * no existieran todavía.
+ */
+const SCENE_CANVAS = "#app canvas";
+
 async function dragRotateCamera(page: Page, dx = 150, dy = -80): Promise<void> {
-  const box = await page.locator("canvas").boundingBox();
+  const box = await page.locator(SCENE_CANVAS).boundingBox();
   if (!box) throw new Error("No se encontró el <canvas> de la escena");
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
@@ -291,7 +305,9 @@ test("rotar la cámara (arrastrar) y hacer zoom (rueda) no generan errores y el 
   await page.waitForTimeout(200);
   await dragRotateCamera(page, -120, 60);
 
-  const canvas = page.locator("canvas");
+  // Mismo motivo que en dragRotateCamera: hay tres canvas en la página y
+  // el zoom tiene que ir sobre el de la escena.
+  const canvas = page.locator(SCENE_CANVAS);
   await canvas.hover();
   await page.mouse.wheel(0, -400); // zoom in
   await page.waitForTimeout(200);

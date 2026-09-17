@@ -609,6 +609,19 @@ npx playwright install chromium       # una sola vez
 npm run test:e2e
 ```
 
+**El "flake de arrastre de cámara" no era un flake (Fase 45).** Desde la
+Fase 20 ese test fallaba de a ratos y se lo trató como intermitencia del
+entorno. En realidad `page.locator("canvas")` es **ambiguo**: la página
+tiene tres canvas (la escena, la vista previa de Imagen → 3D, y el
+renderer propio del inspector de bots), y Playwright falla por modo
+estricto en cuanto los otros dos existen. Pasaba sólo mientras no se
+hubieran creado todavía. Apuntando al canvas de la escena (`#app canvas`)
+pasa siempre, y la suite quedó en **20/20**.
+
+Vale como advertencia general: un test que falla "a veces" puede ser
+determinista y estar mal escrito. Conviene leer el error antes de
+etiquetarlo.
+
 ## Notas de rendimiento
 
 - La física corre en C++ compilado a Wasm (código nativo), no en JS
