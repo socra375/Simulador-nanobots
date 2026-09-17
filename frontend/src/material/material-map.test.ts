@@ -4,9 +4,11 @@ import {
   buildMaterialMap,
   MATERIAL_SOURCE,
   NO_REGION,
+  NEUTRAL_GLOW,
   paletteFromPointColors,
   type MaterialMap,
 } from "./material-map";
+import { resolveMaterial } from "./material-library";
 import { labelRegions } from "./material-regions";
 
 const CENTER: [number, number, number] = [0, 0, 0];
@@ -423,5 +425,116 @@ describe("labelRegions", () => {
     expect(out.regionMaterial[out.region[0]]).not.toBe(
       out.regionMaterial[out.region[cloud.count - 1]],
     );
+  });
+});
+
+// ---------------------------------------------------------------------
+// Fase 45: el material ELEGIDO.
+//
+// La regla del proyecto no cambia: color = POSICIÓN + REGIÓN. Lo que
+// cambia es de dónde sale el color de esas regiones. Estos tests fijan
+// justamente eso — que elegir un material NO puentee el mapa.
+
+describe("material elegido", () => {
+  const HUESO = resolveMaterial("hueso")!.definition;
+  const ORO = resolveMaterial("oro")!.definition;
+
+  it("gana sobre la foto: el objeto es del material elegido", () => {
+    // Nube de dos colores bien distintos...
+    const cloud = grid(8, (_x, y) => (y > 0 ? DORADO : ROJO));
+    const map = build(cloud, { chosen: HUESO });
+    expect(map.source).toBe(MATERIAL_SOURCE.CHOSEN);
+    expect(map.palette).toEqual([HUESO.color]);
+    expect(map.chosen?.id).toBe("hueso");
+    // ...y ni un solo agente conserva el rojo ni el dorado de la foto.
+    for (let i = 0; i < cloud.count; i++) {
+      if (map.region[i] === NO_REGION) continue;
+      expect(agentColor(map, i)).not.toBe(ROJO);
+      expect(agentColor(map, i)).not.toBe(DORADO);
+    }
+  });
+
+  // LO QUE NO PUEDE PASAR: que elegir un material convierta el mapa en un
+  // color plano y se lleve puesto todo el sistema espacial. Las regiones,
+  // las semillas y el spread siguen saliendo de la POSICIÓN.
+  it("NO desactiva el sistema espacial: sigue habiendo regiones, semillas y spread", () => {
+    const cloud = grid(8, () => ROJO);
+    const map = build(cloud, { chosen: ORO });
+    expect(map.regions.length).toBeGreaterThan(0);
+    expect(map.slots).toBeGreaterThan(0);
+    // El spread sigue siendo una distancia normalizada de verdad: hay
+    // agentes cerca de la semilla y agentes lejos.
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < cloud.count; i++) {
+      if (map.region[i] === NO_REGION) continue;
+      min = Math.min(min, map.spread[i]);
+      max = Math.max(max, map.spread[i]);
+    }
+    expect(min).toBeCloseTo(0, 5);
+    expect(max).toBeCloseTo(1, 5);
+  });
+
+  it("el brillo del material viaja en el mapa", () => {
+    const cloud = grid(6, () => ROJO);
+    expect(build(cloud, { chosen: HUESO }).glow).toBe(HUESO.glow);
+    expect(build(cloud, { chosen: ORO }).glow).toBe(ORO.glow);
+    // Sin material elegido, el neutro: una foto no dice si era mate.
+    expect(build(cloud).glow).toBe(NEUTRAL_GLOW);
+    expect(build(cloud).chosen).toBeNull();
+  });
+
+  // LA VETA. Sin esto, 40.000 agentes con el mismo RGB exacto se ven como
+  // plástico pintado, no como hueso.
+  it("los agentes no salen todos del mismo tono exacto", () => {
+    const cloud = grid(8, () => ROJO);
+    const map = build(cloud, { chosen: HUESO });
+    const tonos = new Set<number>();
+    for (let i = 0; i < cloud.count; i++) {
+      if (map.region[i] === NO_REGION) continue;
+      tonos.add(agentColor(map, i));
+    }
+    expect(tonos.size).toBeGreaterThan(10);
+  });
+
+  // ...pero la veta es una VETA, no un arcoíris (spec §33): todos los
+  // tonos siguen siendo el mismo material, a un desvío acotado de él.
+  it("la veta no cambia el material: todos los tonos son el mismo color, más claro o más oscuro", () => {
+    const cloud = grid(8, () => ROJO);
+    const map = build(cloud, { chosen: HUESO });
+    const br = (HUESO.color >> 16) & 0xff;
+    const bg = (HUESO.color >> 8) & 0xff;
+    const bb = HUESO.color & 0xff;
+    for (let i = 0; i < cloud.count; i++) {
+      if (map.region[i] === NO_REGION) continue;
+      const r = map.color[i * 3 + 0];
+      const g = map.color[i * 3 + 1];
+      const b = map.color[i * 3 + 2];
+      // Cada canal, dentro del ±variation del canal base.
+      expect(Math.abs(r - br)).toBeLessThanOrEqual(br * HUESO.variation + 1);
+      expect(Math.abs(g - bg)).toBeLessThanOrEqual(bg * HUESO.variation + 1);
+      expect(Math.abs(b - bb)).toBeLessThanOrEqual(bb * HUESO.variation + 1);
+    }
+  });
+
+  it("es determinista: dos mapas iguales dan exactamente el mismo color", () => {
+    const a = build(grid(6, () => ROJO), { chosen: HUESO });
+    const b = build(grid(6, () => ROJO), { chosen: HUESO });
+    expect(Array.from(a.color)).toEqual(Array.from(b.color));
+  });
+
+  it("funciona también sin color por punto (las 17 figuras predefinidas)", () => {
+    const cloud = grid(6, () => ROJO);
+    const map = buildMaterialMap({
+      points: cloud.points,
+      count: cloud.count,
+      isMaterial: cloud.isMaterial,
+      pointColors: null,
+      clusters: [{ color: DORADO, weight: 1 }],
+      center: CENTER,
+      propagationOrigin: CORE,
+      chosen: ORO,
+    });
+    expect(map.source).toBe(MATERIAL_SOURCE.CHOSEN);
+    expect(map.palette).toEqual([ORO.color]);
   });
 });

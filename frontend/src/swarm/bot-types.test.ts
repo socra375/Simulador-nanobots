@@ -5,6 +5,9 @@ import {
   BOT_TYPE_COUNT,
   BOT_TYPES,
   botTypeInfo,
+  describePopulation,
+  POPULATIONS,
+  splitPopulations,
 } from "./bot-types";
 import { BOT_VISUALS, botVisual, setBotIdentityColor } from "./bot-config";
 
@@ -105,6 +108,65 @@ describe("configuración visual", () => {
     for (const info of BOT_TYPES) {
       if (info.type === BOT_TYPE.NANOBOT) continue;
       expect(info.relativeSize).toBeGreaterThan(nano);
+    }
+  });
+});
+
+// --- Fase 45: por qué el número del slider no es el del panel ---
+
+describe("splitPopulations / describePopulation", () => {
+  function counts(map: Partial<Record<number, number>>): Uint32Array {
+    const out = new Uint32Array(BOT_TYPE_COUNT);
+    for (const [k, v] of Object.entries(map)) out[Number(k)] = v!;
+    return out;
+  }
+
+  // EL CASO EXACTO QUE REPORTÓ EL USUARIO: 4.000 Microbots pedidos, y el
+  // panel mostraba 480. Los otros 3.520 son las vigas, que son Union Bots.
+  it("la suma de los tipos cierra con lo que pide el slider", () => {
+    const [exo] = splitPopulations(
+      counts({ [BOT_TYPE.MICROBOT]: 480, [BOT_TYPE.UNION]: 3520 }),
+      [4000, 3000],
+    );
+    expect(exo.configured).toBe(4000);
+    expect(exo.onScreen).toBe(4000);
+    expect(describePopulation(exo)).toContain("480 Microbot");
+    expect(describePopulation(exo)).toContain("3.520 Union Bot");
+  });
+
+  it("los Nanobots se reparten igual, entre detalle y material", () => {
+    const [, enjambre] = splitPopulations(
+      counts({ [BOT_TYPE.NANOBOT]: 750, [BOT_TYPE.MATERIAL]: 2250 }),
+      [4000, 3000],
+    );
+    expect(enjambre.configured).toBe(3000);
+    expect(enjambre.onScreen).toBe(3000);
+    expect(describePopulation(enjambre)).toContain("2.250 Material Bot");
+  });
+
+  // Un reparto de ceros se leería como un error de conteo; que no haya
+  // nadie en escena es otra cosa, y se dice con esas palabras.
+  it("sin nadie en escena lo dice, en vez de mostrar un reparto de ceros", () => {
+    const [exo] = splitPopulations(counts({}), [4000, 3000]);
+    expect(exo.onScreen).toBe(0);
+    expect(describePopulation(exo)).toContain("ninguno en escena");
+    expect(describePopulation(exo)).toContain("4.000 pedidos");
+  });
+
+  // Las formas humanoides usan hueso macizo, sin vigas: ahí la cuenta
+  // cierra con un solo tipo y la frase tiene que seguir cerrando.
+  it("una forma sin vigas también cierra", () => {
+    const [exo] = splitPopulations(counts({ [BOT_TYPE.MICROBOT]: 4000 }), [4000, 3000]);
+    expect(exo.onScreen).toBe(4000);
+    expect(describePopulation(exo)).toContain("0 Union Bot");
+  });
+
+  it("cada tipo implementado aparece en exactamente una población", () => {
+    const vistos = POPULATIONS.flatMap((p) => p.types);
+    expect(new Set(vistos).size).toBe(vistos.length);
+    for (const info of BOT_TYPES) {
+      if (!info.implemented) continue;
+      expect(vistos, info.name).toContain(info.type);
     }
   });
 });

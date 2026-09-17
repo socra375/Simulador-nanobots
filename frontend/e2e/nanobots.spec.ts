@@ -175,8 +175,22 @@ async function setNanobotCount(page: Page, count: number) {
   await input.press("Tab");
 }
 
+/**
+ * El canvas de la ESCENA es el que three.js cuelga dentro de `#app` (ver
+ * createScene). No es el único de la página: el panel Imagen → 3D dibuja
+ * su vista previa en uno, y el inspector de bots tiene su propio
+ * renderer de three.js.
+ *
+ * Con `page.locator("canvas")` a secas, Playwright resolvía TRES y
+ * fallaba por modo estricto. Eso es lo que este test venía registrando
+ * como "flake de arrastre de cámara" desde la Fase 20: no era timing, era
+ * un selector ambiguo que sólo funcionaba mientras los otros dos canvas
+ * no existieran todavía.
+ */
+const SCENE_CANVAS = "#app canvas";
+
 async function dragRotateCamera(page: Page, dx = 150, dy = -80): Promise<void> {
-  const box = await page.locator("canvas").boundingBox();
+  const box = await page.locator(SCENE_CANVAS).boundingBox();
   if (!box) throw new Error("No se encontró el <canvas> de la escena");
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
@@ -291,7 +305,9 @@ test("rotar la cámara (arrastrar) y hacer zoom (rueda) no generan errores y el 
   await page.waitForTimeout(200);
   await dragRotateCamera(page, -120, 60);
 
-  const canvas = page.locator("canvas");
+  // Mismo motivo que en dragRotateCamera: hay tres canvas en la página y
+  // el zoom tiene que ir sobre el de la escena.
+  const canvas = page.locator(SCENE_CANVAS);
   await canvas.hover();
   await page.mouse.wheel(0, -400); // zoom in
   await page.waitForTimeout(200);
@@ -534,6 +550,109 @@ test("el modo debug de regiones se enciende y se apaga sin tocar la simulación"
   expect(await readCommandsStatus(page)).toBe("Formando: cubo");
   expect(errors).toEqual([]);
 });
+
+// ---------------------------------------------------------------------
+// Fase 45 — de qué está hecho el objeto, y por qué el panel muestra otro
+// número que el slider.
+// ---------------------------------------------------------------------
+
+test("elegir un material transforma la figura ya formada, sin volver a volar", async ({ page }) => {
+  test.setTimeout(240_000);
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await attachPhotoWithColors(page);
+  await setObjectName(page, "cubo");
+  await clickCommandButton(page, "Formar objeto");
+
+  const material = () => readFolderAllText(page, "Material y regiones");
+  await expect.poll(material, { timeout: 150_000 }).toContain("material completo");
+
+  // Se elige "Hueso" del desplegable...
+  await pickMaterial(page, "Hueso");
+  // ...y la figura vuelve a transformarse: deja de estar completa.
+  await expect.poll(material, { timeout: 15_000 }).not.toContain("material completo");
+  // El panel dice cuál es el material y de dónde salió su color.
+  expect(await material()).toContain("Hueso");
+  expect(await material()).toContain("material elegido");
+  // Y termina sola, sin que el enjambre se haya replegado en el medio.
+  await expect.poll(material, { timeout: 120_000 }).toContain("material completo");
+  expect(await readCommandsStatus(page)).toBe("Formando: cubo");
+
+  expect(errors).toEqual([]);
+});
+
+test("un material inventado se acepta, y se declara que el color es derivado", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  // Sin goto: el beforeEach ya cargó la página. Volver a navegar acá
+  // reiniciaba el arranque y el panel todavía no existía cuando el test
+  // buscaba el campo.
+  await waitForMaterialPanel(page);
+  await writeMaterial(page, "flogisto");
+  const texto = await readFolderAllText(page, "Material y regiones");
+  expect(texto).toContain("flogisto");
+  expect(texto).toContain("derivado del nombre");
+  expect(errors).toEqual([]);
+});
+
+test("el panel explica por qué N Microbots se ven como dos tipos distintos", async ({ page }) => {
+  test.setTimeout(180_000);
+  await attachFakePhoto(page);
+  await setObjectName(page, "cubo");
+  await clickCommandButton(page, "Formar objeto");
+
+  // Con la figura en pantalla, la cuenta del slider tiene que cerrar con
+  // la suma de los tipos en que se reparte — que es lo que faltaba decir.
+  await expect
+    .poll(() => readFolderAllText(page, "Tipos de bot"), { timeout: 120_000 })
+    .toMatch(/Microbots: [\d.]+ pedidos = [\d.]+ Microbot \+ [\d.]+ Union Bot/);
+  expect(await readFolderAllText(page, "Tipos de bot")).toMatch(
+    /Nanobots: [\d.]+ pedidos = [\d.]+ Nanobot \+ [\d.]+ Material Bot/,
+  );
+});
+
+/** Espera a que el panel de material exista (la GUI se arma tras el wasm). */
+async function waitForMaterialPanel(page: Page): Promise<void> {
+  await page.waitForFunction(() =>
+    Array.from(document.querySelectorAll(".lil-gui")).some(
+      (g) => g.querySelector(":scope > .title")?.textContent === "Material y regiones",
+    ),
+  );
+}
+
+/** Elige un material del desplegable del panel. */
+async function pickMaterial(page: Page, nombre: string) {
+  await page.evaluate((valor) => {
+    const guis = Array.from(document.querySelectorAll(".lil-gui"));
+    const folder = guis.find(
+      (g) => g.querySelector(":scope > .title")?.textContent === "Material y regiones",
+    );
+    const select = folder?.querySelector<HTMLSelectElement>(".controller.option select");
+    if (!select) throw new Error("no se encontró el desplegable de material");
+    select.value = valor;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }, nombre);
+}
+
+/** Escribe un material a mano en el campo de texto del panel. */
+async function writeMaterial(page: Page, texto: string) {
+  await page.evaluate((valor) => {
+    const guis = Array.from(document.querySelectorAll(".lil-gui"));
+    const folder = guis.find(
+      (g) => g.querySelector(":scope > .title")?.textContent === "Material y regiones",
+    );
+    const input = folder?.querySelector<HTMLInputElement>(".controller.string input");
+    if (!input) throw new Error("no se encontró el campo de material");
+    // Enfocar ANTES de escribir: lil-gui dispara onFinishChange en el
+    // evento `blur`, y blur() sobre un input que nunca tuvo foco no emite
+    // nada. Sin esto el test "escribe" el material y no pasa nada.
+    input.focus();
+    input.value = valor;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.blur();
+  }, texto);
+}
 
 async function toggleRegionDebug(page: Page, on: boolean) {
   await page.evaluate((valor) => {

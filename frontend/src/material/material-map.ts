@@ -35,12 +35,21 @@
 
 import { DEFAULT_DOMINANT_COLOR, MAX_COLOR_CLUSTERS, mergeColorBuckets, type ColorBucket, type ColorCluster } from "../image-color";
 import { labelRegions, NO_REGION, regionResFor } from "./material-regions";
+import { MAX_VARIATION, type MaterialDefinition } from "./material-library";
+import { GOLDEN_ANGLE } from "../core/kinematics";
 
 export const MATERIAL_SOURCE = {
   /** El color sale de la posición real (foto punto a punto, o partes propias). */
   OBSERVED: 0,
   /** Sólo se conocía la paleta: el reparto espacial es una aproximación. */
   FALLBACK: 1,
+  /**
+   * El usuario eligió de qué está hecho el objeto (Fase 45). La foto deja
+   * de decidir el color; la POSICIÓN sigue decidiendo todo lo demás —
+   * regiones, semillas, orden de propagación — así que esto no puentea el
+   * mapa, sólo le cambia de dónde saca el color.
+   */
+  CHOSEN: 2,
 } as const;
 
 export type MaterialSource = (typeof MATERIAL_SOURCE)[keyof typeof MATERIAL_SOURCE];
@@ -48,6 +57,7 @@ export type MaterialSource = (typeof MATERIAL_SOURCE)[keyof typeof MATERIAL_SOUR
 export const MATERIAL_SOURCE_LABELS: Record<MaterialSource, string> = {
   [MATERIAL_SOURCE.OBSERVED]: "color por posición (de la imagen)",
   [MATERIAL_SOURCE.FALLBACK]: "paleta repartida en bandas (aproximado)",
+  [MATERIAL_SOURCE.CHOSEN]: "material elegido",
 };
 
 /**
@@ -106,6 +116,15 @@ export interface MaterialMap {
   readonly source: MaterialSource;
   /** Agentes con material. */
   readonly materialCount: number;
+  /**
+   * Cuánto puede brillar este material, 0..1. Lo consume `toneScale` en
+   * material-animation.ts. Para los colores que salen de una foto no hay
+   * dato —una foto no dice si el objeto era mate o pulido— así que se usa
+   * el valor neutro y el techo de luminancia hace el resto.
+   */
+  readonly glow: number;
+  /** El material elegido, o null si el color viene de la foto. */
+  readonly chosen: MaterialDefinition | null;
 }
 
 export interface MaterialMapInput {
@@ -124,7 +143,21 @@ export interface MaterialMapInput {
   readonly maxColors?: number;
   readonly maxSlots?: number;
   readonly res?: number;
+  /**
+   * De qué está hecho el objeto, si el usuario lo eligió. Con esto puesto
+   * la paleta pasa a tener un solo color y todas las regiones lo llevan;
+   * sin esto, nada cambia respecto de la Fase 44.
+   */
+  readonly chosen?: MaterialDefinition | null;
 }
+
+/**
+ * Brillo de un color que salió de una foto. Una foto no dice si el objeto
+ * era mate o pulido, así que se usa el punto medio y el techo de
+ * luminancia (toneScale) se encarga de que ningún color claro se
+ * desborde.
+ */
+export const NEUTRAL_GLOW = 0.5;
 
 const EMPTY_MAP: MaterialMap = {
   count: 0,
@@ -136,6 +169,8 @@ const EMPTY_MAP: MaterialMap = {
   slots: 0,
   source: MATERIAL_SOURCE.FALLBACK,
   materialCount: 0,
+  glow: NEUTRAL_GLOW,
+  chosen: null,
 };
 
 const QUANT_LEVELS = 8;
@@ -300,19 +335,39 @@ export function buildMaterialMap(input: MaterialMapInput): MaterialMap {
   for (let i = 0; i < count; i++) if (isMaterial[i]) materialCount++;
   if (count === 0 || materialCount === 0) return { ...EMPTY_MAP, count };
 
+  const chosen = input.chosen ?? null;
+  // `observed` es un HECHO sobre la forma (¿trajo color por punto?), no una
+  // decisión. La decisión —de dónde sale el color— la toma cada paso
+  // preguntando primero por `chosen`, porque el material elegido gana
+  // sobre la foto: si el usuario dijo "hueso", el objeto es de hueso
+  // aunque la foto fuera roja. Lo que la foto sigue aportando —y es lo
+  // importante— es la GEOMETRÍA y, con ella, las regiones y el orden en
+  // que se transforman.
   const observed = pointColors !== null;
-  const source: MaterialSource = observed ? MATERIAL_SOURCE.OBSERVED : MATERIAL_SOURCE.FALLBACK;
+  const source: MaterialSource = chosen !== null
+    ? MATERIAL_SOURCE.CHOSEN
+    : observed
+      ? MATERIAL_SOURCE.OBSERVED
+      : MATERIAL_SOURCE.FALLBACK;
 
-  const paletteClusters = observed
-    ? paletteFromPointColors(pointColors, count, isMaterial, maxColors)
-    : clusters.length > 0
-      ? [...clusters].slice(0, maxColors)
-      : [{ color: DEFAULT_DOMINANT_COLOR, weight: 1 }];
+  const paletteClusters = chosen !== null
+    ? [{ color: chosen.color, weight: 1 }]
+    : observed
+      ? paletteFromPointColors(pointColors, count, isMaterial, maxColors)
+      : clusters.length > 0
+        ? [...clusters].slice(0, maxColors)
+        : [{ color: DEFAULT_DOMINANT_COLOR, weight: 1 }];
   const palette = paletteClusters.map((c) => c.color);
 
   // 1. Material por agente.
   const material = new Int16Array(count).fill(-1);
-  if (observed) {
+  if (chosen !== null) {
+    // Un solo material: las regiones que salgan del paso 2 son entonces
+    // las partes CONEXAS de la superficie, no las manchas de color. Sigue
+    // siendo información espacial real, y el derrame sigue recorriéndolas
+    // desde el ápice.
+    for (let i = 0; i < count; i++) if (isMaterial[i]) material[i] = 0;
+  } else if (observed) {
     for (let i = 0; i < count; i++) {
       if (!isMaterial[i]) continue;
       material[i] = nearestPalette(pointColors[i * 3], pointColors[i * 3 + 1], pointColors[i * 3 + 2], palette);
@@ -416,7 +471,9 @@ export function buildMaterialMap(input: MaterialMapInput): MaterialMap {
   for (let i = 0; i < count; i++) {
     const r = region[i];
     if (r === NO_REGION) continue;
-    if (observed) {
+    if (chosen !== null) {
+      writeVariedColor(color, i, chosen.color, chosen.variation, i);
+    } else if (observed) {
       // Su propio color: es lo que vio la foto en esa posición.
       color[i * 3 + 0] = pointColors[i * 3 + 0];
       color[i * 3 + 1] = pointColors[i * 3 + 1];
@@ -445,7 +502,44 @@ export function buildMaterialMap(input: MaterialMapInput): MaterialMap {
     });
   }
 
-  return { count, color, region, spread, regions, palette, slots, source, materialCount };
+  return {
+    count, color, region, spread, regions, palette, slots, source, materialCount,
+    glow: chosen?.glow ?? NEUTRAL_GLOW,
+    chosen,
+  };
+}
+
+/**
+ * Escribe el color de un agente con la VETA del material: un desvío chico
+ * de claridad, distinto para cada agente.
+ *
+ * Sin esto, un objeto de un solo material se ve como plástico pintado: 40
+ * mil agentes con exactamente el mismo RGB. El hueso, la madera y el
+ * mármol no son de un solo tono, y el ojo lo nota aunque no sepa por qué.
+ *
+ * La variación sale del ÍNDICE del agente por el ángulo áureo, igual que
+ * el parpadeo de activación: determinista (spec §20), sin tabla, sin
+ * `Math.random` (spec §12) y repartida pareja en vez de agrupada. Se
+ * calcula UNA vez al armar el mapa, no por cuadro (spec §19).
+ */
+export function writeVariedColor(
+  out: Uint8Array,
+  index: number,
+  hex: number,
+  variation: number,
+  seed: number,
+): void {
+  const amount = variation <= 0 ? 0 : variation > MAX_VARIATION ? MAX_VARIATION : variation;
+  // Fase en 0..1 por el ángulo áureo, y de ahí a -1..1.
+  const phase = ((seed * GOLDEN_ANGLE) / (Math.PI * 2)) % 1;
+  const delta = amount * (phase * 2 - 1);
+  const factor = 1 + delta;
+  const r = ((hex >> 16) & 0xff) * factor;
+  const g = ((hex >> 8) & 0xff) * factor;
+  const b = (hex & 0xff) * factor;
+  out[index * 3 + 0] = r < 0 ? 0 : r > 255 ? 255 : r;
+  out[index * 3 + 1] = g < 0 ? 0 : g > 255 ? 255 : g;
+  out[index * 3 + 2] = b < 0 ? 0 : b > 255 ? 255 : b;
 }
 
 function centroidDist(

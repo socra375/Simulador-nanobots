@@ -32,6 +32,7 @@
 
 import { easeInOutCubic, GOLDEN_ANGLE } from "../core/kinematics";
 import { NO_REGION, type MaterialMap } from "./material-map";
+import { BLOOM_THRESHOLD, MATERIAL_EMISSIVE_INTENSITY } from "../swarm/bot-config";
 
 export const MATERIAL_PHASE = {
   /** Los Material Bots todavía están viajando. */
@@ -91,6 +92,101 @@ export const TRANSITION_GAIN = 0.35;
  * destacar.
  */
 export const INERT_DIM = 0.45;
+
+/**
+ * PRESUPUESTO DE LUMINANCIA. El arreglo del "fondo blanco hace que todo
+ * brille de más" (Fase 45).
+ *
+ * El tint multiplica el emissive del material (instance-color.ts) y el
+ * bloom de la escena recoge todo lo que pase de 0.35. Un color CLARO
+ * satura los TRES canales por encima de ese umbral y el objeto entero
+ * florece hasta perder la forma; un rojo saturado, en cambio, sólo
+ * florece en un canal y se lee bien. O sea que el problema nunca fue "hay
+ * blanco en la paleta": es que el brillo emitido crecía con la claridad
+ * del color sin ningún techo.
+ *
+ * Esto le pone techo a la LUMINANCIA percibida, no a cada canal por
+ * separado: escalar los tres por el mismo factor baja el brillo sin
+ * mover el tono. Un color oscuro no se toca nunca (su luminancia ya está
+ * por debajo del presupuesto), así que la única diferencia visible es que
+ * lo muy claro deja de ser una lámpara.
+ *
+ * EL PRIMER INTENTO DE LA FASE 45 NO ALCANZÓ, y lo encontró la pantalla,
+ * no los tests: el techo era un 0,62 elegido a ojo, que no se parecía ni
+ * al umbral del bloom (0,35) ni a la intensidad del emissive (0,85). Con
+ * ese número, el hueso seguía emitiendo 0,41 —por encima del umbral— y el
+ * objeto entero volvía a ser una mancha blanca sin forma. Ahora el
+ * presupuesto se DERIVA de esas dos constantes, que viven juntas en
+ * swarm/bot-config.ts justamente para esto.
+ */
+/**
+ * Margen por debajo del umbral del bloom para un material MATE. Con 0.85,
+ * el hueso y la madera se quedan un 15% por debajo de florecer, en vez de
+ * rozar el umbral y florecer igual por el ruido del tone mapping.
+ */
+export const MATE_MARGIN = 0.85;
+
+/**
+ * Cuánto presupuesto EXTRA se gana un material con `glow = 1` respecto de
+ * uno mate. Con 1, el cromo y la lava pueden emitir el doble que el hueso
+ * — bien por encima del umbral, que es exactamente lo que los hace
+ * brillar.
+ */
+export const GLOW_HEADROOM = 1;
+
+/**
+ * Presupuesto de luminancia de un material MATE, DERIVADO del pipeline:
+ * lo que puede valer el tint para que `tint × emissiveIntensity` se quede
+ * por debajo del umbral del bloom. No es un número elegido a ojo — sale
+ * de los dos valores que de verdad deciden qué florece.
+ */
+export const MATE_LUMA_BUDGET = (BLOOM_THRESHOLD * MATE_MARGIN) / MATERIAL_EMISSIVE_INTENSITY;
+
+/**
+ * Por debajo de este `glow`, un material NO puede florecer, tenga el
+ * color que tenga.
+ *
+ * No es un valor elegido: sale de despejar `presupuesto × emissive ≤
+ * umbral`, donde el umbral y el emissive se cancelan y queda sólo el
+ * margen. O sea que responde solo si alguna de las constantes cambia, y
+ * es lo que permite afirmar "el hueso no florece" sin probar colores uno
+ * por uno.
+ */
+export const MATTE_GLOW_MAX = 1 / MATE_MARGIN - 1;
+
+/** Coeficientes de luminancia de Rec. 709. */
+const LUMA_R = 0.2126, LUMA_G = 0.7152, LUMA_B = 0.0722;
+
+/** Luminancia percibida de un color en 0..1. */
+export function luminance(r: number, g: number, b: number): number {
+  return LUMA_R * r + LUMA_G * g + LUMA_B * b;
+}
+
+/** Cuánta luz emite de verdad un tint, ya pasado por el material. */
+export function emittedLuminance(r: number, g: number, b: number): number {
+  return luminance(r, g, b) * MATERIAL_EMISSIVE_INTENSITY;
+}
+
+/** Presupuesto de luminancia de un material según cuánto se ganó brillar. */
+export function lumaBudget(glow: number): number {
+  const g = glow < 0 ? 0 : glow > 1 ? 1 : glow;
+  return MATE_LUMA_BUDGET * (1 + GLOW_HEADROOM * g);
+}
+
+/**
+ * Cuánto hay que escalar un color para que no se pase del presupuesto.
+ * Devuelve 1 (sin cambio) para cualquier color que ya esté por debajo.
+ *
+ * `glow` es el presupuesto que el material se ganó: el cromo y la lava
+ * pueden brillar, el hueso y la madera no. Nunca llega a cero — un
+ * material sin brillo sigue siendo visible, sólo que no florece.
+ */
+export function toneScale(r: number, g: number, b: number, glow = 0.5): number {
+  const luma = luminance(r, g, b);
+  if (luma <= 0) return 1;
+  const budget = lumaBudget(glow);
+  return luma > budget ? budget / luma : 1;
+}
 
 export interface MaterialTimeline {
   /** Segundo en que termina el vuelo (los bots ya cubren la superficie). */
@@ -242,7 +338,7 @@ export function writeMaterialTint(
   identity: readonly [number, number, number],
   debugRegions = false,
 ): boolean {
-  const { count, region, spread, color, regions } = map;
+  const { count, region, spread, color, regions, glow } = map;
   const phase = materialPhaseAt(elapsed, timeline);
 
   if (debugRegions) {
@@ -281,9 +377,16 @@ export function writeMaterialTint(
     // aplicada, ni el destello original de 2,4x llegaba al techo con
     // ningún color real, así que la constante no hacía nada.
     const gain = flash * inertDim(p);
-    const mr = color[i * 3 + 0] / 255;
-    const mg = color[i * 3 + 1] / 255;
-    const mb = color[i * 3 + 2] / 255;
+    let mr = color[i * 3 + 0] / 255;
+    let mg = color[i * 3 + 1] / 255;
+    let mb = color[i * 3 + 2] / 255;
+    // El techo se aplica al COLOR DEL MATERIAL, no al tint ya con
+    // ganancia: si se aplicara al final, el destello de activación
+    // quedaría aplastado justo en los materiales claros, que es donde más
+    // se nota. Así el material se asienta en un brillo sostenible y el
+    // destello sigue siendo un pico por encima.
+    const tone = toneScale(mr, mg, mb, glow);
+    if (tone !== 1) { mr *= tone; mg *= tone; mb *= tone; }
     out[i * 3 + 0] = (identity[0] + (mr - identity[0]) * p) * gain;
     out[i * 3 + 1] = (identity[1] + (mg - identity[1]) * p) * gain;
     out[i * 3 + 2] = (identity[2] + (mb - identity[2]) * p) * gain;

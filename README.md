@@ -109,6 +109,7 @@ grilla sola, sino de la grilla **en relación a la densidad** de la nube.
 |---|---|---|
 | `OBSERVED` | Escaneo desde imagen, o formas con partes de color propio (hoy "cabeza": piel, cabello, ojos, labios) | Cada punto lleva **su** color, con la fidelidad de la foto. Un rojo con sombras y reflejos conserva sus tonos: el material agrupa, no aplana. |
 | `FALLBACK` | Las 17 figuras predefinidas | De la foto sólo se conoce la **paleta** y sus proporciones, no dónde va cada color. Se reparte en bandas espaciales contiguas a lo largo del eje más largo de la figura, y el panel lo declara: *"paleta repartida en bandas (aproximado)"*. |
+| `CHOSEN` | El usuario eligió de qué está hecho el objeto (Fase 45) | La foto deja de decidir el color; la **posición** sigue decidiendo todo lo demás. Ver "Elegir de qué está hecho el objeto", más abajo. |
 
 "Cabeza" dejó de ser un caso especial: sus cuatro partes anatómicas son
 generadores distintos, así que producen color por punto igual de real que
@@ -175,6 +176,25 @@ Se probó además un techo duro (`MAX_GAIN`) y resultó **código muerto**:
 con la atenuación aplicada, ni el destello original de 2,4× lo alcanzaba
 con ningún color real. Se quitó.
 
+**Presupuesto de luminancia: por qué un fondo blanco hacía brillar todo
+(Fase 45).** Quedaba un caso que las dos reglas de arriba no cubrían,
+porque no depende del reloj sino del COLOR: el brillo emitido crecía con
+la claridad del material, sin techo. Un rojo saturado florece en un solo
+canal y se lee bien; un color claro —hueso, nieve, mármol, o el blanco de
+un fondo mal recortado— satura los tres a la vez y el objeto entero se
+vuelve una mancha luminosa. `toneScale()` le pone techo a la **luminancia
+percibida** (Rec. 709) escalando los tres canales por el mismo factor:
+baja el brillo sin mover el tono, y a un color oscuro no lo toca nunca
+porque ya está por debajo. El techo se aplica al color del material y no
+al tint ya con ganancia, para que el destello de activación siga siendo
+un pico por encima en vez de quedar aplastado justo donde más se nota.
+
+Cada material declara además cuánto le corresponde brillar (`glow`): el
+cromo y la lava se ganan más presupuesto que el hueso y la madera. Dos
+materiales de claridad parecida pueden brillar completamente distinto, y
+esa es justamente la diferencia que hace que se vean como materiales
+distintos y no como el mismo plástico teñido.
+
 Como el tint es una **función pura del reloj**, el repliegue sale gratis:
 correr el reloj hacia atrás revierte la transformación (material →
 agentes → vuelo) sin una sola línea de código de "deshacer". Y por eso el
@@ -202,6 +222,43 @@ de la foto: `paletteFromPointColors` comparte el merge por proximidad
 pero **no** los filtros de fondo. En una foto un negro casi puro suele ser
 fondo; en una nube ya segmentada es la rueda del auto, y descartarlo
 dejaría sin material justo a las partes más contrastadas.
+
+### Elegir de qué está hecho el objeto (Fase 45)
+
+El panel "Material y regiones" tiene un desplegable con la biblioteca de
+`material/material-library.ts` (~60 materiales: metales, minerales,
+orgánicos —**piel** y **hueso** incluidos—, fabricados, elementos y
+ficción) y, al lado, un campo para escribir cualquier otro. Un nombre que
+no está en la biblioteca **se acepta igual** y su color sale de un hash
+del nombre — determinista, el mismo en cualquier máquina — pero el panel
+lo **declara**: "no está en la biblioteca: color derivado del nombre". Un
+material inventado no se hace pasar por un color conocido, con el mismo
+criterio con que la paleta en bandas se declara aproximada.
+
+Del hash sale **sólo el tono**. La saturación y la claridad quedan en una
+banda fija, así ningún nombre puede producir un blanco que sature el
+bloom ni un negro invisible.
+
+**Elegir un material NO puentea el mapa de material.** La regla del
+proyecto sigue en pie: la posición decide las regiones, las semillas y el
+orden de propagación; el material elegido sólo cambia de dónde sale el
+color de esas regiones. Con un solo material, las regiones pasan a ser
+las **partes conexas de la superficie**, que sigue siendo información
+espacial real, y el derrame desde el ápice se ve igual.
+
+Cada agente recibe además una **veta**: un desvío de claridad chico,
+determinista por índice (ángulo áureo, igual que el parpadeo), calculado
+una vez al armar el mapa. Sin eso, 40.000 agentes con el mismo RGB exacto
+se ven como plástico pintado y no como hueso. Es una veta, no un
+arcoíris: todos los tonos siguen siendo el mismo color, más claro o más
+oscuro.
+
+Si ya hay una figura asentada, cambiar el material **rebobina hasta el
+final del vuelo** en vez de cambiar el color de golpe: se vuelve a ver el
+parpadeo y el derrame sobre la figura que ya está en pantalla, sin que
+los bots vuelvan a volar (en ese instante ya están en su destino, así que
+nada salta). Si la figura todavía se está formando, la animación en curso
+toma el material nuevo desde el cuadro siguiente.
 
 Detalle **pierde su color de rol fijo y pasa a un gris apagado** apenas
 sale la capa de material, así el color real del objeto es el que
@@ -303,6 +360,16 @@ swarm/
                   paralelos, no un objeto por agente).
   director.ts     Cola de tareas. Las tareas NO tienen reloj propio:
                   ocupan ventanas [t0, t1] sobre la línea temporal única.
+material/
+  material-map.ts       Qué material lleva cada agente. Función pura de
+                        (puntos, colores, paleta) a un mapa: sin agentes,
+                        sin reloj, sin three.js.
+  material-regions.ts   Regiones contiguas del MISMO material, por
+                        componentes conexas sobre una grilla de vóxeles.
+  material-animation.ts CUÁNDO se enciende y se transforma cada región,
+                        y el techo de brillo. No decide ningún color.
+  material-library.ts   De qué está hecho el objeto: ~60 materiales, más
+                        el derivado por hash para los que no están.
 voxel/
   grid.ts         Grilla de ocupación + superficie + cobertura.
   correspondence.ts  Emparejamiento agente→destino para el morph directo.
@@ -347,6 +414,22 @@ que ese cero no se lea como un fallo.
 Los dos tipos sin agentes se muestran igual, con el motivo escrito.
 Ocultarlos haría creer que no están previstos; mostrarlos sin aclaración
 haría creer que funcionan.
+
+**Por qué el número del slider no es el del panel (Fase 45).** Los dos
+sliders piden una POBLACIÓN, y cada población se reparte en dos TIPOS:
+
+```
+Microbots (slider)  ->  Microbot (nodos)    +  Union Bot (vigas)
+Nanobots  (slider)  ->  Nanobot  (detalle)  +  Material Bot (material)
+```
+
+Así que pedir 4.000 Microbots y leer "Microbot: 480" es correcto —los
+otros 3.520 son las vigas— pero la pantalla no lo decía en ninguna parte,
+y un número que no coincide con el que uno escribió se lee como un bug.
+El panel ahora muestra la cuenta entera (`Microbots: 4.000 pedidos = 480
+Microbot + 3.520 Union Bot`) y cierra a la vista. La aritmética vive en
+`splitPopulations`/`describePopulation`, funciones puras con tests, no en
+el DOM.
 
 **Identidad ≠ material.** El color de identidad dice de qué TIPO es el
 bot; el color del objeto dice de qué está hecho lo que se construye, y lo
@@ -526,6 +609,19 @@ npx playwright install chromium       # una sola vez
 npm run test:e2e
 ```
 
+**El "flake de arrastre de cámara" no era un flake (Fase 45).** Desde la
+Fase 20 ese test fallaba de a ratos y se lo trató como intermitencia del
+entorno. En realidad `page.locator("canvas")` es **ambiguo**: la página
+tiene tres canvas (la escena, la vista previa de Imagen → 3D, y el
+renderer propio del inspector de bots), y Playwright falla por modo
+estricto en cuanto los otros dos existen. Pasaba sólo mientras no se
+hubieran creado todavía. Apuntando al canvas de la escena (`#app canvas`)
+pasa siempre, y la suite quedó en **20/20**.
+
+Vale como advertencia general: un test que falla "a veces" puede ser
+determinista y estar mal escrito. Conviene leer el error antes de
+etiquetarlo.
+
 ## Notas de rendimiento
 
 - La física corre en C++ compilado a Wasm (código nativo), no en JS
@@ -611,6 +707,50 @@ bajó los draw calls (19/21/23 antes y después). Las mallas sin usar ya
 dibujaban cero instancias. Lo que se ganó son cuatro objetos menos y sus
 `instanceMatrix`, no llamadas de dibujo.
 
+### Estos números NO se comparan entre sesiones (Fase 45)
+
+Al medir la Fase 45 salió **33,86 ms** a 10.000 formando, contra los 18,70
+ms anotados arriba. Parecía una regresión del 70% — y no lo era. Dos
+señales avisaban antes de tocar nada: el tiempo de formación completo
+apenas se movió (82,85 s contra 81,01 s), y la ventana que el bench llama
+"formando" son los primeros 4 s tras el clic, que en SwiftShader es casi
+todo el lanzamiento del exoesqueleto de Microbots — un camino que esa fase
+no toca.
+
+La forma de resolverlo no fue razonar sino **medir las dos versiones en la
+misma máquina, el mismo día**:
+
+| build | frame avg (10k formando) | formación completa |
+|---|---:|---:|
+| Fase 44 (`main`) | 33,15 ms | 87,97 s |
+| Fase 45 (rama) | 33,86 ms | 82,85 s |
+
+O sea: +0,7 ms (~2%, dentro del ruido entre corridas), y la formación
+completa incluso más rápida. Los 18,70 ms se midieron en otro contenedor;
+**el contenedor cambia entre sesiones y el bench corre sobre CPU
+compartida**, así que una cifra de una sesión no es línea base para otra.
+
+La regla que queda: un número de rendimiento sólo significa algo contra
+otro medido **en la misma máquina y con la misma carga**. Ante una
+sospecha de regresión, compilar la versión anterior y medirla ahí mismo
+cuesta cinco minutos y es la única respuesta que no es una conjetura.
+
+### Lo que sólo encuentra la pantalla
+
+Tres veces seguidas, un cambio pasó los tests y estaba mal, y lo encontró
+mirar el render. Vale la pena tenerlo anotado porque es un patrón, no mala
+suerte:
+
+| Qué pasó | Por qué los tests no lo vieron |
+|---|---|
+| El parche de shader de la Fase 40 era un **no-op silencioso** (`USE_INSTANCING_COLOR` sólo existe en el vertex) | Un shader sólo se puede comprobar de verdad renderizando |
+| El modo DEBUG de regiones no hacía nada visible (Fase 42) | Con la figura asentada `step()` no dibuja: el tint nuevo se quedaba en RAM |
+| El techo de brillo de la Fase 45 estaba calibrado contra un número inventado | Los tests afirmaban "menor que X", y X era el número equivocado. La afirmación correcta —"lo que emite un material mate no llega al umbral del bloom"— sólo se puede escribir si las dos constantes del pipeline están donde se las pueda leer |
+
+De ahí la regla del proyecto: un cambio que afecta lo que se VE no está
+terminado hasta haberlo visto. Los tests fijan la regla; la pantalla dice
+si la regla era la correcta.
+
 Las dos mejoras reales de memoria vinieron de **sacar** cosas, no de
 agregar optimizaciones. En cambio las "optimizaciones" intuitivas
 (evitar un literal de array por cuadro, sacar closures de `forEach`,
@@ -650,7 +790,7 @@ TypedArrays (vitest corre en node, sin DOM), y el orquestador es
 
 | Etapa | Cómo | Dónde |
 |---|---|---|
-| Separar objeto de fondo | Canal alpha si la imagen lo trae; si no, flood fill desde el borde con umbral LOCAL entre vecinos (tolera fondos en degradé) | `vision/segmentation.ts` |
+| Separar objeto de fondo | Canal alpha si la imagen lo trae; si no, flood fill desde el borde con umbral LOCAL entre vecinos (tolera fondos en degradé). Después, **sólo el objeto principal** | `vision/segmentation.ts` |
 | Estimar profundidad | Transformada de distancia (infla la silueta) + corrección por sombreado | `vision/depth-estimator.ts` |
 | Reconstruir en 3D | Extrusión / profundidad / profundidad+simetría, con un color por punto | `vision/reconstruction.ts` |
 | Voxelizar y validar | `VoxelGrid` con color y procedencia; componentes conexas | `voxel/grid.ts`, `voxel/validate.ts` |
@@ -662,6 +802,30 @@ silueta y espesor constante—, cada una declarando su propio techo de
 confianza. La interfaz está lista para enchufar un modelo; **no se
 escribió un proveedor externo vacío**, porque un provider sin servicio
 detrás devuelve lo mismo que el local.
+
+### Sólo el objeto principal (Fase 45)
+
+La máscara cruda se queda con todo lo que no es fondo, y eso incluía
+cosas que no son el objeto: una sombra suelta, una marca de agua, un
+reflejo, un segundo objeto al fondo. Cada una se llevaba agentes que no
+iban a ninguna parte de lo que se quería construir. `focusOnMainObject()`
+hace dos cosas, en este orden:
+
+1. **Erosiona un píxel de contorno.** El borde de un objeto en una foto
+   no es ni objeto ni fondo: es una MEZCLA de los dos. El antialias, el
+   remuestreo al cargar y el ringing del JPEG dejan un anillo con el
+   color promediado. Con fondo blanco ese anillo es casi blanco, y era
+   **eso** —no "hay blanco en la paleta"— lo que metía un contorno de
+   material clarísimo alrededor de la figura. Hay una guarda: si
+   erosionar se comería más de la mitad del objeto (un cable, una
+   antena), no se erosiona. Perder un halo es aceptable; perder el
+   objeto, no.
+2. **Se queda con la mancha conexa más grande** (4 vecinos).
+
+Lo que cuesta, dicho sin disimulo: una parte del objeto que quede
+**separada** en la silueta (el espejo de un auto visto de frente) se
+descarta con el resto. Por eso el área descartada se informa en
+`ObjectMask.discarded` en vez de desaparecer en silencio.
 
 ### Geometría vista vs geometría inferida
 
@@ -721,6 +885,16 @@ las asuma:
   distintos que se tocan pueden fundirse en el borde. Las esquirlas por
   debajo del 1% se absorben en la región grande más cercana del mismo
   material, así que no producen tandas de activación propias.
+- **Sólo se construye la mancha conexa más grande.** Una parte del objeto
+  que quede SEPARADA en la silueta (el espejo de un auto visto de frente,
+  el vidrio de unos anteojos) se descarta junto con las sombras y las
+  marcas de agua. Es el costo de enfocarse en el objeto principal, y el
+  área descartada se informa en vez de desaparecer en silencio.
+- **El material elegido es un color y un brillo, no una simulación.** No
+  hay índice de refracción, ni subsurface scattering, ni BRDF por
+  material: el hueso y el mármol se distinguen por su color, su veta y
+  cuánto se les permite brillar. Un material inventado va todavía más
+  lejos: su color sale de un hash del nombre, y la UI lo declara.
 - **Una sola imagen no alcanza para una reconstrucción exacta.** No
   contiene información de profundidad: lo que se obtiene es una
   ESTIMACIÓN, y la UI lo dice siempre. El sistema informa qué fracción de
@@ -770,9 +944,11 @@ entre lo que funciona y lo que no existe:
   una nube de puntos a propósito: el enjambre consume posiciones y la
   voxelización sale de la nube, así que una malla sería un subsistema que
   después nadie usa.
-- Estimación de material (metal, plástico, vidrio…). Sin un modelo de
-  visión sólo se podría devolver "desconocido" siempre, que es el módulo
-  decorativo que el proyecto evita. Entra con el proveedor externo.
+- **Estimar** el material desde la foto (¿esto es metal, plástico,
+  vidrio?). Sin un modelo de visión sólo se podría devolver "desconocido"
+  siempre, que es el módulo decorativo que el proyecto evita. Entra con el
+  proveedor externo. Ojo con la diferencia: **elegir** el material sí
+  existe desde la Fase 45 — lo dice el usuario, no lo adivina el sistema.
 - Pausar el pipeline etapa por etapa.
 - Bajar el material al interior del objeto. Hoy los Material Bots cubren
   la SUPERFICIE, que es lo que se ve; pintar vóxeles internos gastaría

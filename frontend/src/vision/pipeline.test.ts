@@ -99,17 +99,24 @@ describe("runVisionCore: la cadena completa", () => {
     }
   });
 
-  it("detecta que salió en pedazos cuando de verdad salió en pedazos", async () => {
+  // FASE 45: este test medía lo contrario. Con dos barras separadas
+  // esperaba DOS piezas ("salió en pedazos"), porque hasta entonces la
+  // segmentación se llevaba todo lo que no era fondo. Ahora el pipeline se
+  // enfoca en el objeto principal, así que dos barras separadas son UN
+  // objeto y una descartada — que es justo lo que el usuario pidió, y lo
+  // que este test fija ahora. La detección de fragmentación en sí sigue
+  // cubierta donde vive: voxel/validate.test.ts la prueba directamente.
+  it("con dos objetos separados construye SÓLO el principal, y dice cuánto descartó", async () => {
     const img = blankImage(48, 48, [250, 250, 250, 255]);
-    paintRect(img, 5, 5, 18, 42, [30, 30, 30, 255]);
-    paintRect(img, 30, 5, 42, 42, [30, 30, 30, 255]); // dos barras separadas
+    paintRect(img, 5, 5, 24, 42, [30, 30, 30, 255]); // barra ancha
+    paintRect(img, 34, 5, 42, 42, [30, 30, 30, 255]); // barra angosta
     const core = await runVisionCore(img, { voxelRes: 48 });
-    // Dos piezas grandes de tamaño parecido; la cohesión (la mayor sobre
-    // el total) lo dice mejor que el conteo, porque las puntas del lente
-    // dejan algunas motas sueltas.
-    expect(core.stats.components).toBeGreaterThanOrEqual(2);
-    expect(core.stats.cohesion).toBeGreaterThan(0.45);
-    expect(core.stats.cohesion).toBeLessThan(0.6);
+    expect(core.mask.discarded).toBeGreaterThan(0);
+    // La barra angosta desapareció de la máscara: su columna quedó vacía.
+    expect(core.mask.bbox!.maxX).toBeLessThan(34);
+    // Y lo que queda es UNA pieza maciza, no dos.
+    expect(core.stats.components).toBe(1);
+    expect(core.stats.cohesion).toBe(1);
   });
 
   it("una imagen sin objeto devuelve vacío y confianza cero, sin romper", async () => {

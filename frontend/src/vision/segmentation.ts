@@ -33,6 +33,24 @@ export const FLOOD_STEP_THRESHOLD = 18;
 /** Debajo de este alpha, el píxel se considera fondo. */
 export const ALPHA_THRESHOLD = 128;
 
+/**
+ * Cuántos píxeles se recorta el contorno del objeto (Fase 45).
+ *
+ * EL BORDE DE UN OBJETO EN UNA FOTO NO ES NI OBJETO NI FONDO: es una
+ * MEZCLA de los dos. El antialias de la cámara, el remuestreo al cargar y
+ * el ringing del JPEG dejan un anillo de uno o dos píxeles con el color
+ * promediado entre el objeto y lo que hay detrás. Con un fondo blanco ese
+ * anillo es casi blanco, y era eso —no "blanco en la paleta"— lo que
+ * metía puntos clarísimos en la nube: un contorno completo de material
+ * blanco alrededor de la figura, que con el bloom florecía y se comía la
+ * silueta.
+ *
+ * Erosionar un píxel tira ese anillo. Se pierde un píxel de silueta, que
+ * a la resolución de vóxeles con la que se construye no se nota; el halo
+ * sí se notaba.
+ */
+export const EDGE_EROSION = 1;
+
 export interface MaskBBox {
   readonly minX: number;
   readonly minY: number;
@@ -74,6 +92,14 @@ export interface ObjectMask {
   readonly borderSpread: number;
   /** De dónde salió la máscara. Se muestra al usuario. */
   readonly source: "alpha" | "flood";
+  /**
+   * Píxeles que la máscara cruda decía "objeto" y que el enfoque en el
+   * objeto principal descartó: manchas sueltas más chicas que la
+   * principal, más el anillo del contorno. Se informa en vez de
+   * descartarse en silencio — si sale un número enorme, la foto tenía dos
+   * objetos y el usuario tiene que saberlo.
+   */
+  readonly discarded: number;
 }
 
 /** Recorre una máscara ya calculada y saca área, recuadro y borde tocado. */
@@ -204,6 +230,7 @@ export function segmentByFloodFill(
   return {
     mask, width, height, source: "flood",
     borderSpread: borderColorSpread(pixels, width, height),
+    discarded: 0,
     ...stats,
   };
 }
@@ -224,15 +251,157 @@ export function segmentByAlpha(
     mask[i] = pixels[i * 4 + 3] >= alphaThreshold ? 1 : 0;
   }
   const stats = maskStats(mask, width, height);
-  return { mask, width, height, source: "alpha", borderSpread: 0, ...stats };
+  return { mask, width, height, source: "alpha", borderSpread: 0, discarded: 0, ...stats };
 }
 
 /**
- * Elige el método: alpha si la imagen lo trae, flood fill si no.
+ * Fracción del área por debajo de la cual NO se erosiona.
+ *
+ * Un objeto fino —un cable, una antena, la pata de una silla— puede tener
+ * dos o tres píxeles de ancho, y erosionarlo lo borra entero. Si el
+ * recorte se come más de la mitad del objeto, la suposición "esto es sólo
+ * el contorno" era falsa y se deja la máscara como estaba: perder un halo
+ * es aceptable, perder el objeto no.
+ */
+export const EROSION_MIN_SURVIVAL = 0.5;
+
+/**
+ * Erosiona la máscara: un píxel sobrevive sólo si sus cuatro vecinos
+ * también son objeto. Lo de afuera del frame cuenta como fondo, así que
+ * el objeto que llega al borde también se recorta ahí.
+ *
+ * Devuelve la MISMA máscara (sin copiar) cuando `radius` es 0.
+ */
+export function erodeMask(mask: Uint8Array, width: number, height: number, radius: number): Uint8Array {
+  let current = mask;
+  for (let step = 0; step < radius; step++) {
+    const next = new Uint8Array(current.length);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = y * width + x;
+        if (!current[i]) continue;
+        if (x === 0 || y === 0 || x === width - 1 || y === height - 1) continue;
+        if (!current[i - 1] || !current[i + 1] || !current[i - width] || !current[i + width]) continue;
+        next[i] = 1;
+      }
+    }
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * Se queda con la mancha conexa más grande (4-conectividad) y borra el
+ * resto.
+ *
+ * ESTO ES "enfocarse en el objeto principal", literal: una foto trae
+ * sombras sueltas, una marca de agua, un reflejo en el piso o un segundo
+ * objeto al fondo, y hasta la Fase 44 TODO eso entraba en la nube y se
+ * llevaba agentes que no iban a ninguna parte del objeto.
+ *
+ * LO QUE CUESTA, dicho sin disimulo: una parte del objeto que quede
+ * SEPARADA en la silueta (el espejo de un auto visto de frente, el vidrio
+ * de unos anteojos) se descarta con el resto. Por eso el área descartada
+ * se informa en `discarded` en vez de desaparecer en silencio.
+ *
+ * El recorrido es el mismo flood fill iterativo con cola que usa
+ * `segmentByFloodFill`, sin recursión: una mancha de 40.000 píxeles
+ * desborda la pila.
+ */
+export function largestComponent(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+): { mask: Uint8Array; removed: number } {
+  const cells = width * height;
+  const label = new Int32Array(cells).fill(-1);
+  const queue = new Int32Array(cells);
+  let best = -1;
+  let bestSize = 0;
+  let total = 0;
+  let components = 0;
+
+  for (let start = 0; start < cells; start++) {
+    if (!mask[start] || label[start] >= 0) continue;
+    const id = components++;
+    let head = 0, tail = 0;
+    queue[tail++] = start;
+    label[start] = id;
+    let size = 0;
+    while (head < tail) {
+      const i = queue[head++];
+      size++;
+      const x = i % width;
+      const y = (i - x) / width;
+      const visit = (n: number): void => {
+        if (!mask[n] || label[n] >= 0) return;
+        label[n] = id;
+        queue[tail++] = n;
+      };
+      if (x > 0) visit(i - 1);
+      if (x < width - 1) visit(i + 1);
+      if (y > 0) visit(i - width);
+      if (y < height - 1) visit(i + width);
+    }
+    total += size;
+    if (size > bestSize) {
+      bestSize = size;
+      best = id;
+    }
+  }
+
+  if (best < 0) return { mask, removed: 0 };
+  const out = new Uint8Array(cells);
+  for (let i = 0; i < cells; i++) out[i] = label[i] === best ? 1 : 0;
+  return { mask: out, removed: total - bestSize };
+}
+
+/**
+ * Deja SÓLO el objeto principal: recorta el anillo del contorno (que es
+ * una mezcla de objeto y fondo, no objeto) y se queda con la mancha
+ * conexa más grande.
+ *
+ * El orden importa: primero erosionar y después quedarse con la mancha
+ * mayor. Al revés, una mota pegada al objeto por el halo del antialias
+ * contaría como parte de la mancha principal y sobreviviría.
+ */
+export function focusOnMainObject(
+  m: ObjectMask,
+  erosion: number = EDGE_EROSION,
+): ObjectMask {
+  if (m.area === 0) return m;
+
+  let mask = m.mask;
+  if (erosion > 0) {
+    const eroded = erodeMask(mask, m.width, m.height, erosion);
+    let survivors = 0;
+    for (let i = 0; i < eroded.length; i++) if (eroded[i]) survivors++;
+    if (survivors >= m.area * EROSION_MIN_SURVIVAL) mask = eroded;
+  }
+
+  const main = largestComponent(mask, m.width, m.height);
+  const stats = maskStats(main.mask, m.width, m.height);
+  return {
+    ...m,
+    mask: main.mask,
+    ...stats,
+    discarded: m.area - stats.area,
+  };
+}
+
+/**
+ * Elige el método (alpha si la imagen lo trae, flood fill si no) y se
+ * queda con el objeto principal.
+ *
+ * El enfoque se aplica a los DOS caminos: un PNG recortado a mano también
+ * trae el borde suavizado, y nada impide que tenga una segunda figura con
+ * alpha.
  */
 export function segment(img: ImageBuffer, threshold: number = FLOOD_STEP_THRESHOLD): ObjectMask {
-  if (hasAlphaChannel(img)) return segmentByAlpha(img.pixels, img.width, img.height);
-  return segmentByFloodFill(img.pixels, img.width, img.height, threshold);
+  const raw = hasAlphaChannel(img)
+    ? segmentByAlpha(img.pixels, img.width, img.height)
+    : segmentByFloodFill(img.pixels, img.width, img.height, threshold);
+  return focusOnMainObject(raw);
 }
 
 /** Color promedio del objeto, para la vista previa y los diagnósticos. */

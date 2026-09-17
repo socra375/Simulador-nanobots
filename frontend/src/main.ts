@@ -177,9 +177,17 @@ async function main() {
   // Fase 31: desglose del enjambre por tipo de bot.
   const paintBotTypes = addBotTypePanel(gui);
   const readTypeCounts = () => sim.state.typeCounts;
+  // Fase 45: lo que pide cada slider, para que el panel pueda explicar por
+  // qué "4.000 Microbots" se ven como 480 Microbots + 3.520 Union Bots.
+  const readConfigured = (): [number, number] => [state.microbotCount, state.count];
 
   // Fase 42: regiones de material, paleta, y de dónde salió el color.
-  const paintMaterial = addMaterialPanel(gui, (on) => sim.setRegionDebug(on));
+  // Fase 45: y de qué está hecho el objeto.
+  const paintMaterial = addMaterialPanel(
+    gui,
+    (on) => sim.setRegionDebug(on),
+    (material) => sim.setMaterial(material),
+  );
   const readMaterial = (): MaterialPanelInfo | null => {
     const map = sim.state.materialMap;
     if (!map) return null;
@@ -189,7 +197,12 @@ async function main() {
       materialCount: map.materialCount,
       palette: map.palette,
       phase: MATERIAL_PHASE_LABELS[sim.state.materialPhase],
-      sourceLabel: MATERIAL_SOURCE_LABELS[map.source],
+      // Con material elegido, la etiqueta lleva el nombre: "material
+      // elegido" a secas no dice cuál, y el nombre es justamente el dato
+      // que el usuario acaba de pedir.
+      sourceLabel: map.chosen
+        ? `${MATERIAL_SOURCE_LABELS[map.source]}: ${map.chosen.name}`
+        : MATERIAL_SOURCE_LABELS[map.source],
     };
   };
 
@@ -290,7 +303,7 @@ async function main() {
       paintAgentStates(readStateCounts);
       paintTaskQueue(readDirector);
       paintCoverage(readCoverage);
-      paintBotTypes(readTypeCounts);
+      paintBotTypes(readTypeCounts, readConfigured);
       paintMaterial(readMaterial);
       inspector.setCounts(sim.state.typeCounts);
       inspector.render(dt);
